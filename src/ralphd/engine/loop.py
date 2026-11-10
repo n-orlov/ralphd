@@ -3577,6 +3577,8 @@ class LoopSupervisor:
             # phase-scoped mode; the meta says which phase and that scope.
             meta["planPhase"] = self._phase_review_scope["planPhase"]
             meta["scope"] = "phase"
+            if self._phase_review_scope.get("edge"):
+                meta["edge"] = self._phase_review_scope["edge"]
         atomic_write_json(itdir / "meta.json", meta)
         self.run.emit("iteration.start", number=n, phase=phase, model=model)
         log.info("iteration %d start: phase=%s model=%s", n, phase, model)
@@ -7780,6 +7782,11 @@ class LoopSupervisor:
             return [f"verdict 'plan_complete' reported with "
                     f"{len(outstanding)} task(s) not completed or "
                     f"skipped: {names}"]
+        gate = state.earliest_open_phase_id(tasks_doc)
+        if gate is not None and gate != state.last_phase_id(tasks_doc):
+            return [f"verdict 'plan_complete' reported while the gate of "
+                    f"plan phase {gate!r} is not passed; a phase before the "
+                    "last must pass its phase review first"]
         return []
 
     def _apply_worker_proposed_tasks(self, proposed_tasks: list,
@@ -10762,7 +10769,9 @@ class LoopSupervisor:
                             "no-progress iterations and a stagnation "
                             "verdict (task 007, requirement D, #99)"),
                         **doom_fault)
-                    self._advance("worker", "review", "doomed_plan_unverifiable")
+                    if self._open_gate_before_last() is None:
+                        self._advance("worker", "review",
+                                      "doomed_plan_unverifiable")
                     verdict_ready = True
                     guard_ready = "doomed_plan_unverifiable"
                     break
@@ -10956,7 +10965,9 @@ class LoopSupervisor:
                         "requirement C.4, #187)"),
                     heldTaskIds=sorted(blocked_incl_petitioned.keys()),
                     dependentTaskIds=sorted(actionable_ids))
-                self._advance("worker", "review", "petition_held_no_task_bound")
+                if self._open_gate_before_last() is None:
+                    self._advance("worker", "review",
+                                  "petition_held_no_task_bound")
                 verdict_ready = True
                 guard_ready = "petition_held_no_task_bound"
                 break
@@ -12491,7 +12502,25 @@ class LoopSupervisor:
             # `exhaustedBudget: approaches`.
             self._archive_approach(approach)
             return ("advance", "replan", "stagnation_exhausted")
+        # PRD v0.37 requirement B.7: no worker exit reaches the final review
+        # past a closed gate. The edge's own reason rides on the phase
+        # review's dispatch, and the loop stays in `worker` afterwards.
+        open_gate = self._open_gate_before_last()
+        if open_gate is not None:
+            await self._run_phase_review(open_gate, edge=guard_ready)
+            return ("advance", "worker", "no_verdict_yet")
         return ("advance", "review", guard_ready)
+
+    def _open_gate_before_last(self) -> str | None:
+        """PRD v0.37 requirement B.6/B.7: the id of the open phase when it is
+        a phase before the last (its gate is not `passed`), else `None`. A
+        plan without phases, and a plan whose open phase is the last one,
+        always read `None`."""
+        data = self.run.read_tasks()
+        pid = state.earliest_open_phase_id(data)
+        if pid is None or pid == state.last_phase_id(data):
+            return None
+        return pid
 
     def _blocker_signature(self, result: IterationResult) -> str | None:
         """A stable signature for a stagnating worker's blocker (#61),
@@ -14243,7 +14272,8 @@ class LoopSupervisor:
             except FileNotFoundError:
                 pass
 
-    async def _run_phase_review(self, pid: str) -> None:
+    async def _run_phase_review(self, pid: str, *,
+                                edge: str | None = None) -> None:
         """PRD v0.37 requirement C.1/C.3/C.4/C.5: the `review` hat in
         phase-scoped mode over the due phase `pid`. The gate reads
         `reviewing` from dispatch until the verdict is applied;
@@ -14254,7 +14284,11 @@ class LoopSupervisor:
         `phase_gate.passed` and records the next phase's `startHead` as the
         current HEAD (B.3). Anything else leaves the gate `closed` with the
         verdict recorded; the cure, park and no-verdict rungs for a phase are
-        the rejection ladder's, not this method's."""
+        the rejection ladder's, not this method's.
+
+        `edge` is the `worker -> review` edge reason (B.7) that sent a worker
+        exit here instead of to the final review; it rides on
+        `phase_gate.due` and the iteration meta."""
         approach = self._approach
         data = self.run.read_tasks()
         phase = state.phase_entry(data, pid) or {}
@@ -14263,10 +14297,11 @@ class LoopSupervisor:
                          if str(r).endswith("-review.json"))
         state.set_phase_gate(data, pid, state.PHASE_GATE_REVIEWING)
         self.run.write_tasks(data)
+        due_extra = {"edge": edge} if edge else {}
         self.run.emit("phase_gate.due", planPhase=pid, approach=approach,
-                      round=round_, startHead=start_head)
+                      round=round_, startHead=start_head, **due_extra)
         self._phase_review_scope = {"planPhase": pid, "round": round_,
-                                    "startHead": start_head}
+                                    "startHead": start_head, **due_extra}
         passed = False
         try:
             await self._gate()

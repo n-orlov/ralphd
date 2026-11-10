@@ -975,6 +975,21 @@ makes the next phase the open phase: its `startHead` is recorded as the current
 HEAD (`state.record_phase_start_head`, written once), and its tasks are then
 scheduled. The last phase has no gate and no record (§4.1).
 
+**No worker exit reaches the final review past a closed gate (PRD v0.37
+requirement B.7, #313).** While a gate before the last phase is not `passed`,
+each `worker -> review` edge in `transitions.TABLE["worker"]` --
+`verdict_ready`, `blocked_with_failures`, `doomed_plan_unverifiable`,
+`petition_held_no_task_bound` and `unsatisfiable_and_nothing_left` --
+dispatches the phase review of the open phase (`_run_phase_review`, scope
+`"phase"`) instead of the final review, and the dispatch carries the edge's own
+reason as `edge` on `phase_gate.due` and in the iteration's `meta.json`. The
+loop then stays in `worker` (the redirect takes no `review` transition, and the
+final review is not run). `LoopSupervisor._open_gate_before_last` answers
+whether the redirect applies: it is `None` on a plan without phases and when the
+open phase is the last. `stagnation_exhausted` is not redirected: a stagnant
+approach is still archived and replanned, phased or not, and the absorption
+cap's forced verify (`taskAbsorptionStreak`) is unchanged.
+
 | an approach ends because | archived | composite PRD rewritten |
 |---|---|---|
 | `planning` produced no tasks | no | no |
@@ -1297,6 +1312,16 @@ returns `[]` the instant anything is actionable, and such a task is always
 this iteration's `assigned_task_id` under `scheduler.select_next_task()`'s
 own priority order, making the claim structurally invalid instead) reaches
 the ordinary ladder exactly as before this task.
+
+**A closed gate before the last phase refuses `plan_complete` (PRD v0.37
+requirement B.6, #313).** On a plan with `phases`, `_apply_worker_plan_complete_report()`
+also refuses the claim while the open phase (`state.earliest_open_phase_id`) is a
+phase before the last, i.e. while any gate before the last phase is not `passed`,
+exactly as it refuses one with an open task. The refusal message names the phase
+(`plan phase '<id>'`) and reaches `enforce_contract`'s re-ask ladder like every
+other semantic refusal. The `blocked_with_failures` route above, and the other
+four `worker -> review` edges, instead dispatch that phase's review (§4.2). A
+plan without `phases`, and a plan whose open phase is the last, are unaffected.
 
 An accepted claim still emits `signal: "COMPLETE"` (surfaces and
 `IterationResult.saw_complete` below both still read it) and ends the
@@ -3057,7 +3082,7 @@ reconstruct the whole run, including its restarts.
 | `repair` | `action`, plus the names/ids involved | appended host-side by `ralphctl repair`, which records only names, never values |
 | `workspace_version_mismatch` | `workspaceVersion`, `engineVersion` | v0.20.1 requirement E.3 (#190/#191, task 017): emitted once per process start, from `LoopSupervisor.__init__`, when the workspace's own recorded `__version__` (`src/ralphd/__init__.py` under the workspace, read as text, never imported) differs from the running engine's -- alerted through the same `self.notifier` path an `operator_escalation` pause already uses (D.1/E.5), never a second channel. Silent (no event, no alert) when the workspace's version literal is unreadable/absent or matches exactly |
 | `notification.escalation_undelivered` | `reason` (the escalating pause's own `reason` string, same vocabulary as `operator_escalation` above) | v0.26 requirement A.4 (task 004, #269): an operator-escalation notification never reached the notifier after `LoopSupervisor._ESCALATION_DELIVERY_MAX_ATTEMPTS` (3) delivery attempts with bounded backoff between them (§4.6). Each attempt still emits its own honest `notification.sent`/`notification.failed` event (task 009, requirement B.1, #197, unchanged); this is the ADDITIONAL, distinct signal that the escalation itself was never delivered at all, so a reader watching only `notification.failed` cannot mistake a transient blip for a pause nobody was ever told about |
-| `phase_gate.due` | `planPhase`, `approach`, `round`, `startHead` | PRD v0.37 requirement B.5/C.1 (#313): a phase before the last became due and its phase review is dispatched; the phase's gate reads `reviewing` from this event until the verdict is applied. Never emitted for the last phase or on a plan without phases |
+| `phase_gate.due` | `planPhase`, `approach`, `round`, `startHead`, `edge` (only when a `worker -> review` edge sent the exit here, §4.2) | PRD v0.37 requirement B.5/C.1 (#313): a phase before the last became due and its phase review is dispatched; the phase's gate reads `reviewing` from this event until the verdict is applied. Never emitted for the last phase or on a plan without phases |
 | `phase_gate.passed` | `planPhase`, `approach`, `round`, `records`, `nextPhase` | PRD v0.37 requirement C.4 (#313): a `verified` phase review set the gate `passed`; `records` are the two `artifacts/phase-reviews/` paths just written and `nextPhase` is the phase that is now the open one. Never emitted for the last phase |
 | `approach.cure_pass` | `approach`, `curePasses`, `taskIds`, `findings`, `blockingBefore`, `blockingAfter`, `passNumber` | a `rejected` review whose blocking findings are all curable took the cure-pass edge (v0.18 requirement C.1, #141) rather than an ordinary replan -- `taskIds` is `state.insert_cure_tasks`'s own return value verbatim: the appended cure tasks, plus (v0.20 requirement E.3, #167, task 032) one re-take task id per `invalidates` path with no existing record task and no re-take task already appended for that path in this approach (#209 defect 3: a path that already has one names that SAME id again, re-opened at the new cure's tree, never a duplicate row), plus the ids of any lane-verification/lane-record task pair `insert_cure_tasks` re-opened instead (a path that IS the plan's own final lane-evidence record -- and, since the same defect, a task the engine itself authored, `origin: "review-cure"`, is never recognised as that record nor as its verification step, so a later pass no longer re-opens an earlier pass's landed cure task; #209 defect 3's RESIDUAL makes it not always a pair -- a lane-record id can be named with NO verification id beside it, when every one of that record's own evidence steps is declared `tasks[].orderingOnly`, and then the cure task joins the RECORD's `dependsOn` rather than a verification step's while the declared step keeps its terminal status and is not named at all) -- `findings` the blocking findings they were appended for, `curePasses`/`passNumber` are the same new per-approach count (`passNumber` added by v0.20 requirement E.1, #167, task 030, naming which of the approach's own cure rounds this is — bounded by `JobConfig.cure_pass_ceiling`, job.yaml key `cure_pass_ceiling`, default 3, plus the approach's `cureRoundTopUps` entry, one count both cure channels draw on since v0.36 requirement C.2 (a run-wide budget across both channels from v0.21 requirement A.2, #192, task 002, the module-level `CURE_PASS_CEILING` (3) literal before it)), and `blockingBefore`/`blockingAfter` (also task 030) are the blocking clause sets (sorted, by `clause`) the immediately preceding granted pass recorded and this pass itself recorded -- `blockingBefore` is `[]` on an approach's first pass. **Since v0.23 requirement B.4 (task 008, #221), this snapshot is no longer everything this pass put into motion, permanently**: a record/verification pair named here because the walk re-opened it on the finding's `invalidates` prediction can be un-reopened AFTER this event was written, once every cure task that shared its `preCureHeads` baseline reaches `completed`/`validated` and their combined diff never touches the record's cited path (`task.un_reopened`, `source: "cure-reconciliation"`) -- so a reader reconstructing "what is still pending because of this pass" from `taskIds` alone, without also reading the later event stream for a matching `task.un_reopened`, can overcount |
 | `task.criteria_repaired` | `taskId`, `oldCriteria`, `newCriteria`, `lints`, `source` (`"plan-ingestion"` \| `"cure-insertion"`), plus `hat`/`attempt` on the plan-ingestion writer | #209 defect 1: one of the two LEXICAL ingestion lints (`unenumerated-quantifier`, `clause-count-overrun`) had already computed a lossless, lint-clean rewrite of the text it objected to, and the harness APPLIED it (`plan_ingestion.repair_criteria`) instead of refusing the whole proposal and re-asking the hat. Two writers, one event name and a `source` field naming which acted (the same shape `task.dependency_edge_rejected` uses): `"plan-ingestion"` for a planner's own `successCriteria`, pre-pass, emitted per attempt whether or not some other lint then refused the same proposal; `"cure-insertion"` for a curable finding's `cured_when` at the point `state.insert_cure_tasks` turns it into a cure task's criteria. Never emitted when the computed rewrite is one of the two ladder fallback constants -- those are advice and one of them replaces the whole criterion, so the plain refusal stands instead |
