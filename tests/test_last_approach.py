@@ -872,7 +872,10 @@ def test_the_worker_to_paused_stagnation_edge_is_retired_in_both_variants():
                    transitions.successors("worker", vigilant)}
         assert by_guard["stagnation_exhausted"] == "replan"
         assert "stagnation_last_approach" not in by_guard
-        assert "paused" not in by_guard.values()
+        # The only `worker -> paused` edge left is the phase gate's own
+        # operator park (v0.37 D.3); no stagnation guard leads to `paused`.
+        paused_guards = {g for g, t in by_guard.items() if t == "paused"}
+        assert paused_guards <= {"phase_gate_operator_input_needed"}
 
 
 def test_the_paused_to_worker_resume_edge_is_declared_in_both_variants():
