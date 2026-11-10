@@ -553,6 +553,21 @@ approach segment is omitted entirely (it used to read `approach None`).
 `--json` always carries both raw numbers, `approach` and `maxApproaches`,
 the latter `null` when unknown.
 
+On a plan with `phases`, a `plan:` line names the active plan phase
+(PRD v0.37 F.3, #313): `plan:      phase 2/3 Wiring · gate closed`. The phase is
+the earliest one whose gate is not `passed` (the last phase once every earlier
+gate has passed), `2/3` is its 1-based position over the phase count, and the
+gate is that phase's gate state: `closed`, `reviewing` (its phase review is
+running) or `passed`. A plan without phases prints no such line. `--json`
+carries `planPhase` -- `{"id", "title", "index", "count", "gate"}` on a phased
+plan and an explicit `null` otherwise -- on the live and on-disk fallback
+paths alike, the same object `GET /status` and `status.json` carry. The gate's
+moves are also on the event stream: `phase_gate.due` (the phase review was
+dispatched), `phase_gate.passed` (the gate opened) and `phase_gate.rejected`
+(a rejection took the cure rung) each carry `planPhase`, `approach` and
+`round`, and `phase_gate.rejected` also carries `blockingFindings`, the
+blocking-finding count.
+
 A `model:` line names the model the run is actually talking to (task 012, issue
 #14) — the id **pi resolved**, as observed in its own message stream, not the
 ref the operator asked for (which is `null` whenever nothing was pinned):

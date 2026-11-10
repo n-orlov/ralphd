@@ -225,6 +225,9 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         # and `tasksStale`/`tasksSource` say which happened.
         s["tasks"] = tasks_read.counts
         s.update(tasks_read.contract)
+        # v0.37 F.3: the active plan phase, read from the same plan the task
+        # counts came from; null on a plan with no phases.
+        s["planPhase"] = tasks_read.plan_phase
         pending = len(run.pending_steering())
         consumed = len(list(run.steering_dir.glob(STEERING_GLOB))) - pending
         s["steering"] = {"pending": pending, "consumed": consumed}

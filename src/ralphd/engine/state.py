@@ -3202,6 +3202,9 @@ PHASE_GATE_CLOSED = "closed"
 PHASE_GATE_REVIEWING = "reviewing"
 
 
+_MISSING = object()
+
+
 def plan_phase_ids(data: dict) -> list[str]:
     """The ids of `data`'s `phases`, in plan order; `[]` for an unphased
     plan (the one fact every phase rule below keys on)."""
@@ -3231,6 +3234,22 @@ def earliest_open_phase_id(data: dict) -> str | None:
                 and p.get("gate") != PHASE_GATE_PASSED):
             return p["id"]
     return last_phase_id(data)
+
+
+def plan_phase_status(data: dict) -> dict | None:
+    """PRD v0.37 F.2: the `planPhase` object `status.json`, `GET /status` and
+    `ralphctl status` carry -- `{id, title, index, count, gate}` for the
+    active phase (the earliest phase whose gate is not `passed`, else the
+    last phase; `index` is 1-based, `gate` is that phase's gate state) --
+    and `None` (published as `planPhase: null`) for a plan with no phases."""
+    ids = plan_phase_ids(data)
+    pid = earliest_open_phase_id(data)
+    if not ids or pid is None:
+        return None
+    entry = phase_entry(data, pid) or {}
+    return {"id": pid, "title": entry.get("title"),
+            "index": ids.index(pid) + 1, "count": len(ids),
+            "gate": entry.get("gate")}
 
 
 def phase_is_due(data: dict, phase_id: str | None) -> bool:
@@ -4422,6 +4441,13 @@ class TasksRead:
     @property
     def counts(self) -> dict:
         return task_counts(self.tasks)
+
+    @property
+    def plan_phase(self) -> dict | None:
+        """v0.37 F.2: the `planPhase` object of this read's plan (`None` on a
+        plan with no phases), the one value `GET /status` and the CLI's
+        on-disk fallback both publish."""
+        return plan_phase_status(self.doc)
 
     @property
     def failure_kinds(self) -> dict:
@@ -11070,6 +11096,14 @@ class RunDir:
         """
         privsep.write_protected_tasks_json(
             self.protected_tasks_file, self.tasks_file, data)
+        # PRD v0.37 F.2: `status.json`'s `planPhase` follows the plan --
+        # every gate move and every new plan is a `write_tasks`, so the sync
+        # lives here. Written only when it changed and only into a status
+        # file that exists (a run dir the engine has not started has none).
+        if self.status_file.is_file():
+            phase = plan_phase_status(data)
+            if self.read_status().get("planPhase", _MISSING) != phase:
+                self.update_status(planPhase=phase)
 
     def read_tasks(self) -> dict:
         """The tasks.json payload, via the hardened read path (task 002/#15):
