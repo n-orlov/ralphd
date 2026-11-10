@@ -9201,6 +9201,13 @@ class LoopSupervisor:
                 return ("advance", "replan", "empty_plan")
             self.run.update_status(planningDeathSignature=None,
                                     planningDeathDetail=None)
+            # PRD v0.37 requirement B.3: the first phase's `startHead` is the
+            # workspace HEAD at the end of planning (planning may itself have
+            # committed), recorded before the plan is first written.
+            state.record_phase_start_head(
+                ingestion.tasks_doc,
+                state.earliest_open_phase_id(ingestion.tasks_doc),
+                self._workspace_head_sha())
             self.run.write_tasks(ingestion.tasks_doc)
             # Task 022 (requirement F.1, #222): `PlanIngestionResult.
             # warnings` was accumulated (`normalize_task_tiers`'s
@@ -10655,7 +10662,8 @@ class LoopSupervisor:
             # read as "progress" for the stagnation counter just because
             # the claim moved.
             selected = scheduler.select_next_task(
-                tasks_before.get("tasks", []))
+                tasks_before.get("tasks", []),
+                phases=tasks_before.get("phases"))
             # Task 002 (#278 B.1/B.4/B.7): the router is asked for the
             # pending-step pick, and ONLY the pending-step pick -- never
             # the validation-failed or in-progress steps just above
@@ -10674,7 +10682,8 @@ class LoopSupervisor:
                     and selected.get("status", "pending") == "pending"
                     and self.cfg.route_task_selection):
                 pending_candidates = scheduler.pending_candidates(
-                    tasks_before.get("tasks", []))
+                    tasks_before.get("tasks", []),
+                    phases=tasks_before.get("phases"))
                 if len(pending_candidates) >= 2:
                     selected = await self._route_task_selection(
                         pending_candidates, selected)

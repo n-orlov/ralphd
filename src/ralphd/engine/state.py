@@ -3192,6 +3192,7 @@ def _emit_rejected_dependency_edges(run: "RunDir", task_id: str,
 # document (`RunDir.read_tasks()`), never the run, so each insertion path
 # resolves its phase from the same one read it already holds.
 PHASE_GATE_PASSED = "passed"
+PHASE_GATE_CLOSED = "closed"
 
 
 def plan_phase_ids(data: dict) -> list[str]:
@@ -3223,6 +3224,55 @@ def earliest_open_phase_id(data: dict) -> str | None:
                 and p.get("gate") != PHASE_GATE_PASSED):
             return p["id"]
     return last_phase_id(data)
+
+
+def phase_is_due(data: dict, phase_id: str | None) -> bool:
+    """PRD v0.37 requirement B.4: a phase is DUE when its gate is `closed`
+    and every one of its tasks has a status in `TASK_TERMINAL_STATUSES`.
+    `awaiting-validation` and `validation-failed` are not terminal, so a task
+    whose verify reached no verdict holds the gate closed until it is
+    re-verified. A phase whose tasks `failed`, were `skipped` or
+    `petitioned` is still due: the reviewer judges the phase, and a failed
+    task does not reject it automatically. A phase with no task is never due
+    (nothing to judge), and neither is an unknown phase id or an unphased
+    plan. Whether the phase is the last one (no gate of its own) is the
+    dispatcher's rule, not this one's."""
+    phases = data.get("phases") if isinstance(data, dict) else None
+    if not isinstance(phases, list) or phase_id is None:
+        return False
+    phase = next((p for p in phases
+                  if isinstance(p, dict) and p.get("id") == phase_id), None)
+    if phase is None or phase.get("gate") != PHASE_GATE_CLOSED:
+        return False
+    own = [t for t in data.get("tasks", [])
+           if isinstance(t, dict) and t.get("phase") == phase_id]
+    return bool(own) and all(task_is_terminal(t) for t in own)
+
+
+def due_phase_id(data: dict) -> str | None:
+    """The open phase's id when it is due (`phase_is_due`), else `None`. Only
+    the open phase can be due: every earlier gate has passed and a later
+    phase's tasks are never scheduled while it is open."""
+    open_id = earliest_open_phase_id(data)
+    return open_id if phase_is_due(data, open_id) else None
+
+
+def record_phase_start_head(data: dict, phase_id: str | None,
+                            head: str | None) -> bool:
+    """PRD v0.37 requirement B.3: record `head` (the workspace HEAD) as
+    `phase_id`'s `startHead`, in `data` (the caller writes it back through
+    `RunDir.write_tasks`). Written once: a phase that already has a
+    `startHead`, an unknown phase and an unreadable HEAD (`None`) leave
+    `data` untouched. True when it wrote."""
+    if not head:
+        return False
+    for p in data.get("phases") or []:
+        if isinstance(p, dict) and p.get("id") == phase_id:
+            if p.get("startHead"):
+                return False
+            p["startHead"] = head
+            return True
+    return False
 
 
 def _task_phase(tasks: list, task_id) -> str | None:

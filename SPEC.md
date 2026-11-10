@@ -571,7 +571,7 @@ and detached outlives it — the daemon has no parentage notion to fall back on.
 | `src/ralphd/engine/loop.py` | `LoopSupervisor`: the whole loop. Approaches and composite PRDs, per-phase prompt assembly, budget accounting and refunds, vigilant verification, criteria fingerprinting, the stagnation and instant-failure guards, the infra-retry wrapper and outage-budget episode clock, the budget-hold (`exhausted`) freeze path, steering application, pause/interrupt/abort/retry gates, the live `tasks.json` poller, and reflection. |
 | `src/ralphd/engine/transitions.py` | The declared FSM table (§4, task 008/014): states, legal transitions, guard-predicate names and per-hat entries as one data structure, with vigilant and non-vigilant as two variants of it (`VIGILANT_DELTA`), plus `TransitionExecutor` — the one code path that walks the table and refuses an illegal move — and the router's declared per-state fallback (`ROUTER_FALLBACK`). |
 | `src/ralphd/engine/tiers.py` | Task 012 (#68 half 2, requirements E/J): the three-tier vocabulary (`trivial < normal < hard`) with `escalate_tier`/`step_down_tier` as the only ordering moves, and `resolve_bundle` — the pure `(hat, effective_tier, host_map) -> HatBundle` resolver, no I/O, no clock, never touching `transitions.TABLE`. `default_host_map` is the one place a `JobConfig` is consulted, delegating to `JobConfig.bundle_for` rather than opening a second model-resolution pathway. Applied at the single dispatch call site in `loop.py` (task 016), never inside the transition table itself. |
-| `src/ralphd/engine/scheduler.py` | Task 115 (#60, requirement C/F): the pure task-selection algorithm (`select_next_task()`) -- validation-failed first, then in-progress, then the `dependsOn`/`priority`-aware pending scheduler, else `None` -- mirroring `worker.md`'s documented pick rule. Wired into `loop.py`'s `_step_worker` (task 116): the harness runs it and writes the pre-spawn `in-progress` claim itself, before the worker subprocess ever starts (§4.1). |
+| `src/ralphd/engine/scheduler.py` | Task 115 (#60, requirement C/F): the pure task-selection algorithm (`select_next_task()`) -- validation-failed first, then in-progress, then the `dependsOn`/`priority`-aware pending scheduler, else `None` (the pending step gated on the open plan phase when given the `phases` list, v0.37) -- mirroring `worker.md`'s documented pick rule. Wired into `loop.py`'s `_step_worker` (task 116): the harness runs it and writes the pre-spawn `in-progress` claim itself, before the worker subprocess ever starts (§4.1). |
 | `src/ralphd/engine/router.py` | The harness's single constrained question for a state whose next legal edge is not decidable from disk alone (task 018): deterministic-first (never asks for a state with ≤1 legal edge), one JSON question validated against the table and a schema, bounded by a timeout, falling back to the table's declared choice rather than ever accepting an illegal transition. |
 | `src/ralphd/engine/contracts.py` | The one validator every hat response contract goes through (task 009, fact 16/#65): per-hat JSON schema declared beside its table entry, `validate_payload()`/`validate_against()` as the sole check, so there is exactly one re-derivation of "does this payload match its schema" in the whole codebase. |
 | `src/ralphd/engine/hat_tools.py` | Task 033 (operator-inserted scope, #114): the steer hat's tool surface WIRED LIVE. `STEER_WIRED_TOOLS` is the one declaration of what the hat can call -- `state.STEER_HAT_TOOLS`'s four entries (never re-listed here) plus `context-read`/`context-write` over the run-context files -- and `extension_source()` renders it into the generated `pi` extension (`pi.registerTool()` per entry, each declaring via `parameters_source()` exactly the top-level keys of its own documented usage payload -- the schema the live tool accepts is the payload `prompts/steer.md` tells the hat to send, and the call is forwarded verbatim) the steer iteration alone is launched with (`LoopSupervisor._hat_extensions` -> `PiRunner.run`'s `-e`), so the registered set cannot drift from the wired set. `SteerToolBroker` is the only thing that EXECUTES a call, in the engine process (the uid that owns `tasks.json` under the #60 privsep boundary), over a request/response spool under `<run>/hat-tools/` that the hat writes into and reads answers from: every applier guarantee therefore holds unchanged (`state.apply_task_status_change` for a `status` key with its documented refusal diagnostics, `origin=steer`/`status=pending` on an insert, a delete refused while another task's `dependsOn` names the target), `tasks.json` is readable but never writable through `context-write`, and every served call emits `steer.tool_call` while every write also emits `steer.context_write` naming the file and the steering entry that caused it. `call()`/`main()` are the hat-side client the extension shells out to (`python -m ralphd.engine.hat_tools <tool>`), so the protocol is written down exactly once; a call nothing serves times out into an answer, never a hang. The same tools run on the `claude-code` harness: `json_schema()` renders each tool's parameters as JSON Schema from the same `_TOOL_PARAMS` declaration, `sdk_tool_specs()` adds the `extension_source` description, `LoopSupervisor._hat_tool_names` hands the live broker's names to the runner, and the wrapper serves them as in-process SDK tools (`mcp__ralphd__<name>`) whose handlers relay through the same spool and broker, so the scope per hat and every applier guarantee are the same on both harnesses. A `codex` hat reaches the same tools through the stdio MCP relay `ralphd.harness.codex_mcp` (`[mcp_servers.ralphd]` in the wrapper's `config.toml`), which relays through `hat_tools.call` identically. |
@@ -774,6 +774,24 @@ absent/malformed answer, or one that fails `router.TASK_SELECTION_SCHEMA`),
 `"non_candidate_id"` (a well-formed answer naming a task id outside the
 candidate set) and `"timeout"` (no answer within `router_timeout_s`).
 
+**The open plan phase gates task selection (PRD v0.37 requirement B, #313).**
+On a phased plan (§5.3 `phases[]`) the **open phase** is the earliest phase
+whose gate is not `passed` (the last phase once every earlier gate has passed).
+`engine.scheduler.pending_candidates(tasks, phases=...)` and `select_next_task(
+tasks, phases=...)` take the `tasks.json` `phases` list as an optional argument
+(`_step_worker` passes it on every pass) and never return a task of a phase
+**later** than the open phase, however satisfied its `dependsOn` and however
+high its `priority`, while the earlier gate is `closed` or `reviewing`; it is
+returned once that gate is `passed`. Absent or empty `phases` means no gating.
+The gate is this argument, never a synthetic `dependsOn` edge. Only the pending
+step is gated: the `validation-failed` and `in-progress` steps return their
+task whatever its phase, because a claimed task is work already under way. The
+router is shown only `pending_candidates`, so it never sees a later-phase task.
+A task of a phase *before* the open one (a passed phase whose task an
+`insert_cure_tasks` `invalidates` walk re-opened) is schedulable at once as
+part of the open phase's work, and it never closes its gate again: a gate that
+has `passed` stays `passed`.
+
 The `plan_review` entry is the router's other routed state:
 `LoopSupervisor._route_with_router` asks `router.decide()` over
 `plan_review`'s real peer-gate edges (`transitions.successors("plan_review",
@@ -908,6 +926,15 @@ An *approach* is one full attempt at the PRD: plan, work, review. Approaches
 run sequentially from 1 to `max_approaches` (`--max-approaches`, default `3`)
 and **share one iteration budget** — approaches bound how many times the job
 may start over, not how much work it may do.
+
+**The first phase's start head (PRD v0.37 requirement B.3, #313).** On a phased
+plan `startHead` is the workspace HEAD recorded when a phase becomes the open
+phase (`state.record_phase_start_head`, written once). The first phase's is the
+HEAD at the end of planning, recorded by `_step_planning` in the same write that
+first stores the accepted plan, so it includes anything the planning iteration
+itself committed. A resumed run whose planning was skipped keeps the value on
+disk, and an unreadable HEAD (no git) leaves `startHead` `null`. A plan with no
+`phases` records nothing.
 
 | an approach ends because | archived | composite PRD rewritten |
 |---|---|---|
@@ -1354,6 +1381,21 @@ because it was already verified" from "still `completed` because the previous
 process was killed between the worker iteration and its verify iteration"; the
 disk record survives crash and resume, so a missed verification is never skipped
 forever.
+
+**A plan phase is due when all its tasks are terminal (PRD v0.37 requirement
+B.4, #313).** On a phased plan `state.phase_is_due(data, phase_id)` is true when
+the phase's gate is `closed` and every one of its tasks has a status in
+`TASK_TERMINAL_STATUSES` (`validated`, `completed`, `failed`, `skipped`,
+`petitioned`, `superseded`); `state.due_phase_id` names the open phase when it
+is due. The rule reads the status vigilant mode leaves behind, so it holds in
+both variants: with `vigilant: true` a finished task is `validated`, and a task
+still `awaiting-validation` or `validation-failed` is not terminal, so a task
+whose verify reached no verdict (#45) holds the gate closed until it is
+re-verified; with vigilant off (the default) a finished task is `completed` and
+the phase is due as soon as every task is. A phase whose tasks `failed`, were
+`skipped` or `petitioned` is still due: the phase review judges the phase, and a
+failed task does not reject it automatically. A phase whose gate is `reviewing`
+or `passed`, a phase with no task, and an unphased plan are never due.
 
 **The gate warns when it goes quiet (task 026, requirement N carried from the
 closed #29).** A verified-task record that wrongly claims a completed task is
