@@ -251,6 +251,151 @@ def test_a_phase_peer_gate_with_no_verdict_is_an_infra_fault_never_a_rejection_o
     _no_verdict(tmp_path, "verdict_gate")
 
 
+# -- D.5 a judge that crashes or times out has no verdict --------------------------
+
+def _crashed(sup, prompt=""):
+    r = IterationResult(exit_code=1)
+    r.final_text = ""
+    r.duration_s = 5.0
+    r.usage = {"input": 10, "output": 4, "totalTokens": 14}
+    return r
+
+
+def _timed_out(sup, prompt=""):
+    r = IterationResult(exit_code=None, timed_out=True)
+    r.final_text = ""
+    r.duration_s = 3600.0
+    r.usage = {"input": 10, "output": 4, "totalTokens": 14}
+    return r
+
+
+def _counting(hat, calls):
+    def counted(sup, prompt=""):
+        calls.append(prompt)
+        return hat(sup, prompt)
+    return counted
+
+
+def _cut_short_run(tmp_path, judge, hat, reason):
+    calls: list[str] = []
+    sup = _sup(tmp_path, judge, hat=_counting(hat, calls),
+               infra_outage_budget_s=0.0, iterations=50)
+    retries = sup.cfg.judge_retry_max
+    parked = []
+    real = sup._park_judge_no_verdict
+
+    async def spy(hat_name, approach, why):
+        parked.append((hat_name, why))
+        return await real(hat_name, approach, why)
+
+    sup._park_judge_no_verdict = spy
+    outcome = asyncio.run(sup._run_phase_review("one"))
+    assert outcome == ("tail",)
+    # the first attempt plus exactly the bounded judge retries, never the
+    # review-interrupted self-loop spending the job's iterations
+    assert len(calls) == 1 + retries
+    assert len(_events(sup, f"{judge}.retry")) == retries
+    assert parked == [(judge, reason)]
+    assert _events(sup, "review_interrupted") == []
+    (fault,) = _events(sup, f"{judge}.no_verdict")
+    assert fault["reason"] == reason
+    assert (sup.run.read_status()["gateRejectionEnding"]
+            == state.GATE_REJECTION_ENDING_NO_VERDICT)
+    # no rejection, no pass: the gate stays closed
+    assert _gate(sup) == "closed"
+    _no_cure_was_taken(sup)
+    assert _events(sup, "phase_gate.passed") == []
+    assert sup.run.read_status().get("inputQuestion") is None
+    assert sup._finish_tail_unverified() == "failed"
+    assert sup.run.read_status()["verdict"] == "unreviewed"
+    return sup
+
+
+def test_a_phase_judge_that_crashes_gets_the_judge_retries_then_the_no_verdict_park(tmp_path):
+    for judge in ("review", "verdict_gate"):
+        _cut_short_run(tmp_path / judge, judge, _crashed, "judge_crashed")
+
+
+def test_a_phase_judge_that_times_out_gets_the_judge_retries_then_the_no_verdict_park(tmp_path):
+    for judge in ("review", "verdict_gate"):
+        _cut_short_run(tmp_path / judge, judge, _timed_out, "judge_timed_out")
+
+
+def test_a_phase_judge_that_crashes_once_and_then_answers_is_read_normally(tmp_path):
+    for judge in ("review", "verdict_gate"):
+        attempts = []
+
+        def flaky(sup, prompt="", judge=judge, attempts=attempts):
+            attempts.append(1)
+            if len(attempts) == 1:
+                return _crashed(sup, prompt)
+            return _verified(sup, prompt)
+
+        sup = _sup(tmp_path / judge, judge, hat=flaky,
+                   infra_outage_budget_s=0.0)
+        assert asyncio.run(sup._run_phase_review("one")) is None
+        assert _gate(sup) == "passed"
+        assert len(_events(sup, f"{judge}.retry")) == 1
+        assert _events(sup, f"{judge}.no_verdict") == []
+
+
+def test_a_phase_judge_that_crashes_and_then_times_out_is_a_no_verdict_with_the_last_reason(tmp_path):
+    for judge in ("review", "verdict_gate"):
+        attempts = []
+
+        def mixed(sup, prompt="", attempts=attempts):
+            attempts.append(1)
+            return (_crashed if len(attempts) == 1 else _timed_out)(
+                sup, prompt)
+
+        _cut_short_run(tmp_path / judge, judge, mixed, "judge_timed_out")
+
+
+def test_a_cut_short_phase_judge_spends_no_iterations_while_the_outage_budget_waits(tmp_path):
+    sup = _sup(tmp_path, "review", hat=_crashed, infra_outage_budget_s=0.0,
+               iterations=50)
+    asyncio.run(sup._run_phase_review("one"))
+    assert sup.iterations_used_charged <= 1
+
+
+def test_an_operator_interrupt_of_a_phase_review_keeps_the_review_interrupted_handling(tmp_path):
+    calls = []
+
+    def interrupted_then_verified(sup, prompt=""):
+        calls.append(1)
+        if len(calls) == 1:
+            r = IterationResult(exit_code=None, interrupted=True)
+            r.final_text = ""
+            r.duration_s = 1.0
+            return r
+        return _verified(sup, prompt)
+
+    sup = _sup(tmp_path, "review", hat=interrupted_then_verified,
+               infra_outage_budget_s=0.0)
+    assert asyncio.run(sup._run_phase_review("one")) is None
+    assert len(calls) == 2
+    assert _events(sup, "review.retry") == []
+    assert _events(sup, "review.no_verdict") == []
+    assert _gate(sup) == "passed"
+
+
+def test_a_cut_short_review_outside_a_phase_scope_keeps_the_review_interrupted_loop(tmp_path):
+    calls = []
+
+    def crashed_then_verified(sup, prompt=""):
+        calls.append(1)
+        return (_crashed if len(calls) == 1 else _verified)(sup, prompt)
+
+    sup = _sup(tmp_path, "review", hat=crashed_then_verified,
+               infra_outage_budget_s=0.0)
+    sup._phase_review_scope = None
+    result = asyncio.run(sup._run_review_iteration(1))
+    assert result is not None and len(calls) == 2
+    assert sup._review_no_verdict is None
+    assert _events(sup, "review.retry") == []
+    assert sup._phase_judge_cut_short(_crashed(sup)) is None
+
+
 # -- C.3 a completed verdict is persisted before any later judge can lose it ------------
 
 REVIEW_RECORDS = ["artifacts/phase-reviews/one-r1-review.json",

@@ -1356,7 +1356,10 @@ under the unchanged outage budget (v0.36 requirement F.3).
 `verdict_gate.no_verdict` or `review.no_verdict` event is emitted (a plan
 phase's judges also take this route for a reply the contract ladder left
 unreadable: `reason` `"unparseable_reply"` for the phase-scoped peer gate,
-`"unreadable_verdict"` or `"unusable_findings"` for the phase review), and an
+`"unreadable_verdict"` or `"unusable_findings"` for the phase review; a phase
+judge the engine cut short by a crash or the full iteration timeout reads
+`"judge_crashed"` or `"judge_timed_out"` after its `judge_retry_max` retries),
+and an
 `infra_retry` event (`judgeFault: true`) starts an ordinary infra backoff
 (`health: "degraded"`, `infraWait`, woken early by `POST /retry`); after it
 the hat that had no verdict is dispatched again as a fresh first attempt.

@@ -10183,6 +10183,8 @@ class LoopSupervisor:
         "unparseable_reply": "no verdict: unparseable reply",
         "unreadable_verdict": "no verdict: the verdict claim is unreadable",
         "unusable_findings": "no verdict: the findings channel is unusable",
+        "judge_crashed": "no verdict: the judge crashed",
+        "judge_timed_out": "no verdict: the judge timed out",
     }
 
     def _reset_judge_fault_episode(self) -> None:
@@ -10367,6 +10369,11 @@ class LoopSupervisor:
         empty. The caller decides whether a retry is still available."""
         if result is None:
             return False, None, None
+        cut_short = self._phase_judge_cut_short(result)
+        if cut_short is not None:
+            # PRD v0.37 D.5: a phase-scoped peer gate the engine cut short
+            # (a crash, the full iteration timeout) has no reply to repair.
+            return False, None, cut_short
         if getattr(result, "output_truncated", False) and not (
                 result.final_text or "").strip():
             return False, None, "output_truncated"
@@ -13713,7 +13720,11 @@ class LoopSupervisor:
             # task's tier -- `state.run_level_verify_tier()` takes no task
             # argument on purpose.
             result = await self._run_one_review_dispatch()
-            if not self._review_interrupted(result):
+            self._review_no_verdict = None
+            if (not self._review_interrupted(result)
+                    or self._phase_judge_cut_short(result)
+                    and not self._phase_timeout_checkpointed(
+                        result, approach)):
                 result, self._review_no_verdict = (
                     await self._judge_reply_with_retry(
                         "review", result, self._read_review_reply,
@@ -13726,17 +13737,50 @@ class LoopSupervisor:
                     self._review_no_verdict = None
                 if not self._review_interrupted(result):
                     return result
+                if self._review_no_verdict:
+                    # D.5: a phase judge that crashed or timed out on every
+                    # retry has no verdict; the caller parks it.
+                    return result
             self._advance("review", "review", "review_interrupted")
-            if result.timed_out and not self._abort_reason:
-                checkpoint = state.read_review_early_verdict(self.run.root)
-                if (isinstance(checkpoint, dict)
-                        and checkpoint.get("approach") == approach
-                        and checkpoint.get("verdict") in ("verified", "rejected")):
-                    self._review_checkpoint_timeout_not_budget = True
-                    return None
+            if (result.timed_out and not self._abort_reason
+                    and self._phase_timeout_checkpointed(result, approach,
+                                                         any_scope=True)):
+                self._review_checkpoint_timeout_not_budget = True
+                return None
             if not self.budget_left():
                 return None
             await self._gate()
+
+    def _phase_timeout_checkpointed(self, result, approach: int, *,
+                                    any_scope: bool = False) -> bool:
+        """True iff `result` timed out while an early-verdict checkpoint
+        (`record-verdict`) for THIS approach already sits on disk: a decisive
+        verdict is not repaired by asking again (task cure-01-05), so that
+        timeout keeps its salvage and is never a judge retry."""
+        if not result.timed_out or self._abort_reason:
+            return False
+        if not any_scope and self._phase_review_scope is None:
+            return False
+        checkpoint = state.read_review_early_verdict(self.run.root)
+        return (isinstance(checkpoint, dict)
+                and checkpoint.get("approach") == approach
+                and checkpoint.get("verdict") in ("verified", "rejected"))
+
+    def _phase_judge_cut_short(self, result) -> str | None:
+        """PRD v0.37 requirement D.5: inside a phase review's scope, a judge
+        iteration the engine cut short -- a crash (an abnormal exit) or the
+        full iteration timeout (or the startup-window watchdog) -- is a judge
+        with no verdict, not an interruption to ask again until the job's
+        iterations are gone. Returns the no-verdict reason
+        (`judge_timed_out` / `judge_crashed`), or `None` outside a phase
+        scope, for a reply that ran to completion, for an operator's SIGINT
+        (`interrupted`) and while the run is aborting: those keep the
+        `review_interrupted` handling."""
+        if (result is None or self._phase_review_scope is None
+                or self._abort_reason is not None or result.interrupted
+                or not self._iteration_cut_short_by_engine(result)):
+            return None
+        return "judge_timed_out" if result.timed_out else "judge_crashed"
 
     async def _read_review_reply(self, result):
         """One reading of a review iteration's reply for
@@ -13749,7 +13793,14 @@ class LoopSupervisor:
         all empty the reading is `empty_reply`, while a non-empty reply the
         ladder could not repair reads as `review_contract_unrepaired` or
         `review_findings_unusable` (retried the same way, then an infra fault
-        under the outage budget through `_review_contract_fault`)."""
+        under the outage budget through `_review_contract_fault`).
+
+        In a phase review's scope a reply the engine cut short is read as
+        `judge_crashed` / `judge_timed_out` (`_phase_judge_cut_short`), with
+        no contract ladder: there is no reply to repair."""
+        if (result is not None and self._phase_review_scope is not None
+                and self._review_interrupted(result)):
+            return result, self._phase_judge_cut_short(result)
         if (result is not None and not self._review_interrupted(result)
                 and getattr(result, "output_truncated", False)
                 and not (result.final_text or "").strip()):

@@ -952,8 +952,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.37 cure C.5: +9 tests / +0 modules (tests/test_phase_gate_peer_and_
     # resume.py), in both tiers -> fast 8918/562, smoke 7139/435 (the prior
     # ceiling plus the added tests).
-    "fast": {"tests": 8918, "modules": 562},
-    "smoke": {"tests": 7139, "modules": 435},
+    # v0.37 cure D.5: +7 tests / +0 modules (tests/test_phase_gate_ladder.py),
+    # in both tiers -> fast 8925/562, smoke 7146/435 (the prior ceiling plus
+    # the added tests).
+    "fast": {"tests": 8925, "modules": 562},
+    "smoke": {"tests": 7146, "modules": 435},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
