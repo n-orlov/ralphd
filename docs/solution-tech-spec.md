@@ -853,6 +853,16 @@ approach plans its own phases with empty gates, rounds and records. The run
 record gains a `## Plan phases` section (title, gate, rounds, record paths) and
 a phase column in a task listing on phased plans only (SPEC.md §4.2, §11.3).
 
+A plan without phases is unchanged. Plan phases are opt-in: with no `phases` in
+the accepted plan, `tasks.json` has no `phases` key and no task a `phase` key,
+`events.jsonl` has no `phase_gate.*` event, `status.json` `planPhase` is `null`,
+iteration meta has no `planPhase`, the review, verdict-gate, worker and verify
+prompts carry neither `## Phase review` nor `## Earlier phase reviews` and equal
+the prompts built with `phases` absent from the loop's inputs, and
+`select_next_task(tasks)` equals `select_next_task(tasks, phases=None)`. A run
+directory written by 0.36 (mid-worker, `awaiting_input` or `exhausted`) loads on
+0.37 and continues as such a plan (SPEC.md §4.1).
+
 ### Cure passes
 
 Cure passes keep the current approach and insert targeted tasks through

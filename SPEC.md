@@ -650,6 +650,21 @@ approach; the `worker` loop runs while budget remains, ending on an honoured
 least one `failed` task (§5.3), on three consecutive iterations that changed
 nothing, or on exhaustion; `review` then decides the run.
 
+**A plan without phases is unchanged (PRD v0.37 decision 6, #313).** The plan
+phases of §4.2 are opt-in: a plan whose proposal has no `phases` behaves
+exactly as it did before the field existed. Its `tasks.json` has no `phases` key
+and no task a `phase` key; its `events.jsonl` has no `phase_gate.*` event; its
+`status.json` `planPhase` is `null` and its iteration meta has no `planPhase`
+or `scope: "phase"`; its `review`, `verdict_gate`, `worker` and `verify`
+prompts carry neither a `## Phase review` nor an `## Earlier phase reviews`
+section and are byte-for-byte the prompts built with `phases` out of the
+loop's inputs; and `scheduler.select_next_task(tasks)` and
+`select_next_task(tasks, phases=None)` return the same sequence. A run
+directory written by 0.36 -- stopped mid-worker, parked in `awaiting_input`, or
+held `exhausted` -- loads on 0.37 and continues as a plan without phases. The
+guarantee is tested by `tests/test_plan_phases_no_phase_guard.py` and
+`tests/test_plan_phases_036_compat.py`.
+
 **Stop states.** A run that is not working is in exactly one of four states,
 each with one owner: `paused` (the operator paused it; `ralphctl pause`, the
 hub or `POST /pause`; left by `unpause`), `awaiting_input` (the engine is asking

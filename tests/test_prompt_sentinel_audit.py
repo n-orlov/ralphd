@@ -120,6 +120,20 @@ ENUMERATED_ABSENCE_ASSERTIONS: tuple[AbsenceAssertion, ...] = (
         "`## Phase review` section is a phase-scoped context block only "
         "(#313)", ALL),
     AbsenceAssertion(
+        "test_plan_phases_no_phase_guard.py", (119, 166),
+        ("## Phase review", "## Earlier phase reviews"),
+        "the review, verdict-gate, worker and verify prompts of a plan "
+        "without phases: both sections are phase-gate context blocks "
+        "(`_phase_review_context`, `_earlier_phase_reviews_context`) that "
+        "render only for a phase-scoped dispatch or the final judges of a "
+        "phased plan (#313)", ALL),
+    AbsenceAssertion(
+        "test_plan_phases_036_compat.py", (124,),
+        ("## Phase review", "## Earlier phase reviews"),
+        "every prompt a 0.37 engine builds while continuing a 0.36 run "
+        "directory (a plan without phases): neither phase-gate section "
+        "renders (#313)", ALL),
+    AbsenceAssertion(
         "test_confirmation_review_section.py", (157, 189),
         ("## Confirmation review",),
         "the review prompt: `LoopSupervisor._confirmation_review_context` "
