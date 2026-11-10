@@ -284,6 +284,12 @@ def _read_workspace_version(workspace: Path) -> str | None:
     return match.group(1) if match else None
 
 
+# Default of `LoopSupervisor._latest_granted_cure_pass`'s `plan_phase`: "the
+# scope of the review being built" (PRD v0.37 D.4), distinct from an explicit
+# `None` ("the passes that carry no `planPhase`").
+_SCOPE_PHASE = object()
+
+
 class LoopSupervisor:
     def __init__(self, cfg: JobConfig, run: RunDir, workspace: Path):
         self.cfg = cfg
@@ -14353,6 +14359,8 @@ class LoopSupervisor:
         held: list[str] = []
         paths: list[str] = []
         head = None
+        cure_blocking: list[dict] | None = None
+        cure_judge = "review"
         try:
             await self._gate()
             self.run.emit("phase", phase="review", approach=approach)
@@ -14375,6 +14383,10 @@ class LoopSupervisor:
                     verdict="verified" if passed else "rejected",
                     payload=payload, start_head=start_head,
                     head_reviewed=head, iteration=self.iterations_used)
+                if not passed:
+                    cure_blocking = self._phase_cure_candidate(
+                        "review", payload)
+                    cure_judge = "review"
                 self._clear_review_channel_files()
             if passed:
                 held = self._phase_pass_blockers(pid)
@@ -14382,8 +14394,9 @@ class LoopSupervisor:
                 # PRD v0.37 requirement C.2: the peer verdict gate runs
                 # after a phase review that passes, with the same `## Phase
                 # review` section in its prompt.
-                passed, peer_paths = await self._run_phase_peer_gate(
-                    pid, round_, start_head)
+                passed, peer_paths, cure_blocking = (
+                    await self._run_phase_peer_gate(pid, round_, start_head))
+                cure_judge = "verdict_gate"
                 paths += peer_paths
                 if passed:
                     head = self._workspace_head_sha()
@@ -14425,11 +14438,96 @@ class LoopSupervisor:
                           nextPhase=nxt)
             return
         state.set_phase_gate(data, pid, state.PHASE_GATE_CLOSED)
+        if cure_blocking:
+            self.run.write_tasks(data)
+            self._take_phase_cure_pass(
+                pid, cure_judge, round_, cure_blocking, edge=edge)
+            return
         self._phase_review_unresolved.add(pid)
         self.run.write_tasks(data)
         self.run.emit("log", level="warning",
                       message=(f"phase review of {pid} did not pass; the "
                                "gate stays closed"))
+
+    def _phase_cure_candidate(self, judge: str,
+                              payload: dict | None) -> list[dict] | None:
+        """PRD v0.37 D.4: the blocking findings a phase rejection cures, or
+        `None` when the rejection does not take the cure rung. It is
+        `ladder.decide` over this verdict's own facts, the same function the
+        final review's and the peer gate's rejections climb: the cure step
+        is returned only when the budget is not spent, not every blocking
+        finding is waived, no blocking finding is `curable: false`, the
+        reviewer did not set `raise_operator_gate` and the approach has a
+        cure round left (`_cure_pass_ceiling_spent`, the allowance the phase
+        cure shares with the final review and the final peer gate). Any
+        other step is the phase ladder's other rungs, not this method's.
+        Read BEFORE the review channel files are cleared."""
+        approach = self._approach
+        review = judge == "review"
+        findings_list = (self._review_findings() if review
+                         else self._gate_findings())
+        if findings_list is None:
+            return None
+        blocking = [f for f in findings_list
+                    if f.get("severity") == "blocking"]
+        curable = (self._review_rejection_curable_ignoring_ceiling(approach)
+                   if review
+                   else self._gate_rejection_curable_ignoring_ceiling(
+                       approach))
+        decision = ladder.decide(
+            budget_left=self.budget_left(), blocking=blocking,
+            waivers=self.run.waiver_entries(), incurable=not curable,
+            reviewer_escalation=self._review_reviewer_requested_operator_gate(
+                payload),
+            rounds_spent=self._cure_pass_ceiling_spent(approach))
+        return blocking if decision.step == ladder.STEP_CURE else None
+
+    def _take_phase_cure_pass(self, pid: str, judge: str, round_: int,
+                              blocking: list[dict], *,
+                              edge: str | None = None) -> list[str]:
+        """PRD v0.37 D.4: the cure rung for a rejected phase. The blocking
+        findings become cure tasks through `state.insert_cure_tasks` IN phase
+        `pid` (`phase=pid`); the pass's `cure-lineage.json` entry carries
+        `planPhase`; one round is counted against the approach on the same
+        counter the final review (`curePasses`) or the final peer gate
+        (`gateCurePasses`) draws on, so a phase cure reduces the rounds left
+        to them; the phase's `rounds` goes up by one; the gate stays
+        `closed`; and `phase_gate.rejected` carries the blocking-finding
+        count. The phase is due again once its cure tasks are terminal, and
+        that re-review is a confirmation review of this phase's pass."""
+        approach = self._approach
+        inserted = state.insert_cure_tasks(
+            self.run, approach, self._unwaived(blocking),
+            pre_cure_head=self._workspace_head_sha(), phase=pid)
+        key = "curePasses" if judge == "review" else "gateCurePasses"
+        status = self.run.read_status()
+        counter = dict(status.get(key) or {})
+        new_count = (self._cure_passes_for_approach(approach)
+                     if judge == "review"
+                     else self._gate_cure_passes_for_approach(approach)) + 1
+        counter[str(approach)] = new_count
+        self.run.update_status(**{key: counter})
+        data = self.run.read_tasks()
+        entry = state.phase_entry(data, pid)
+        if entry is not None:
+            try:
+                rounds = int(entry.get("rounds") or 0)
+            except (TypeError, ValueError):
+                rounds = 0
+            entry["rounds"] = rounds + 1
+        state.set_phase_gate(data, pid, state.PHASE_GATE_CLOSED)
+        self.run.write_tasks(data)
+        self.run.emit(
+            "approach.cure_pass" if judge == "review"
+            else "approach.gate_cure_pass",
+            approach=approach, curePasses=new_count, taskIds=inserted,
+            findings=blocking, planPhase=pid)
+        extra = {"edge": edge} if edge else {}
+        self.run.emit("phase_gate.rejected", planPhase=pid,
+                      approach=approach, round=round_, judge=judge,
+                      blockingFindings=len(blocking), taskIds=inserted,
+                      **extra)
+        return inserted
 
     def _phase_pass_blockers(self, pid: str) -> list[str]:
         """PRD v0.37 requirement C.4: what keeps a PASSING phase review from
@@ -14459,16 +14557,16 @@ class LoopSupervisor:
 
     async def _run_phase_peer_gate(
             self, pid: str, round_: int,
-            start_head) -> tuple[bool, list[str]]:
+            start_head) -> tuple[bool, list[str], list[dict] | None]:
         """PRD v0.37 requirement C.2/C.3: the peer verdict gate over phase
         `pid`, run inside the phase review's scope so its prompt carries the
         `## Phase review` section. Returns `(approved, record paths)`; a
         gate with no usable verdict (after the `_park_judge_no_verdict`
-        retries) or a spent budget returns `(False, [])`. The rejection
+        retries) or a spent budget returns `(False, [], None)`. The rejection
         rungs for a phase's peer gate belong to the ladder, not here."""
         approach = self._approach
         if not self.budget_left():
-            return False, []
+            return False, [], None
         self.run.emit("phase", phase="verdict_gate", approach=approach)
         result = await self._dispatch_verdict_gate()
         while True:
@@ -14479,7 +14577,7 @@ class LoopSupervisor:
             outcome = await self._park_judge_no_verdict(
                 "verdict_gate", approach, no_verdict)
             if outcome != "resume":
-                return False, []
+                return False, [], None
             self.run.update_status(gateRejectionEnding=None)
             result = await self._dispatch_verdict_gate()
         self._reset_judge_fault_episode()
@@ -14490,8 +14588,11 @@ class LoopSupervisor:
             payload=payload, start_head=start_head,
             head_reviewed=self._workspace_head_sha(),
             iteration=self.iterations_used)
+        cure_blocking = (None if approved
+                         else self._phase_cure_candidate("verdict_gate",
+                                                         payload))
         self._clear_review_channel_files()
-        return approved, paths
+        return approved, paths, cure_blocking
 
     def _review_verified_edge(self, approach: int) -> tuple:
         """review's `verified` edge (also taken when the ladder treats a
@@ -18793,7 +18894,9 @@ class LoopSupervisor:
         except OSError:
             return ""
 
-    def _latest_granted_cure_pass(self, approach: int) -> dict | None:
+    def _latest_granted_cure_pass(
+            self, approach: int, plan_phase: object = _SCOPE_PHASE
+    ) -> dict | None:
         """cure-01-01 (PRD v0.27 B.1/B.3/B.4, review verdict-gate VG-01):
         the most recent `cure-lineage.json` entry for `approach` that is
         an actual GRANTED cure pass (`kind == "granted"`, `state.insert_
@@ -18831,14 +18934,77 @@ class LoopSupervisor:
         an override) reads back identically whether or not this key
         happens to be present. `None` when `approach` is `None` or no
         granted pass has been recorded for it yet.
+
+        PRD v0.37 D.4: the lineage is scoped by plan phase. `plan_phase`
+        names the scope whose passes are read -- a phase id, or `None` for
+        the passes that carry no `planPhase` (the final review's and the
+        final peer gate's own). Left at its default it is the scope of the
+        review being built (`_cure_scope_phase`: the phase under review
+        inside a phase review's dispatch, else `None`), so a phase review
+        sees only its own phase's passes and the final review sees none of
+        a phase's.
         """
+        if plan_phase is _SCOPE_PHASE:
+            plan_phase = self._cure_scope_phase()
         if approach is None:
             return None
         lineage = state.read_cure_lineage(self.run.root)
         granted = [p for p in lineage["passes"]
                   if p.get("approach") == approach
-                  and p.get("kind", "granted") == "granted"]
+                  and p.get("kind", "granted") == "granted"
+                  and p.get("planPhase") == plan_phase]
         return granted[-1] if granted else None
+
+    def _cure_scope_phase(self) -> str | None:
+        """PRD v0.37 D.4: the plan phase whose cure lineage the review being
+        built reads -- the phase under review while a phase review (or its
+        phase-scoped peer gate) is in flight, else `None` (the final review's
+        and the final peer gate's own lineage)."""
+        scope = self._phase_review_scope
+        if isinstance(scope, dict):
+            return scope.get("planPhase")
+        return None
+
+    def _confirmation_source(self, approach: int) -> dict | None:
+        """The cure lineage a confirmation review is built from, scoped
+        (`_cure_scope_phase`): `{"findings", "remedyFindings",
+        "preCureHead"}`, or `None` when this review is not a confirmation
+        review.
+
+        The final review's scope is the latest GRANTED pass with no
+        `planPhase` (`_latest_granted_cure_pass`), exactly as before. A phase
+        review's scope is its own phase's latest granted pass, plus every
+        petition-remedy pass of that phase recorded since (PRD v0.37 C.4/D.4:
+        a phase review that passed but whose petition adjudications inserted
+        a remedy task re-runs as a confirmation review, and the section names
+        that remedy task) -- a remedy alone, with no granted pass in the
+        phase, is enough in a phase review."""
+        phase = self._cure_scope_phase()
+        granted = self._latest_granted_cure_pass(approach)
+        if phase is None:
+            if granted is None:
+                return None
+            return {"findings": dict(granted.get("findings") or {}),
+                    "remedyFindings": {},
+                    "preCureHead": granted.get("preCureHead")}
+        passes = [p for p in state.read_cure_lineage(self.run.root)["passes"]
+                  if p.get("approach") == approach
+                  and p.get("planPhase") == phase]
+        start = 0
+        if granted is not None:
+            start = max(i for i, p in enumerate(passes)
+                        if p.get("kind", "granted") == "granted") + 1
+        remedies = [p for p in passes[start:] if p.get("kind") == "remedy"]
+        if granted is None and not remedies:
+            return None
+        remedy_findings: dict = {}
+        for p in remedies:
+            remedy_findings.update(p.get("findings") or {})
+        head = (granted or {}).get("preCureHead")
+        if granted is None:
+            head = remedies[0].get("preCureHead")
+        return {"findings": dict((granted or {}).get("findings") or {}),
+                "remedyFindings": remedy_findings, "preCureHead": head}
 
     def _is_confirmation_review(self) -> bool:
         """Task 006 (PRD requirement B.3, v0.27, #274): true exactly when
@@ -18859,7 +19025,7 @@ class LoopSupervisor:
         approach = self._approach
         if approach is None:
             return False
-        return self._latest_granted_cure_pass(approach) is not None
+        return self._confirmation_source(approach) is not None
 
     def _confirmation_review_listed_cure_task_ids(self) -> frozenset[str]:
         """cure-01-02-2 (PRD B.3/B.5, DoD 2); cure-01-01 (VG-01, keyed on
@@ -18883,12 +19049,11 @@ class LoopSupervisor:
         approach = self._approach
         if approach is None:
             return frozenset()
-        latest = self._latest_granted_cure_pass(approach)
+        latest = self._confirmation_source(approach)
         if latest is None:
             return frozenset()
-        findings_by_id = latest.get("findings") or {}
-        if not isinstance(findings_by_id, dict):
-            return frozenset()
+        findings_by_id = {**(latest.get("findings") or {}),
+                          **(latest.get("remedyFindings") or {})}
         return frozenset(cid for cid in findings_by_id if isinstance(cid, str))
 
     def _confirmation_review_context(self) -> str:
@@ -18935,10 +19100,11 @@ class LoopSupervisor:
         approach = self._approach
         if approach is None:
             return ""
-        latest = self._latest_granted_cure_pass(approach)
+        latest = self._confirmation_source(approach)
         if latest is None:
             return ""
         findings_by_id = latest.get("findings") or {}
+        remedy_by_id = latest.get("remedyFindings") or {}
         pre_cure_head = latest.get("preCureHead")
         current_head = self._workspace_head_sha()
         lines = [
@@ -18947,14 +19113,33 @@ class LoopSupervisor:
             "is a CONFIRMATION review, not a fresh audit: check the "
             "listed findings and the diff range below, then stop -- **do "
             "not re-audit a requirement the diff range did not touch.**\n\n",
-            "### Every blocking finding of the previous granted pass\n\n",
         ]
+        scope_phase = self._cure_scope_phase()
+        if scope_phase is not None:
+            lines.append(
+                f"This confirmation review is scoped to plan phase "
+                f"`{scope_phase}`: only that phase's own cure pass(es) and "
+                "petition remedies are listed; an earlier or later phase's "
+                "cure work is not part of it.\n\n")
+        if findings_by_id:
+            lines.append(
+                "### Every blocking finding of the previous granted "
+                "pass\n\n")
         for cure_task_id, payload in findings_by_id.items():
             clause = payload.get("clause", "")
             cured_when = payload.get("curedWhen", "")
             lines.append(
                 f"- `{cure_task_id}` -- clause: {clause!r}, "
                 f"`cured_when`: {cured_when!r}\n")
+        if remedy_by_id:
+            lines.append(
+                "\n### Petition remedy task(s) inserted since the last "
+                "review of this scope\n\n")
+            for cure_task_id, payload in remedy_by_id.items():
+                lines.append(
+                    f"- `{cure_task_id}` -- clause: "
+                    f"{payload.get('clause', '')!r}, `cured_when`: "
+                    f"{payload.get('curedWhen', '')!r}\n")
         lines.append(
             f"\n### Diff range\n\n`{pre_cure_head}..{current_head}`\n\n")
         lines.append(

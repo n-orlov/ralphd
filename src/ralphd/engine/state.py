@@ -6356,6 +6356,7 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list,
     # review reading this record back wants the same text review itself
     # wrote, not a later engine-side repair of it.
     pass_findings: dict = {}
+    lineage_phase: str | None = None
     for index, finding in enumerate(blocking, start=1):
         new_task = cure_task_from_finding(approach, index, finding)
         new_task["id"] = _unique_task_id(new_task["id"], existing_ids)
@@ -6378,6 +6379,14 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list,
             cure_phase = (_task_phase(tasks, finding.get("petitioned_task_id"))
                           or phase or phase_ids[-1])
             new_task["phase"] = cure_phase
+            if lineage_phase is None and (
+                    pass_kind != "granted" or phase is not None):
+                # PRD v0.37 D.4: the pass's lineage entry carries `planPhase`
+                # -- a phase-gate cure pass (explicit `phase`) and a petition
+                # remedy (the petitioned task's phase). A final-review or
+                # final-peer-gate cure pass (`phase` left `None`) carries
+                # none: those readers see only passes with no `planPhase`.
+                lineage_phase = cure_phase
         # A freeze task in an EARLIER phase than the cure is left alone (see
         # the docstring): no splice before it, no edge onto it.
         freeze_in_reach = True
@@ -6675,7 +6684,7 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list,
         record_cure_pass_lineage(run.root, approach=approach,
                                  pre_cure_head=pre_cure_head,
                                  findings_by_cure_task_id=pass_findings,
-                                 kind=pass_kind)
+                                 kind=pass_kind, plan_phase=lineage_phase)
     return inserted
 
 
@@ -8014,7 +8023,8 @@ def read_cure_lineage(run_root: Path) -> dict:
 def record_cure_pass_lineage(run_root: Path, *, approach: int,
                              pre_cure_head: str | None,
                              findings_by_cure_task_id: dict,
-                             kind: str = "granted") -> dict:
+                             kind: str = "granted",
+                             plan_phase: str | None = None) -> dict:
     """Append one pass entry -- `{"approach", "preCureHead", "findings",
     "kind", "recordedAt"}` -- to the lineage document and persist it.
     `findings` is `findings_by_cure_task_id` verbatim: one `{"clause",
@@ -8030,6 +8040,11 @@ def record_cure_pass_lineage(run_root: Path, *, approach: int,
     reader can tell the two apart on disk without inspecting which caller
     wrote the entry. `LoopSupervisor._latest_granted_cure_pass` is the one
     place that reads it back.
+
+    `plan_phase` (PRD v0.37 D.4) is the plan phase the pass belongs to: a
+    phase-gate cure pass names its own phase and a petition remedy names the
+    petitioned task's phase; the final review's and the final peer gate's
+    passes carry none. Readers filter on it (`_latest_granted_cure_pass`).
 
     Called once per granted cure pass, from `insert_cure_tasks` itself
     (never from its two callers directly) -- so a THIRD caller of `insert_
@@ -8054,6 +8069,11 @@ def record_cure_pass_lineage(run_root: Path, *, approach: int,
         "kind": kind,
         "recordedAt": utcnow(),
     }
+    if plan_phase is not None:
+        # PRD v0.37 D.4: lineage is scoped by plan phase. Only a phased
+        # plan's phase-gate pass or petition remedy carries the key, so a
+        # no-phase plan's lineage stays byte-for-byte what it was.
+        entry["planPhase"] = plan_phase
     passes.append(entry)
     atomic_write_json(cure_lineage_path(run_root), {**doc, "passes": passes})
     return entry
