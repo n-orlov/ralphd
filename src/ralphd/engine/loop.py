@@ -733,6 +733,17 @@ class LoopSupervisor:
         # event must be emitted once per downgraded finding, not once per
         # read. Reset at every ordinary `_review_contract_ladder` entry.
         self._confirmation_downgrades_announced: set[tuple] = set()
+        # PRD v0.37 decision 2 / C.1: the phase a `review` dispatch is
+        # judging, `{"planPhase", "round", "startHead"}`, set only for the
+        # duration of `_run_phase_review`. Its presence is what folds the
+        # `## Phase review` section into the review prompt and writes
+        # `planPhase` / `scope: "phase"` into the iteration meta; it is
+        # `None` on every ordinary (final) review, so an unphased plan
+        # never sees either.
+        self._phase_review_scope: dict | None = None
+        # Phases whose review this process already ran without opening
+        # the gate; the worker pass does not re-dispatch them in a spin.
+        self._phase_review_unresolved: set[str] = set()
         self._last_task_snapshot: dict = {}
         self.deadline = time.monotonic() + cfg.job_timeout_s
         # Task 011 (#5): wall-clock twin of self.deadline (published as
@@ -3561,6 +3572,11 @@ class LoopSupervisor:
             meta["thinking"] = bundle.thinking
         if bundle.effort:
             meta["effort"] = bundle.effort
+        if self._phase_review_scope is not None and phase == "review":
+            # PRD v0.37 decision 2: a phase review is the `review` hat in
+            # phase-scoped mode; the meta says which phase and that scope.
+            meta["planPhase"] = self._phase_review_scope["planPhase"]
+            meta["scope"] = "phase"
         atomic_write_json(itdir / "meta.json", meta)
         self.run.emit("iteration.start", number=n, phase=phase, model=model)
         log.info("iteration %d start: phase=%s model=%s", n, phase, model)
@@ -10646,6 +10662,12 @@ class LoopSupervisor:
             if self.run.pending_steering():
                 self._advance("worker", "steer", "steering_pending")
                 return ("advance", "steer", "steering_pending")
+            # PRD v0.37 requirement B.5: a due phase before the last is
+            # reviewed at the top of the pass, before a task is selected.
+            due_phase = self._due_phase_for_review()
+            if due_phase is not None:
+                await self._run_phase_review(due_phase)
+                continue
             tasks_before = self.run.read_tasks()
             # Task 116 (#60 pillar 3, fact 9): the HARNESS -- not the agent
             # -- decides which task a worker iteration works on, through
@@ -14108,6 +14130,193 @@ class LoopSupervisor:
         if outcome is None:
             return self._review_verified_edge(approach)
         return outcome
+
+    PHASE_REVIEW_RULES = (
+        "- Judge only the PRD requirements this phase's tasks claim.\n"
+        "- Check them against the live workspace and anything the phase "
+        "produced that still exists.\n"
+        "- Do not judge later phases' work.\n"
+        "- Report through the normal `review` contract and findings "
+        "(`severity`, `curable`, `clause`, `cured_when`).\n")
+
+    def _phase_review_context(self) -> str:
+        """PRD v0.37 requirement C.1: the `## Phase review` section of a
+        phase-scoped review prompt -- the phase's `id`, `title` and
+        `reviewFocus`, each of its tasks with status, `successCriteria`,
+        `verifyNotes` and `validationNotes`, the diff range `<startHead>..
+        HEAD`, and the four judging rules. Built from `tasks.json` on every
+        call, so a resumed process renders the same text. Empty unless a
+        phase review is being dispatched (`_phase_review_scope`), so a final
+        review, and every review of a plan without phases, carries none."""
+        scope = self._phase_review_scope
+        if scope is None:
+            return ""
+        data = self.run.read_tasks()
+        phase = state.phase_entry(data, scope["planPhase"]) or {}
+        pid = scope["planPhase"]
+
+        def fmt(value) -> str:
+            if value in (None, "", []):
+                return "(none)"
+            if isinstance(value, str):
+                return value
+            return json.dumps(value, sort_keys=True)
+
+        lines = [
+            "\n## Phase review\n\n",
+            f"This is a PHASE review of plan phase `{pid}`, not the final "
+            "review of the whole PRD.\n\n",
+            f"- Phase id: `{pid}`\n",
+            f"- Title: {phase.get('title', '')}\n",
+            f"- Review focus: {phase.get('reviewFocus', '')}\n\n",
+            "### Tasks of this phase\n\n",
+        ]
+        for t in data.get("tasks", []):
+            if not isinstance(t, dict) or t.get("phase") != pid:
+                continue
+            lines.append(
+                f"#### Task `{t.get('id')}` -- {t.get('title', '')}\n\n"
+                f"- status: {t.get('status')}\n"
+                f"- successCriteria: {fmt(t.get('successCriteria'))}\n"
+                f"- verifyNotes: {fmt(t.get('verifyNotes'))}\n"
+                f"- validationNotes: {fmt(t.get('validationNotes'))}\n\n")
+        lines.append(
+            "### Diff range\n\n"
+            f"`{scope.get('startHead')}..{self._workspace_head_sha()}`\n\n"
+            "### Rules\n\n" + self.PHASE_REVIEW_RULES)
+        return "".join(lines)
+
+    def _due_phase_for_review(self) -> str | None:
+        """The open phase's id when it is due and has a gate to run (B.4,
+        decision 5: never the last phase), else `None`. A phase this process
+        already reviewed without opening its gate is not offered again."""
+        data = self.run.read_tasks()
+        pid = state.due_phase_id(data)
+        if (pid is None or not state.phase_review_dispatchable(data, pid)
+                or pid in self._phase_review_unresolved):
+            return None
+        return pid
+
+    def _phase_records_dir(self) -> Path:
+        return self.run.artifacts_dir / "phase-reviews"
+
+    def _write_phase_review_records(
+            self, pid: str, round_: int, judge: str, *, verdict: str,
+            payload: dict | None, start_head, head_reviewed,
+            iteration: int) -> list[str]:
+        """PRD v0.37 requirement C.3: one verdict as `artifacts/phase-reviews/
+        <phase>-r<round>-<judge>.json` (verdict, findings, reason, iteration
+        number, `startHead`, HEAD reviewed) and `.md` (the findings
+        markdown); returns the two run-relative paths."""
+        d = self._phase_records_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        stem = f"{pid}-r{round_}-{judge}"
+        findings_list, _errors = self._review_findings_channel()
+        md_path = self.run.findings_file
+        md_text = md_path.read_text() if md_path.exists() else ""
+        if not md_text:
+            md_text = f"# Phase {pid} {judge} (round {round_})\n\n" + (
+                "\n".join(
+                    f"- **{f.get('severity')}** {f.get('clause')}: "
+                    f"{f.get('evidence')}" for f in (findings_list or []))
+                or "No findings.\n")
+        record = {
+            "planPhase": pid, "round": round_, "judge": judge,
+            "verdict": verdict,
+            "findings": findings_list or [],
+            "reason": (payload or {}).get("reason"),
+            "iteration": iteration,
+            "startHead": start_head, "headReviewed": head_reviewed}
+        atomic_write_json(d / f"{stem}.json", record)
+        (d / f"{stem}.md").write_text(md_text)
+        rel = Path("artifacts") / "phase-reviews"
+        return [str(rel / f"{stem}.json"), str(rel / f"{stem}.md")]
+
+    def _clear_review_channel_files(self) -> None:
+        """A phase review writes the same findings files and early-verdict
+        checkpoint the final review reads; once its verdict is recorded they
+        are removed so a later review never reads a phase's leftovers."""
+        for path in (self.run.findings_file, self.run.findings_json_file,
+                     self.run.review_early_verdict_file):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+
+    async def _run_phase_review(self, pid: str) -> None:
+        """PRD v0.37 requirement C.1/C.3/C.4/C.5: the `review` hat in
+        phase-scoped mode over the due phase `pid`. The gate reads
+        `reviewing` from dispatch until the verdict is applied;
+        `phase_gate.due` announces the dispatch. A passing verdict (including
+        a rejection whose findings are all residual, which `_review_verdict`
+        recomputes to `verified`) records the verdict, appends both record
+        paths to `phases[].records`, sets `gate: "passed"`, emits
+        `phase_gate.passed` and records the next phase's `startHead` as the
+        current HEAD (B.3). Anything else leaves the gate `closed` with the
+        verdict recorded; the cure, park and no-verdict rungs for a phase are
+        the rejection ladder's, not this method's."""
+        approach = self._approach
+        data = self.run.read_tasks()
+        phase = state.phase_entry(data, pid) or {}
+        start_head = phase.get("startHead")
+        round_ = 1 + sum(1 for r in phase.get("records") or []
+                         if str(r).endswith("-review.json"))
+        state.set_phase_gate(data, pid, state.PHASE_GATE_REVIEWING)
+        self.run.write_tasks(data)
+        self.run.emit("phase_gate.due", planPhase=pid, approach=approach,
+                      round=round_, startHead=start_head)
+        self._phase_review_scope = {"planPhase": pid, "round": round_,
+                                    "startHead": start_head}
+        passed = False
+        try:
+            await self._gate()
+            self.run.emit("phase", phase="review", approach=approach)
+            result = await self._run_review_iteration(approach)
+            while result is not None and self._review_no_verdict:
+                outcome = await self._park_judge_no_verdict(
+                    "review", approach, self._review_no_verdict)
+                if outcome != "resume":
+                    result = None
+                    break
+                self.run.update_status(gateRejectionEnding=None)
+                result = await self._run_review_iteration(approach)
+            if result is not None:
+                verified, payload, _errors = self._review_verdict(result)
+                passed = (verified and not self._review_contract_unrepaired
+                          and not self._review_findings_unusable)
+                head = self._workspace_head_sha()
+                paths = self._write_phase_review_records(
+                    pid, round_, "review",
+                    verdict="verified" if passed else "rejected",
+                    payload=payload, start_head=start_head,
+                    head_reviewed=head, iteration=self.iterations_used)
+                self._clear_review_channel_files()
+        finally:
+            self._phase_review_scope = None
+            self.run.update_status(phase="worker")
+        data = self.run.read_tasks()
+        if result is None:
+            state.set_phase_gate(data, pid, state.PHASE_GATE_CLOSED)
+            self._phase_review_unresolved.add(pid)
+            self.run.write_tasks(data)
+            return
+        for path in paths:
+            state.append_phase_record(data, pid, path)
+        if passed:
+            state.set_phase_gate(data, pid, state.PHASE_GATE_PASSED)
+            nxt = state.next_phase_id(data, pid)
+            state.record_phase_start_head(data, nxt, head)
+            self.run.write_tasks(data)
+            self.run.emit("phase_gate.passed", planPhase=pid,
+                          approach=approach, round=round_, records=paths,
+                          nextPhase=nxt)
+            return
+        state.set_phase_gate(data, pid, state.PHASE_GATE_CLOSED)
+        self._phase_review_unresolved.add(pid)
+        self.run.write_tasks(data)
+        self.run.emit("log", level="warning",
+                      message=(f"phase review of {pid} did not pass; the "
+                               "gate stays closed"))
 
     def _review_verified_edge(self, approach: int) -> tuple:
         """review's `verified` edge (also taken when the ladder treats a
@@ -18638,7 +18847,8 @@ class LoopSupervisor:
                 self._adjudicated_petitions_review_context() +
                 self._duplicate_petitions_review_context() +
                 self._petition_adjudications_tamper_context() +
-                self._confirmation_review_context())
+                self._confirmation_review_context() +
+                self._phase_review_context())
 
     @staticmethod
     def _verify_no_verdict(result: IterationResult) -> str:

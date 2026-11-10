@@ -3193,6 +3193,7 @@ def _emit_rejected_dependency_edges(run: "RunDir", task_id: str,
 # resolves its phase from the same one read it already holds.
 PHASE_GATE_PASSED = "passed"
 PHASE_GATE_CLOSED = "closed"
+PHASE_GATE_REVIEWING = "reviewing"
 
 
 def plan_phase_ids(data: dict) -> list[str]:
@@ -3273,6 +3274,56 @@ def record_phase_start_head(data: dict, phase_id: str | None,
             p["startHead"] = head
             return True
     return False
+
+
+def phase_entry(data: dict, phase_id: str | None) -> dict | None:
+    """The `phases[]` entry for `phase_id` in `data`, `None` when absent."""
+    for p in (data.get("phases") if isinstance(data, dict) else None) or []:
+        if isinstance(p, dict) and p.get("id") == phase_id:
+            return p
+    return None
+
+
+def set_phase_gate(data: dict, phase_id: str | None, gate: str) -> bool:
+    """Set `phase_id`'s `gate` in `data` (the caller writes it back through
+    `RunDir.write_tasks`: gate state is engine-owned, decision 3). True when
+    the entry exists."""
+    entry = phase_entry(data, phase_id)
+    if entry is None:
+        return False
+    entry["gate"] = gate
+    return True
+
+
+def append_phase_record(data: dict, phase_id: str | None, path: str) -> bool:
+    """Append `path` to `phase_id`'s `records` once (C.3); the caller writes
+    `data` back through `RunDir.write_tasks`."""
+    entry = phase_entry(data, phase_id)
+    if entry is None:
+        return False
+    records = entry.get("records")
+    if not isinstance(records, list):
+        records = entry["records"] = []
+    if path not in records:
+        records.append(path)
+    return True
+
+
+def next_phase_id(data: dict, phase_id: str | None) -> str | None:
+    """The id of the phase after `phase_id` in plan order, `None` for the
+    last phase or an unknown id."""
+    ids = plan_phase_ids(data)
+    if phase_id not in ids:
+        return None
+    i = ids.index(phase_id) + 1
+    return ids[i] if i < len(ids) else None
+
+
+def phase_review_dispatchable(data: dict, phase_id: str | None) -> bool:
+    """PRD v0.37 decision 5: the last phase has no gate, so only a due phase
+    BEFORE the last one is ever dispatched to a phase review."""
+    return (phase_id is not None and phase_id != last_phase_id(data)
+            and phase_is_due(data, phase_id))
 
 
 def _task_phase(tasks: list, task_id) -> str | None:
