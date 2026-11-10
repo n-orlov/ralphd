@@ -4325,6 +4325,30 @@ class LoopSupervisor:
         """
         return (self.run.root / "approaches" / f"{approach:02d}").is_dir()
 
+    def _reset_reviewing_phase_gates(self) -> list[str]:
+        """PRD v0.37 requirement C.5: a gate still `reviewing` on disk means
+        the prior process died between a phase review's dispatch and its
+        verdict being applied. Each such gate goes back to `closed` -- every
+        task of the phase is terminal, so the phase is due again -- and the
+        review channel files the dead attempt may have left are removed, so
+        the re-dispatch is a fresh first attempt that never reads the
+        crashed one's checkpoint. Returns the reset phase ids (in plan
+        order); nothing is written when there are none. The caller lands at
+        `worker`, whose top-of-pass due check dispatches the phase review;
+        landing at `review` would run the FINAL review over a phase that
+        never got its gate."""
+        data = self.run.read_tasks()
+        reset = [str(ph["id"]) for ph in data.get("phases") or []
+                 if isinstance(ph, dict)
+                 and ph.get("gate") == state.PHASE_GATE_REVIEWING]
+        if not reset:
+            return []
+        for pid in reset:
+            state.set_phase_gate(data, pid, state.PHASE_GATE_CLOSED)
+        self.run.write_tasks(data)
+        self._clear_review_channel_files()
+        return reset
+
     def _crashed_mid_review(self) -> bool:
         """True iff the NEXT iteration slot (`iterations_used + 1` -- the
         one a fresh attempt would reuse; `max_iteration_number()` counts
@@ -4622,6 +4646,16 @@ class LoopSupervisor:
                     "before it recorded the approach boundary; replanning "
                     "instead of re-entering worker over the rejected tasks"))
             return approach, False, "replan"
+        reviewing = self._reset_reviewing_phase_gates()
+        if reviewing:
+            self.run.emit(
+                "log",
+                message=(
+                    f"resuming existing run-dir state: approach {approach} "
+                    f"crashed while the gate of plan phase {reviewing[0]} "
+                    "was reviewing; re-dispatching that phase review as a "
+                    "fresh first attempt (never the final review)"))
+            return approach, True, "worker"
         if self._crashed_mid_review():
             self.run.emit(
                 "log",
@@ -10259,6 +10293,10 @@ class LoopSupervisor:
         bounded-budget wording (`prompts/judge_retry.md`) to `extra` and runs
         one thinking step lower."""
         extra = self._operator_amendment_review_context(audience="verdict_gate")
+        # PRD v0.37 requirement C.2: a phase-scoped peer gate carries the
+        # same `## Phase review` section the phase review's prompt does ('' on
+        # a final peer gate, so its prompt is unchanged).
+        extra += self._phase_review_context()
         if retry_wording:
             extra = (extra + "\n\n" if extra else "") + retry_wording
         self._judge_retry_step_down = step_down
@@ -14240,8 +14278,12 @@ class LoopSupervisor:
         d = self._phase_records_dir()
         d.mkdir(parents=True, exist_ok=True)
         stem = f"{pid}-r{round_}-{judge}"
-        findings_list, _errors = self._review_findings_channel()
-        md_path = self.run.findings_file
+        if judge == "verdict_gate":
+            findings_list = self._gate_findings()
+            md_path = self.run.verdict_gate_findings_file
+        else:
+            findings_list, _errors = self._review_findings_channel()
+            md_path = self.run.findings_file
         md_text = md_path.read_text() if md_path.exists() else ""
         if not md_text:
             md_text = f"# Phase {pid} {judge} (round {round_})\n\n" + (
@@ -14266,7 +14308,9 @@ class LoopSupervisor:
         checkpoint the final review reads; once its verdict is recorded they
         are removed so a later review never reads a phase's leftovers."""
         for path in (self.run.findings_file, self.run.findings_json_file,
-                     self.run.review_early_verdict_file):
+                     self.run.review_early_verdict_file,
+                     self.run.verdict_gate_findings_file,
+                     self.run.verdict_gate_findings_json_file):
             try:
                 path.unlink()
             except FileNotFoundError:
@@ -14282,9 +14326,12 @@ class LoopSupervisor:
         recomputes to `verified`) records the verdict, appends both record
         paths to `phases[].records`, sets `gate: "passed"`, emits
         `phase_gate.passed` and records the next phase's `startHead` as the
-        current HEAD (B.3). Anything else leaves the gate `closed` with the
-        verdict recorded; the cure, park and no-verdict rungs for a phase are
-        the rejection ladder's, not this method's.
+        current HEAD (B.3). With the peer verdict gate on, the pass first
+        goes through `_run_phase_peer_gate` (C.2), and any pass is held back
+        by `_phase_pass_blockers` (C.4: gate stays `closed`, phase not
+        parked). Anything else leaves the gate `closed` with the verdict
+        recorded; the cure, park and no-verdict rungs for a phase are the
+        rejection ladder's, not this method's.
 
         `edge` is the `worker -> review` edge reason (B.7) that sent a worker
         exit here instead of to the final review; it rides on
@@ -14303,6 +14350,9 @@ class LoopSupervisor:
         self._phase_review_scope = {"planPhase": pid, "round": round_,
                                     "startHead": start_head, **due_extra}
         passed = False
+        held: list[str] = []
+        paths: list[str] = []
+        head = None
         try:
             await self._gate()
             self.run.emit("phase", phase="review", approach=approach)
@@ -14320,12 +14370,24 @@ class LoopSupervisor:
                 passed = (verified and not self._review_contract_unrepaired
                           and not self._review_findings_unusable)
                 head = self._workspace_head_sha()
-                paths = self._write_phase_review_records(
+                paths += self._write_phase_review_records(
                     pid, round_, "review",
                     verdict="verified" if passed else "rejected",
                     payload=payload, start_head=start_head,
                     head_reviewed=head, iteration=self.iterations_used)
                 self._clear_review_channel_files()
+            if passed:
+                held = self._phase_pass_blockers(pid)
+            if passed and not held and self.cfg.peer_verdict_gate:
+                # PRD v0.37 requirement C.2: the peer verdict gate runs
+                # after a phase review that passes, with the same `## Phase
+                # review` section in its prompt.
+                passed, peer_paths = await self._run_phase_peer_gate(
+                    pid, round_, start_head)
+                paths += peer_paths
+                if passed:
+                    head = self._workspace_head_sha()
+                    held = self._phase_pass_blockers(pid)
         finally:
             self._phase_review_scope = None
             self.run.update_status(phase="worker")
@@ -14337,6 +14399,22 @@ class LoopSupervisor:
             return
         for path in paths:
             state.append_phase_record(data, pid, path)
+        if passed and held:
+            # PRD v0.37 requirement C.4: a passing verdict is not honoured
+            # while an unsettled steer, a steering-origin or review-cure-
+            # origin task of THIS phase (a petition remedy included) is
+            # outstanding. The gate stays `closed`; the phase is due again
+            # once its tasks are terminal (a remedy's re-review is a
+            # confirmation review, D.4) and the steer hat has run (the
+            # worker pass settles steering ahead of any dispatch).
+            state.set_phase_gate(data, pid, state.PHASE_GATE_CLOSED)
+            self.run.write_tasks(data)
+            self.run.emit(
+                "log", level="warning",
+                message=(f"phase review of {pid} passed but is not "
+                         "honoured: " + "; ".join(held)
+                         + " -- the gate stays closed"))
+            return
         if passed:
             state.set_phase_gate(data, pid, state.PHASE_GATE_PASSED)
             nxt = state.next_phase_id(data, pid)
@@ -14352,6 +14430,68 @@ class LoopSupervisor:
         self.run.emit("log", level="warning",
                       message=(f"phase review of {pid} did not pass; the "
                                "gate stays closed"))
+
+    def _phase_pass_blockers(self, pid: str) -> list[str]:
+        """PRD v0.37 requirement C.4: what keeps a PASSING phase review from
+        opening the gate -- `_terminal_success_blockers`'s three blockers,
+        with the two task-origin ones counting only the tasks of phase `pid`
+        (a steering- or review-cure-origin task of a later phase never holds
+        this gate). A petition remedy a passing review's adjudications just
+        inserted is a review-cure-origin task of the petitioned task's
+        phase, so it lands here too."""
+        blockers: list[str] = []
+        names = self._unsettled_steering_names()
+        if names:
+            blockers.append(
+                f"operator steering ({', '.join(names)}) is not settled yet")
+        data = self.run.read_tasks()
+        steering = state.steering_origin_outstanding(data, phase=pid)
+        if steering:
+            ids = ", ".join(str(t.get("id", "?")) for t in steering)
+            blockers.append(f"steering-origin task(s) ({ids}) of phase "
+                            f"{pid} are not terminal")
+        cure = state.review_cure_origin_outstanding(data, phase=pid)
+        if cure:
+            ids = ", ".join(str(t.get("id", "?")) for t in cure)
+            blockers.append(f"review-cure-origin task(s) ({ids}) of phase "
+                            f"{pid} are not terminal")
+        return blockers
+
+    async def _run_phase_peer_gate(
+            self, pid: str, round_: int,
+            start_head) -> tuple[bool, list[str]]:
+        """PRD v0.37 requirement C.2/C.3: the peer verdict gate over phase
+        `pid`, run inside the phase review's scope so its prompt carries the
+        `## Phase review` section. Returns `(approved, record paths)`; a
+        gate with no usable verdict (after the `_park_judge_no_verdict`
+        retries) or a spent budget returns `(False, [])`. The rejection
+        rungs for a phase's peer gate belong to the ladder, not here."""
+        approach = self._approach
+        if not self.budget_left():
+            return False, []
+        self.run.emit("phase", phase="verdict_gate", approach=approach)
+        result = await self._dispatch_verdict_gate()
+        while True:
+            approved, payload, no_verdict = await self._verdict_gate_verdict(
+                result)
+            if no_verdict is None:
+                break
+            outcome = await self._park_judge_no_verdict(
+                "verdict_gate", approach, no_verdict)
+            if outcome != "resume":
+                return False, []
+            self.run.update_status(gateRejectionEnding=None)
+            result = await self._dispatch_verdict_gate()
+        self._reset_judge_fault_episode()
+        self._record_verdict_gate_peek(approach)
+        paths = self._write_phase_review_records(
+            pid, round_, "verdict_gate",
+            verdict="verified" if approved else "rejected",
+            payload=payload, start_head=start_head,
+            head_reviewed=self._workspace_head_sha(),
+            iteration=self.iterations_used)
+        self._clear_review_channel_files()
+        return approved, paths
 
     def _review_verified_edge(self, approach: int) -> tuple:
         """review's `verified` edge (also taken when the ladder treats a

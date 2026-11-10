@@ -6885,7 +6885,7 @@ def task_is_terminal(task: dict) -> bool:
     return isinstance(task, dict) and task.get("status") in TASK_TERMINAL_STATUSES
 
 
-def steering_origin_outstanding(tasks_doc) -> list:
+def steering_origin_outstanding(tasks_doc, phase: str | None = None) -> list:
     """Every steering-origin task (`is_steering_origin`) that is NOT yet
     terminal (`task_is_terminal`), in plan order.
 
@@ -6906,14 +6906,19 @@ def steering_origin_outstanding(tasks_doc) -> list:
     key) or a bare list of task dicts, mirroring `task_blocked_by`'s own
     tolerance -- callers that already hold one or the other should not have
     to unwrap it first.
+
+    `phase` (PRD v0.37 requirement C.4): when given, only the tasks of that
+    plan phase count, so a task in a later phase never holds an earlier
+    phase's gate.
     """
     tasks = (tasks_doc.get("tasks") if isinstance(tasks_doc, dict)
              else tasks_doc)
     return [t for t in (tasks or [])
-            if is_steering_origin(t) and not task_is_terminal(t)]
+            if is_steering_origin(t) and not task_is_terminal(t)
+            and (phase is None or t.get("phase") == phase)]
 
 
-def review_cure_origin_outstanding(tasks_doc) -> list:
+def review_cure_origin_outstanding(tasks_doc, phase: str | None = None) -> list:
     """Every `review-cure`-origin task (`is_review_cure_origin`) that is NOT
     yet terminal (`task_is_terminal`), in plan order -- the sibling of
     `steering_origin_outstanding` just above, for `_terminal_success_
@@ -6933,7 +6938,8 @@ def review_cure_origin_outstanding(tasks_doc) -> list:
     tasks = (tasks_doc.get("tasks") if isinstance(tasks_doc, dict)
              else tasks_doc)
     return [t for t in (tasks or [])
-            if is_review_cure_origin(t) and not task_is_terminal(t)]
+            if is_review_cure_origin(t) and not task_is_terminal(t)
+            and (phase is None or t.get("phase") == phase)]
 
 
 def task_blocked_by(tasks: list, *,
