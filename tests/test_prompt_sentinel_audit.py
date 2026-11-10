@@ -90,6 +90,22 @@ ENUMERATED_ABSENCE_ASSERTIONS: tuple[AbsenceAssertion, ...] = (
         "module object is named `log_render`, and the forbidden name is an "
         "import symbol, not a literal any prompt template could contain"),
     AbsenceAssertion(
+        "test_phase_gate_cure.py", (242,), ("## Confirmation review",),
+        "the final review's prompt after a phase-scoped cure: the phase's "
+        "cure lineage is scoped to that phase, so the whole-PRD review "
+        "carries no confirmation section (#313)", ("review.md",)),
+    AbsenceAssertion(
+        "test_phase_gate_peer_and_resume.py", (81,), ("criterion two",),
+        "the phase-scoped peer gate's prompt: a fixture criterion of a task "
+        "in a later phase, which the phase scope must leave out (#313)",
+        ALL),
+    AbsenceAssertion(
+        "test_phase_review_prompt.py", (99, 100),
+        ("## Phase review", "Phase review"),
+        "the final review's prompt on a plan without phases: the "
+        "`## Phase review` section is a phase-scoped context block only "
+        "(#313)", ALL),
+    AbsenceAssertion(
         "test_confirmation_review_section.py", (157, 189),
         ("## Confirmation review",),
         "the review prompt: `LoopSupervisor._confirmation_review_context` "
