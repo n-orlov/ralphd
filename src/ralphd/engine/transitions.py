@@ -1955,6 +1955,14 @@ HAT_SCHEMAS: dict[str, dict] = {
             # same two methods.
             "findings_path": {"type": "string"},
             "notes": {"type": "string"},
+            # PRD v0.37 requirement D.3: the peer's own OPTIONAL escalation
+            # request, the same field review's schema carries -- a
+            # phase-scoped peer rejection that sets it parks in
+            # `awaiting_input` (the ladder's reviewer-escalation trigger)
+            # instead of curing. The final peer gate's ladder does not read
+            # it (its v0.36 park triggers are unchanged). Strictly
+            # optional-additive: absent is never a fault.
+            "raise_operator_gate": {"type": "boolean"},
         },
         "additionalProperties": False,
     },

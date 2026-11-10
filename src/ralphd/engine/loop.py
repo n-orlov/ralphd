@@ -10149,6 +10149,9 @@ class LoopSupervisor:
     JUDGE_NO_VERDICT_WORDING = {
         "output_truncated": "no verdict: output truncated",
         "empty_reply": "no verdict: empty reply",
+        "unparseable_reply": "no verdict: unparseable reply",
+        "unreadable_verdict": "no verdict: the verdict claim is unreadable",
+        "unusable_findings": "no verdict: the findings channel is unusable",
     }
 
     def _reset_judge_fault_episode(self) -> None:
@@ -14410,21 +14413,23 @@ class LoopSupervisor:
                     if fault is None:
                         self._reset_judge_fault_episode()
                         break
+                    # PRD v0.37 requirement D.5: an unreadable reply after
+                    # the contract ladder and every judge retry is a judge
+                    # with no verdict -- `_park_judge_no_verdict`, an infra
+                    # fault under the outage budget, never a rejection.
                     errors = [str(e) for e in (contract_errors or [])][:3]
                     self.run.emit("review.contract_fault", guard=fault,
                                   approach=approach, errors=errors,
                                   planPhase=pid)
-                    outcome = await self._judge_fault_backoff(
-                        "review",
-                        ("review's verdict claim is unreadable"
-                         if fault == "review_contract_unrepaired"
-                         else "review's findings channel is unusable")
-                        + (": " + "; ".join(errors) if errors else ""))
-                    if outcome == "retry":
-                        continue
-                    if outcome == "spent":
-                        self._judge_fault_tail = fault
-                    return self._phase_stop(pid)
+                    outcome = await self._park_judge_no_verdict(
+                        "review", approach,
+                        "unreadable_verdict"
+                        if fault == "review_contract_unrepaired"
+                        else "unusable_findings")
+                    if outcome != "resume":
+                        return self._phase_stop(pid)
+                    self.run.update_status(gateRejectionEnding=None)
+                    continue
                 passed = verified
                 head = self._workspace_head_sha()
                 paths += self._write_phase_review_records(
@@ -14668,6 +14673,13 @@ class LoopSupervisor:
         while True:
             approved, payload, no_verdict = await self._verdict_gate_verdict(
                 result)
+            if no_verdict is None and not approved and payload is None:
+                # PRD v0.37 requirement D.5: a crashed, unparseable or
+                # schema-violating reply that the contract ladder and every
+                # judge retry could not repair is a judge with NO verdict in
+                # phase scope -- never the final peer gate's safe-default
+                # rejection, and never a pass.
+                no_verdict = "unparseable_reply"
             if no_verdict is None:
                 break
             outcome = await self._park_judge_no_verdict(

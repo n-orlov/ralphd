@@ -1352,7 +1352,10 @@ thinking step lower, and is refunded through `iterationsRefunded.infra`. When
 every retry also fails, nothing is rejected: the fault is an infra fault
 under the unchanged outage budget (v0.36 requirement F.3).
 `gateRejectionEnding` reads `"no_verdict_output_truncated"`, a
-`verdict_gate.no_verdict` or `review.no_verdict` event is emitted, and an
+`verdict_gate.no_verdict` or `review.no_verdict` event is emitted (a plan
+phase's judges also take this route for a reply the contract ladder left
+unreadable: `reason` `"unparseable_reply"` for the phase-scoped peer gate,
+`"unreadable_verdict"` or `"unusable_findings"` for the phase review), and an
 `infra_retry` event (`judgeFault: true`) starts an ordinary infra backoff
 (`health: "degraded"`, `infraWait`, woken early by `POST /retry`); after it
 the hat that had no verdict is dispatched again as a fresh first attempt.

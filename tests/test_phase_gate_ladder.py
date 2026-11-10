@@ -122,22 +122,19 @@ def test_a_phase_peer_rejection_with_both_blocking_findings_waived_passes_the_ga
 # -- D.3 park -> awaiting_input with planPhase ---------------------------------------
 
 def _park_cases(judge):
-    """(case, `_sup` arguments, the trigger the question carries). The
-    reviewer's `raise_operator_gate` is a field of the `review` contract; the
-    `verdict_gate` contract is a closed schema without it (so the final peer
-    gate has no such trigger either), which leaves a peer gate two cases."""
+    """(case, `_sup` arguments, the trigger the question carries): the same
+    three park triggers for both judges. `raise_operator_gate` is an optional
+    field of the `review` and the `verdict_gate` contract alike."""
     incurable = _two_findings()
     incurable[1] = _finding("requirement B", curable=False)
-    cases = [
+    return [
         ("a curable: false finding", {"findings_list": incurable},
          "incurable"),
+        ("raise_operator_gate",
+         {"payload_extra": {"raise_operator_gate": True}},
+         "reviewer_escalation"),
         ("spent cure rounds", {"cure_pass_ceiling": 0}, "cure_rounds_spent"),
     ]
-    if judge == "review":
-        cases.insert(1, ("raise_operator_gate",
-                         {"payload_extra": {"raise_operator_gate": True}},
-                         "reviewer_escalation"))
-    return cases
 
 
 def _parks(tmp_path, judge):
@@ -182,32 +179,68 @@ def _truncated(sup, prompt=""):
     return r
 
 
+def _unparseable(sup, prompt=""):
+    r = IterationResult(exit_code=0)
+    r.final_text = "not a verdict"
+    r.duration_s = 5.0
+    r.usage = {"input": 10, "output": 20, "totalTokens": 30}
+    return r
+
+
+def _no_verdict_cases(judge):
+    """(case, the hat's reply, the `_park_judge_no_verdict` reason): a
+    truncated reply and an unparseable one that the contract ladder (every
+    re-ask also malformed) and every judge retry cannot repair."""
+    return [
+        ("truncated", _truncated, "output_truncated"),
+        ("unparseable", _unparseable,
+         "unreadable_verdict" if judge == "review"
+         else "unparseable_reply"),
+    ]
+
+
 def _no_verdict(tmp_path, judge):
-    sup = _sup(tmp_path, judge, hat=_truncated, infra_outage_budget_s=0.0)
-    calls = []
-    real = sup._park_judge_no_verdict
+    for index, (case, hat, reason) in enumerate(_no_verdict_cases(judge)):
+        sup = _sup(tmp_path / f"case{index}", judge, hat=hat,
+                   infra_outage_budget_s=0.0, contract_retry_max=2)
+        calls = []
+        fixes = []
+        real = sup._park_judge_no_verdict
 
-    async def spy(hat, approach, reason):
-        calls.append((hat, approach, reason))
-        return await real(hat, approach, reason)
+        async def spy(hat, approach, reason, real=real, calls=calls):
+            calls.append((hat, approach, reason))
+            return await real(hat, approach, reason)
 
-    sup._park_judge_no_verdict = spy
-    outcome = asyncio.run(sup._run_phase_review("one"))
-    assert outcome == ("tail",)
-    assert [(c[0], c[2]) for c in calls] == [(judge, "output_truncated")]
-    assert _gate(sup) == "closed"
-    # neither a rejection ...
-    _no_cure_was_taken(sup)
-    assert sup.run.read_status().get("inputQuestion") is None
-    approaches = sup.run.root / "approaches"
-    assert not approaches.exists() or not any(approaches.iterdir())
-    # ... nor a pass
-    assert _events(sup, "phase_gate.passed") == []
-    assert (sup.run.read_status()["gateRejectionEnding"]
-            == state.GATE_REJECTION_ENDING_NO_VERDICT)
-    assert sup._finish_tail_unverified() == "failed"
-    status = sup.run.read_status()
-    assert status["verdict"] == "unreviewed"
+        async def malformed_fix(hat, errors, final_text=None, *,
+                                fixes=fixes):
+            fixes.append(hat)
+            return "still not a verdict", None
+
+        sup._park_judge_no_verdict = spy
+        sup._ask_contract_fix = malformed_fix
+        outcome = asyncio.run(sup._run_phase_review("one"))
+        assert outcome == ("tail",), case
+        assert [(c[0], c[2]) for c in calls] == [(judge, reason)], case
+        if case == "unparseable":
+            # the contract ladder's re-asks ran, and none repaired the reply
+            assert fixes and set(fixes) == {judge}, case
+        assert _gate(sup) == "closed", case
+        # neither a rejection ...
+        _no_cure_was_taken(sup)
+        assert sup.run.read_status().get("inputQuestion") is None, case
+        assert _events(sup, "approach.cure_pass") == []
+        assert _events(sup, "approach.gate_cure_pass") == []
+        approaches = sup.run.root / "approaches"
+        assert not approaches.exists() or not any(approaches.iterdir())
+        # ... nor a pass
+        assert _events(sup, "phase_gate.passed") == [], case
+        (fault,) = _events(sup, f"{judge}.no_verdict")
+        assert fault["reason"] == reason, case
+        assert (sup.run.read_status()["gateRejectionEnding"]
+                == state.GATE_REJECTION_ENDING_NO_VERDICT), case
+        assert sup._finish_tail_unverified() == "failed", case
+        status = sup.run.read_status()
+        assert status["verdict"] == "unreviewed", case
 
 
 def test_a_phase_review_with_no_verdict_is_an_infra_fault_never_a_rejection_or_a_pass(tmp_path):
