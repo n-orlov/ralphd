@@ -1160,17 +1160,20 @@ def build_input_question(
     cure_rounds_used: int, cure_rounds_allowed: int,
     approach: int, max_approaches: int, parked_at_epoch: float,
     timeout_min: float | None = None, kind: str = "findings",
+    plan_phase: str | None = None,
 ) -> dict:
     """The `inputQuestion` object `status.json` carries while the run is
     `awaiting_input` (PRD C.1). `expiresAt` is the park time plus the input
     timeout (default `DEFAULT_INPUT_TIMEOUT_MIN`), absolute so a restart keeps
     the same expiry; `null` when the timeout is 0 and always for a `secret`
-    question, which never expires."""
+    question, which never expires. A park raised by a phase's gate (PRD v0.37
+    D.3) carries `planPhase`, the phase id; every other question has no such
+    key."""
     minutes = DEFAULT_INPUT_TIMEOUT_MIN if timeout_min is None else timeout_min
     expires_at = None
     if kind != "secret" and minutes and minutes > 0:
         expires_at = utc_from_epoch(parked_at_epoch + minutes * 60)
-    return {
+    question = {
         "kind": kind,
         "trigger": trigger,
         "judge": judge,
@@ -1188,6 +1191,9 @@ def build_input_question(
                           all(f["curable"]
                               for f in input_question_findings(blocking)))),
     }
+    if plan_phase is not None:
+        question["planPhase"] = plan_phase
+    return question
 
 
 def parked_question(run_root: Path, status: dict) -> dict | None:

@@ -209,6 +209,11 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # this task's cutover proved wrong against the code it now
         # executes rather than merely declares.
         T("replan", "stagnation_exhausted"),
+        # PRD v0.37 D.3: a phase's gate (the phase review or its peer verdict
+        # gate, run from the worker's own pass) parks the run in
+        # `awaiting_input` on a rejection that is incurable, escalated by the
+        # reviewer, or past the approach's cure rounds.
+        T("paused", "phase_gate_operator_input_needed"),
         # Task 007 (requirement D, #99): `state.task_blocked_by`'s doomed
         # set covers the ENTIRE actionable remainder -- no worker iteration
         # could EVER move this plan again, not just "not yet" the way an
@@ -513,6 +518,10 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # repair the absent-id edge, so this resumes straight back into
         # `worker` too.
         T("worker", "paused_resumed_unresolvable_edge"),
+        # PRD v0.37 D.3: the answer (or the lapsed timeout) of a park a
+        # phase's gate raised leaves `paused` for `worker` when it cures in
+        # that phase or opens the gate (K = 0 goes to `replan` below).
+        T("worker", "paused_resumed_phase_gate"),
         # v0.36 requirement C.3: an ANSWER to the findings park
         # (`LoopSupervisor.answer`) leaves `paused` by the outcome it chose,
         # from the judge's own position over the SAME unarchived approach: a

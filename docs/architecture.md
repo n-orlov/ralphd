@@ -164,6 +164,7 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `worker` | worker | both | `review` | `verdict_ready` |
 | `worker` | worker | both | `review` | `blocked_with_failures` |
 | `worker` | worker | both | `replan` | `stagnation_exhausted` |
+| `worker` | worker | both | `paused` | `phase_gate_operator_input_needed` |
 | `worker` | worker | both | `review` | `doomed_plan_unverifiable` |
 | `worker` | worker | both | `review` | `petition_held_no_task_bound` |
 | `worker` | worker | both | `worker` | `unsatisfiable_targeted_replan` |
@@ -209,6 +210,7 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `paused` | — | both | `worker` | `paused_resumed_stagnation` |
 | `paused` | — | both | `worker` | `paused_resumed_unschedulable_cycle` |
 | `paused` | — | both | `worker` | `paused_resumed_unresolvable_edge` |
+| `paused` | — | both | `worker` | `paused_resumed_phase_gate` |
 | `paused` | — | both | `cure` | `paused_answered_cure` |
 | `paused` | — | both | `replan` | `paused_answered_next_approach` |
 | `paused` | — | peer verdict gate only | `verdict_gate` | `paused_resumed_verdict_gate` |
@@ -255,6 +257,7 @@ stateDiagram-v2
     worker --> review : verdict_ready
     worker --> review : blocked_with_failures
     worker --> replan : stagnation_exhausted
+    worker --> paused : phase_gate_operator_input_needed
     worker --> review : doomed_plan_unverifiable
     worker --> review : petition_held_no_task_bound
     worker --> worker : unsatisfiable_targeted_replan
@@ -287,6 +290,7 @@ stateDiagram-v2
     paused --> worker : paused_resumed_stagnation
     paused --> worker : paused_resumed_unschedulable_cycle
     paused --> worker : paused_resumed_unresolvable_edge
+    paused --> worker : paused_resumed_phase_gate
     paused --> cure : paused_answered_cure
     paused --> replan : paused_answered_next_approach
     finishing --> reflect : reflect_enabled

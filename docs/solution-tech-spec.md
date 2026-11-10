@@ -829,6 +829,12 @@ approach and replan the next one (`next_approach`), or hold the run `exhausted`
 park never expires. The notifier gets one message at the park, one reminder
 before `expiresAt` and one when the timeout fires.
 
+A rejected plan phase climbs the same rejection ladder with the phase as its
+scope: budget spent holds `exhausted`, every blocking finding waived opens the
+gate, a park raises `awaiting_input` with `inputQuestion.planPhase` (answered
+with the same `ralphctl answer` options inside that phase), and a judge with no
+verdict is an infra fault under the outage budget (SPEC.md §4.2).
+
 ### Cure passes
 
 Cure passes keep the current approach and insert targeted tasks through

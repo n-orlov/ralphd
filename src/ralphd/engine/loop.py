@@ -1478,7 +1478,7 @@ class LoopSupervisor:
 
     def _park_for_input(
         self, *, reason: str, judge: str, trigger: str,
-        blocking: list[dict], approach: int,
+        blocking: list[dict], approach: int, plan_phase: str | None = None,
     ) -> None:
         """v0.36 requirement B/C: hold the run on a findings question. The
         engine's ONE way to ask -- `state: "awaiting_input"` with the
@@ -1507,7 +1507,8 @@ class LoopSupervisor:
             cure_rounds_allowed=self._cure_rounds_allowed(approach),
             approach=approach, max_approaches=self.cfg.max_approaches,
             parked_at_epoch=self._now_epoch(),
-            timeout_min=getattr(self.cfg, "input_timeout_min", None))
+            timeout_min=getattr(self.cfg, "input_timeout_min", None),
+            plan_phase=plan_phase)
         self.run.update_status(state=AWAITING_INPUT_STATE, pauseReason=reason,
                                pauseDetail=None, inputQuestion=question)
         self._emit_run_paused(reason)
@@ -1611,6 +1612,8 @@ class LoopSupervisor:
             "approachesGranted": plan.approaches_granted,
             "waiverFiles": waiver_files, "rulingFile": ruling_file,
         }
+        if isinstance(question, dict) and question.get("planPhase"):
+            record["planPhase"] = question["planPhase"]
         self.run.update_status(inputAnswer=record)
         self.run.emit("input.answered", **record)
         self.resume()
@@ -10717,7 +10720,9 @@ class LoopSupervisor:
             # reviewed at the top of the pass, before a task is selected.
             due_phase = self._due_phase_for_review()
             if due_phase is not None:
-                await self._run_phase_review(due_phase)
+                outcome = await self._run_phase_review(due_phase)
+                if outcome is not None:
+                    return outcome
                 continue
             tasks_before = self.run.read_tasks()
             # Task 116 (#60 pillar 3, fact 9): the HARNESS -- not the agent
@@ -12551,8 +12556,8 @@ class LoopSupervisor:
         # review's dispatch, and the loop stays in `worker` afterwards.
         open_gate = self._open_gate_before_last()
         if open_gate is not None:
-            await self._run_phase_review(open_gate, edge=guard_ready)
-            return ("advance", "worker", "no_verdict_yet")
+            outcome = await self._run_phase_review(open_gate, edge=guard_ready)
+            return outcome or ("advance", "worker", "no_verdict_yet")
         return ("advance", "review", guard_ready)
 
     def _open_gate_before_last(self) -> str | None:
@@ -14323,60 +14328,104 @@ class LoopSupervisor:
                 pass
 
     async def _run_phase_review(self, pid: str, *,
-                                edge: str | None = None) -> None:
-        """PRD v0.37 requirement C.1/C.3/C.4/C.5: the `review` hat in
-        phase-scoped mode over the due phase `pid`. The gate reads
-        `reviewing` from dispatch until the verdict is applied;
-        `phase_gate.due` announces the dispatch. A passing verdict (including
-        a rejection whose findings are all residual, which `_review_verdict`
-        recomputes to `verified`) records the verdict, appends both record
-        paths to `phases[].records`, sets `gate: "passed"`, emits
-        `phase_gate.passed` and records the next phase's `startHead` as the
-        current HEAD (B.3). With the peer verdict gate on, the pass first
-        goes through `_run_phase_peer_gate` (C.2), and any pass is held back
-        by `_phase_pass_blockers` (C.4: gate stays `closed`, phase not
-        parked). Anything else leaves the gate `closed` with the verdict
-        recorded; the cure, park and no-verdict rungs for a phase are the
-        rejection ladder's, not this method's.
+                                edge: str | None = None,
+                                after: str | None = None) -> tuple | None:
+        """PRD v0.37 requirement C.1/C.3/C.4/C.5 and D: the `review` hat in
+        phase-scoped mode over the due phase `pid`, climbing the phase
+        rejection ladder. The gate reads `reviewing` from dispatch until the
+        verdict is applied; `phase_gate.due` announces the dispatch. A
+        passing verdict (including a rejection whose findings are all
+        residual, which `_review_verdict` recomputes to `verified`, and a
+        rejection whose blocking findings are all waived, D.2) records the
+        verdict, appends both record paths to `phases[].records`, sets
+        `gate: "passed"`, emits `phase_gate.passed` and records the next
+        phase's `startHead` as the current HEAD (B.3). With the peer verdict
+        gate on, the pass first goes through `_run_phase_peer_gate` (C.2),
+        and any pass is held back by `_phase_pass_blockers` (C.4: gate stays
+        `closed`, phase not parked).
+
+        A rejected verdict (either judge) climbs `ladder.decide`'s own
+        steps with the phase as the scope: the budget spent -> the
+        `exhausted` tail; every blocking finding waived -> the pass above;
+        a park (`curable: false`, `raise_operator_gate` or the approach's
+        cure rounds spent) -> `awaiting_input` with `inputQuestion.planPhase`
+        (`_park_phase_gate`); otherwise the cure (`_take_phase_cure_pass`).
+        A judge with no verdict after the existing retries is an infra fault
+        under the outage budget (`_park_judge_no_verdict`, or the contract
+        fault backoff for an unreadable reply), never a rejection and never a
+        pass.
+
+        Returns `None` when the loop carries on as the worker, or the step
+        outcome the caller returns (`("tail",)`, or the advance to `paused`
+        a park takes).
 
         `edge` is the `worker -> review` edge reason (B.7) that sent a worker
         exit here instead of to the final review; it rides on
-        `phase_gate.due` and the iteration meta."""
+        `phase_gate.due` and the iteration meta. `after` re-enters the review
+        once a park's answer waived every blocking finding of that judge
+        (`"review"`: the review stage is settled, the peer gate still runs
+        when on; `"verdict_gate"`: both are)."""
         approach = self._approach
         data = self.run.read_tasks()
         phase = state.phase_entry(data, pid) or {}
         start_head = phase.get("startHead")
-        round_ = 1 + sum(1 for r in phase.get("records") or []
-                         if str(r).endswith("-review.json"))
+        done_rounds = sum(1 for r in phase.get("records") or []
+                          if str(r).endswith("-review.json"))
+        round_ = 1 + done_rounds if after is None else max(1, done_rounds)
         state.set_phase_gate(data, pid, state.PHASE_GATE_REVIEWING)
         self.run.write_tasks(data)
         due_extra = {"edge": edge} if edge else {}
-        self.run.emit("phase_gate.due", planPhase=pid, approach=approach,
-                      round=round_, startHead=start_head, **due_extra)
+        if after is None:
+            self.run.emit("phase_gate.due", planPhase=pid, approach=approach,
+                          round=round_, startHead=start_head, **due_extra)
         self._phase_review_scope = {"planPhase": pid, "round": round_,
                                     "startHead": start_head, **due_extra}
-        passed = False
+        passed = after is not None
         held: list[str] = []
         paths: list[str] = []
-        head = None
-        cure_blocking: list[dict] | None = None
-        cure_judge = "review"
+        head = self._workspace_head_sha() if passed else None
+        rejection: tuple[str, ladder.Decision, list[dict]] | None = None
         try:
             await self._gate()
-            self.run.emit("phase", phase="review", approach=approach)
-            result = await self._run_review_iteration(approach)
-            while result is not None and self._review_no_verdict:
-                outcome = await self._park_judge_no_verdict(
-                    "review", approach, self._review_no_verdict)
-                if outcome != "resume":
-                    result = None
-                    break
-                self.run.update_status(gateRejectionEnding=None)
-                result = await self._run_review_iteration(approach)
-            if result is not None:
-                verified, payload, _errors = self._review_verdict(result)
-                passed = (verified and not self._review_contract_unrepaired
-                          and not self._review_findings_unusable)
+            if after is None:
+                self.run.emit("phase", phase="review", approach=approach)
+                while True:
+                    result = await self._run_review_iteration(approach)
+                    if result is None:
+                        self._budget_exhausted_tail = True
+                        return self._phase_stop(pid)
+                    if self._review_no_verdict:
+                        outcome = await self._park_judge_no_verdict(
+                            "review", approach, self._review_no_verdict)
+                        if outcome != "resume":
+                            return self._phase_stop(pid)
+                        self.run.update_status(gateRejectionEnding=None)
+                        continue
+                    verified, payload, contract_errors = (
+                        self._review_verdict(result))
+                    fault = ("review_contract_unrepaired"
+                             if self._review_contract_unrepaired
+                             else "review_findings_unusable"
+                             if self._review_findings_unusable else None)
+                    if fault is None:
+                        self._reset_judge_fault_episode()
+                        break
+                    errors = [str(e) for e in (contract_errors or [])][:3]
+                    self.run.emit("review.contract_fault", guard=fault,
+                                  approach=approach, errors=errors,
+                                  planPhase=pid)
+                    outcome = await self._judge_fault_backoff(
+                        "review",
+                        ("review's verdict claim is unreadable"
+                         if fault == "review_contract_unrepaired"
+                         else "review's findings channel is unusable")
+                        + (": " + "; ".join(errors) if errors else ""))
+                    if outcome == "retry":
+                        continue
+                    if outcome == "spent":
+                        self._judge_fault_tail = fault
+                    return self._phase_stop(pid)
+                passed = verified
                 head = self._workspace_head_sha()
                 paths += self._write_phase_review_records(
                     pid, round_, "review",
@@ -14384,20 +14433,36 @@ class LoopSupervisor:
                     payload=payload, start_head=start_head,
                     head_reviewed=head, iteration=self.iterations_used)
                 if not passed:
-                    cure_blocking = self._phase_cure_candidate(
-                        "review", payload)
-                    cure_judge = "review"
-                self._clear_review_channel_files()
+                    rejection = self._phase_rejection("review", payload)
+                    if rejection[1].step == ladder.STEP_WAIVED:
+                        self._emit_phase_waived(pid, "review", rejection[2])
+                        passed, rejection = True, None
+                if rejection is None or (
+                        rejection[1].step != ladder.STEP_PARK):
+                    self._clear_review_channel_files()
             if passed:
                 held = self._phase_pass_blockers(pid)
-            if passed and not held and self.cfg.peer_verdict_gate:
+            if (passed and not held and self.cfg.peer_verdict_gate
+                    and after != "verdict_gate"):
                 # PRD v0.37 requirement C.2: the peer verdict gate runs
                 # after a phase review that passes, with the same `## Phase
                 # review` section in its prompt.
-                passed, peer_paths, cure_blocking = (
+                approved, peer_paths, payload, stop = (
                     await self._run_phase_peer_gate(pid, round_, start_head))
-                cure_judge = "verdict_gate"
                 paths += peer_paths
+                if stop:
+                    return self._phase_stop(pid)
+                passed = approved
+                if not approved:
+                    rejection = self._phase_rejection(
+                        "verdict_gate", payload)
+                    if rejection[1].step == ladder.STEP_WAIVED:
+                        self._emit_phase_waived(
+                            pid, "verdict_gate", rejection[2])
+                        passed, rejection = True, None
+                if rejection is None or (
+                        rejection[1].step != ladder.STEP_PARK):
+                    self._clear_review_channel_files()
                 if passed:
                     head = self._workspace_head_sha()
                     held = self._phase_pass_blockers(pid)
@@ -14405,11 +14470,6 @@ class LoopSupervisor:
             self._phase_review_scope = None
             self.run.update_status(phase="worker")
         data = self.run.read_tasks()
-        if result is None:
-            state.set_phase_gate(data, pid, state.PHASE_GATE_CLOSED)
-            self._phase_review_unresolved.add(pid)
-            self.run.write_tasks(data)
-            return
         for path in paths:
             state.append_phase_record(data, pid, path)
         if passed and held:
@@ -14427,7 +14487,7 @@ class LoopSupervisor:
                 message=(f"phase review of {pid} passed but is not "
                          "honoured: " + "; ".join(held)
                          + " -- the gate stays closed"))
-            return
+            return None
         if passed:
             state.set_phase_gate(data, pid, state.PHASE_GATE_PASSED)
             nxt = state.next_phase_id(data, pid)
@@ -14436,39 +14496,63 @@ class LoopSupervisor:
             self.run.emit("phase_gate.passed", planPhase=pid,
                           approach=approach, round=round_, records=paths,
                           nextPhase=nxt)
-            return
+            return None
         state.set_phase_gate(data, pid, state.PHASE_GATE_CLOSED)
-        if cure_blocking:
-            self.run.write_tasks(data)
-            self._take_phase_cure_pass(
-                pid, cure_judge, round_, cure_blocking, edge=edge)
-            return
-        self._phase_review_unresolved.add(pid)
         self.run.write_tasks(data)
-        self.run.emit("log", level="warning",
-                      message=(f"phase review of {pid} did not pass; the "
-                               "gate stays closed"))
+        judge, decision, blocking = rejection
+        if decision.step == ladder.STEP_EXHAUSTED:
+            # D.1: the budget is spent -> `exhausted`, whatever the verdict.
+            self._budget_exhausted_tail = True
+            return ("tail",)
+        if decision.step == ladder.STEP_CURE:
+            self._take_phase_cure_pass(
+                pid, judge, round_, blocking, edge=edge)
+            return None
+        return await self._park_phase_gate(
+            pid, judge, round_, decision, blocking, edge=edge)
 
-    def _phase_cure_candidate(self, judge: str,
-                              payload: dict | None) -> list[dict] | None:
-        """PRD v0.37 D.4: the blocking findings a phase rejection cures, or
-        `None` when the rejection does not take the cure rung. It is
-        `ladder.decide` over this verdict's own facts, the same function the
-        final review's and the peer gate's rejections climb: the cure step
-        is returned only when the budget is not spent, not every blocking
-        finding is waived, no blocking finding is `curable: false`, the
-        reviewer did not set `raise_operator_gate` and the approach has a
-        cure round left (`_cure_pass_ceiling_spent`, the allowance the phase
-        cure shares with the final review and the final peer gate). Any
-        other step is the phase ladder's other rungs, not this method's.
-        Read BEFORE the review channel files are cleared."""
+    def _phase_stop(self, pid: str) -> tuple:
+        """A phase's judge ended the step with no verdict (an infra fault
+        past its budget, a spent budget, an abort): the gate goes back to
+        `closed` and the run takes the `("tail",)` exit, which writes the
+        terminal state from the flag the caller set."""
+        data = self.run.read_tasks()
+        state.set_phase_gate(data, pid, state.PHASE_GATE_CLOSED)
+        self.run.write_tasks(data)
+        return ("tail",)
+
+    def _emit_phase_waived(self, pid: str, judge: str,
+                           blocking: list[dict]) -> None:
+        """D.2 / C.4: every blocking finding of a rejection is under a stored
+        waiver, so the rejection is a pass."""
+        self.run.emit("rejection.waived", judge=judge,
+                      approach=self._approach, findings=blocking,
+                      planPhase=pid)
+
+    def _phase_rejection(self, judge: str, payload: dict | None
+                         ) -> tuple[str, ladder.Decision, list[dict]]:
+        """`(judge, decision, blocking)` for a rejected phase verdict:
+        `ladder.decide` over the verdict's own facts, the function the final
+        review's and the peer gate's rejections climb. Read BEFORE the review
+        channel files are cleared."""
+        decision, blocking = self._phase_ladder_decision(judge, payload)
+        return judge, decision, blocking
+
+    def _phase_ladder_decision(self, judge: str, payload: dict | None
+                               ) -> tuple[ladder.Decision, list[dict]]:
+        """PRD v0.37 D.1-D.4: the step `ladder.decide` names for a phase
+        rejection and its blocking findings. The facts are this verdict's
+        own: the budget, the stored waivers, whether a blocking finding is
+        `curable: false` (a rejection with no structured findings channel is
+        never curable), the reviewer's `raise_operator_gate`, and whether the
+        approach's cure rounds are spent (`_cure_pass_ceiling_spent`, the
+        allowance the phase cure shares with the final review and the final
+        peer gate). Read BEFORE the review channel files are cleared."""
         approach = self._approach
         review = judge == "review"
         findings_list = (self._review_findings() if review
                          else self._gate_findings())
-        if findings_list is None:
-            return None
-        blocking = [f for f in findings_list
+        blocking = [f for f in (findings_list or [])
                     if f.get("severity") == "blocking"]
         curable = (self._review_rejection_curable_ignoring_ceiling(approach)
                    if review
@@ -14480,6 +14564,14 @@ class LoopSupervisor:
             reviewer_escalation=self._review_reviewer_requested_operator_gate(
                 payload),
             rounds_spent=self._cure_pass_ceiling_spent(approach))
+        return decision, blocking
+
+    def _phase_cure_candidate(self, judge: str,
+                              payload: dict | None) -> list[dict] | None:
+        """PRD v0.37 D.4: the blocking findings a phase rejection cures, or
+        `None` when the rejection does not take the cure rung (it takes
+        another rung of `_phase_ladder_decision`'s)."""
+        decision, blocking = self._phase_ladder_decision(judge, payload)
         return blocking if decision.step == ladder.STEP_CURE else None
 
     def _take_phase_cure_pass(self, pid: str, judge: str, round_: int,
@@ -14556,17 +14648,21 @@ class LoopSupervisor:
         return blockers
 
     async def _run_phase_peer_gate(
-            self, pid: str, round_: int,
-            start_head) -> tuple[bool, list[str], list[dict] | None]:
-        """PRD v0.37 requirement C.2/C.3: the peer verdict gate over phase
-        `pid`, run inside the phase review's scope so its prompt carries the
-        `## Phase review` section. Returns `(approved, record paths)`; a
-        gate with no usable verdict (after the `_park_judge_no_verdict`
-        retries) or a spent budget returns `(False, [], None)`. The rejection
-        rungs for a phase's peer gate belong to the ladder, not here."""
+            self, pid: str, round_: int, start_head
+    ) -> tuple[bool, list[str], dict | None, bool]:
+        """PRD v0.37 requirement C.2/C.3 and D.5: the peer verdict gate over
+        phase `pid`, run inside the phase review's scope so its prompt
+        carries the `## Phase review` section. Returns `(approved, record
+        paths, payload, stop)`. `stop` is True when the gate gave no usable
+        verdict after the `_park_judge_no_verdict` retries (an infra fault
+        under the outage budget, neither a rejection nor a pass) or when the
+        budget is spent (D.1: `exhausted`); the flag the terminal write reads
+        is already set. A rejection's rung (`_phase_rejection`) is the
+        caller's: the gate's findings files are left in place for it."""
         approach = self._approach
         if not self.budget_left():
-            return False, [], None
+            self._budget_exhausted_tail = True
+            return False, [], None, True
         self.run.emit("phase", phase="verdict_gate", approach=approach)
         result = await self._dispatch_verdict_gate()
         while True:
@@ -14577,7 +14673,7 @@ class LoopSupervisor:
             outcome = await self._park_judge_no_verdict(
                 "verdict_gate", approach, no_verdict)
             if outcome != "resume":
-                return False, [], None
+                return False, [], None, True
             self.run.update_status(gateRejectionEnding=None)
             result = await self._dispatch_verdict_gate()
         self._reset_judge_fault_episode()
@@ -14588,11 +14684,146 @@ class LoopSupervisor:
             payload=payload, start_head=start_head,
             head_reviewed=self._workspace_head_sha(),
             iteration=self.iterations_used)
-        cure_blocking = (None if approved
-                         else self._phase_cure_candidate("verdict_gate",
-                                                         payload))
+        return approved, paths, payload, False
+
+    # -- the park rung of a phase rejection (PRD v0.37 D.3) ---------------------
+
+    PHASE_GATE_PARK_REASON = "phase_gate_operator_input_needed"
+
+    def _phase_question(self, pid: str, judge: str, decision: ladder.Decision,
+                        blocking: list[dict], *, parked_at: float,
+                        timeout_min: float | None) -> dict:
+        approach = self._approach
+        used = (self._cure_passes_for_approach(approach)
+                + self._gate_cure_passes_for_approach(approach))
+        return state.build_input_question(
+            judge=judge, trigger=decision.trigger or "cure_rounds_spent",
+            blocking=blocking, cure_rounds_used=used,
+            cure_rounds_allowed=self._cure_rounds_allowed(approach),
+            approach=approach, max_approaches=self.cfg.max_approaches,
+            parked_at_epoch=parked_at, timeout_min=timeout_min,
+            plan_phase=pid)
+
+    async def _park_phase_gate(self, pid: str, judge: str, round_: int,
+                         decision: ladder.Decision, blocking: list[dict], *,
+                         edge: str | None = None) -> tuple:
+        """D.3: a rejected phase parks the run in `awaiting_input` when a
+        blocking finding is `curable: false`, the reviewer set
+        `raise_operator_gate`, or the approach's cure rounds are spent.
+        `inputQuestion` carries `planPhase`; the answers are the v0.36 ones
+        (`answer()`): K >= 1 cures in that phase, every blocking finding
+        waived opens the gate, K = 0 archives the approach and replans. The
+        gate stays `closed`. With `operator_input_needed_pause: false` the
+        park resolves at once with the outcome an unanswered park takes.
+
+        Returns the step outcome: the advance to `paused` for a real park
+        (`_step_paused` carries the answer out), or the outcome the
+        immediate resolution took."""
+        approach = self._approach
+        if not self.cfg.operator_input_needed_pause:
+            question = self._phase_question(
+                pid, judge, decision, blocking, parked_at=self._now_epoch(),
+                timeout_min=0)
+            question["expiresAt"] = question["parkedAt"]
+            self.run.emit("input.parked", timeoutAtPark=True,
+                          **{k: v for k, v in question.items()
+                             if k != "parkedAt"})
+            outcome = self._input_timeout_outcome(question)
+            self.run.emit("input.timed_out", outcome=outcome, judge=judge,
+                          trigger=question.get("trigger"), approach=approach,
+                          maxApproaches=int(self.cfg.max_approaches),
+                          expiresAt=question.get("expiresAt"),
+                          timeoutMin=self.cfg.input_timeout_min,
+                          planPhase=pid)
+            taken = await self._take_phase_input_outcome(pid, judge, outcome)
+            # a cure goes on as the worker pass that is already running
+            return None if taken[:2] == ("advance", "worker") else taken
+        replan_available = approach < self.cfg.max_approaches
+        text = (
+            f"Run {self.cfg.run_id} approach {approach}: the "
+            f"{judge.replace('_', ' ')} of plan phase `{pid}` (round "
+            f"{round_}) rejected the phase, and the run is parked in "
+            "awaiting_input instead of curing it (a blocking finding is "
+            "incurable, the reviewer raised the operator gate, or this "
+            "approach's cure rounds are spent). An unanswered park would "
+            + ("replan a fresh approach" if replan_available else
+               "end the run with no approach left (held as exhausted: "
+               "approaches)")
+            + "; " + self._answer_escalation_sentences())
+        self.run.emit(
+            "operator_escalation", approach=approach,
+            reason=self.PHASE_GATE_PARK_REASON, planPhase=pid, findings=blocking,
+            replanAvailable=replan_available, escalation=text,
+            nextStepIfUnanswered=(state.NEXT_STEP_ARCHIVE_AND_REPLAN
+                                  if replan_available
+                                  else state.NEXT_STEP_FINISH),
+            **self._escalation_preview_fields(approach, {}))
+        self._park_for_input(
+            reason=self.PHASE_GATE_PARK_REASON, judge=judge,
+            trigger=decision.trigger or "cure_rounds_spent",
+            blocking=blocking, approach=approach, plan_phase=pid)
+        self._notify_input_event(text)
+        self._advance("worker", "paused", self.PHASE_GATE_PARK_REASON)
+        return ("advance", "paused", self.PHASE_GATE_PARK_REASON)
+
+    def _phase_record_findings(self, pid: str, judge: str) -> list[dict]:
+        """The blocking findings of `pid`'s latest `judge` record
+        (`artifacts/phase-reviews/<phase>-r<round>-<judge>.json`): the full
+        findings a park's answer cures, which `inputQuestion` only carries in
+        summary."""
+        data = self.run.read_tasks()
+        phase = state.phase_entry(data, pid) or {}
+        suffix = f"-{judge}.json"
+        for rel in reversed(phase.get("records") or []):
+            if not str(rel).endswith(suffix):
+                continue
+            try:
+                record = json.loads((self.run.root / rel).read_text())
+            except (OSError, ValueError):
+                continue
+            return [f for f in record.get("findings") or []
+                    if isinstance(f, dict) and f.get("severity") == "blocking"]
+        return []
+
+    def _phase_parked_round(self, pid: str) -> int:
+        data = self.run.read_tasks()
+        records = (state.phase_entry(data, pid) or {}).get("records") or []
+        return max(1, sum(1 for r in records if str(r).endswith("-review.json")))
+
+    async def _take_phase_input_outcome(self, pid: str, judge: str,
+                                        outcome: str) -> tuple:
+        """Carry out the outcome a phase park resolved to, from the worker's
+        position: the answer's (`verified`, `cure`, `next_approach`) or the
+        timeout's (`cure_now`, `next_approach`, `exhausted_approaches`).
+        A cure inserts the accepted blocking findings in the phase
+        (`_take_phase_cure_pass`) and goes on to the worker; a verdict taken
+        as `verified` opens the gate through the same pass the review takes
+        (`_run_phase_review(after=)`, the peer gate still running after a
+        review's waiver);
+        archive-and-replan is the v0.36 tail."""
+        approach = self._approach
+        if outcome in (answering.OUTCOME_CURE,
+                       state.INPUT_ON_TIMEOUT_CURE_NOW):
+            self._clear_review_channel_files()
+            blocking = self._phase_record_findings(pid, judge)
+            self._take_phase_cure_pass(
+                pid, judge, self._phase_parked_round(pid), blocking)
+            return ("advance", "worker", "paused_resumed_phase_gate")
+        if outcome == answering.OUTCOME_VERIFIED:
+            self._clear_review_channel_files()
+            carried = await self._run_phase_review(pid, after=judge)
+            return carried or ("advance", "worker",
+                               "paused_resumed_phase_gate")
+        # the findings files are archived with the approach (they feed the
+        # next approach's composite PRD), then cleared.
+        signatures = self.run.read_status().get("rejectionSignatures") or {}
+        taken = self._archive_and_replan_outcome(
+            "review", approach, signatures.get(str(approach)),
+            note=(f"every approach is spent ({approach}/"
+                  f"{self.cfg.max_approaches}) and the rejection of plan "
+                  f"phase {pid} was not cured"))
         self._clear_review_channel_files()
-        return approved, paths, cure_blocking
+        return taken
 
     def _review_verified_edge(self, approach: int) -> tuple:
         """review's `verified` edge (also taken when the ladder treats a
@@ -14982,15 +15213,25 @@ class LoopSupervisor:
             return ("tail",)
         opening = self.run.read_status()
         reason = opening.get("pauseReason")
+        phase_park = (isinstance(opening.get("inputQuestion"), dict)
+                      and bool(opening["inputQuestion"].get("planPhase")))
         if (opening.get("state") == AWAITING_INPUT_STATE
                 and isinstance(opening.get("inputQuestion"), dict)):
             if await self._wait_for_answer_or_expiry():
+                if phase_park:
+                    return await self._carry_out_phase_input_timeout()
                 return self._carry_out_input_timeout()
         else:
             await self._gate()
         answered = self._take_input_answer()
         if answered is not None:
+            if answered.get("planPhase"):
+                return await self._carry_out_phase_input_answer(answered)
             return self._carry_out_input_answer(answered)
+        if reason == self.PHASE_GATE_PARK_REASON:
+            # released with no answer: the phase is due again.
+            self._advance("paused", "worker", "paused_resumed_phase_gate")
+            return ("advance", "worker", "paused_resumed_phase_gate")
         if reason == state.SECRET_INPUT_TRIGGER:
             # v0.36 C.5: a `secret` park (a restarted engine over one) is
             # answered by `--secret-handled` and continues at the worker.
@@ -15089,6 +15330,48 @@ class LoopSupervisor:
         signatures = self.run.read_status().get("rejectionSignatures") or {}
         return self._take_input_timeout_outcome(
             question, signature=signatures.get(str(approach)), notify=True)
+
+    async def _carry_out_phase_input_answer(self, record: dict) -> tuple:
+        """The answer to a park a phase's gate raised (PRD v0.37 D.3): the
+        outcome it chose, carried out over the SAME unarchived approach from
+        the worker's position (`paused -> worker`, or `replan`)."""
+        outcome = await self._take_phase_input_outcome(
+            str(record.get("planPhase")),
+            "verdict_gate" if record.get("judge") == "verdict_gate"
+            else "review", str(record.get("outcome")))
+        if outcome[:2] == ("advance", "paused"):
+            return await self._step_paused()
+        return outcome
+
+    async def _carry_out_phase_input_timeout(self) -> tuple:
+        """The park a phase's gate raised lapsed with no answer: release it
+        and take the timeout outcome, as `_take_input_timeout_outcome` does
+        for the final review (`input.timed_out` carries `planPhase`)."""
+        question = dict(self.run.read_status().get("inputQuestion") or {})
+        judge = ("verdict_gate" if question.get("judge") == "verdict_gate"
+                 else "review")
+        approach = int(question.get("approach") or self._current_approach())
+        self.resume()
+        outcome = self._input_timeout_outcome(question)
+        self.run.emit("input.timed_out", outcome=outcome, judge=judge,
+                      trigger=question.get("trigger"), approach=approach,
+                      maxApproaches=int(self.cfg.max_approaches),
+                      expiresAt=question.get("expiresAt"),
+                      timeoutMin=self.cfg.input_timeout_min,
+                      planPhase=question.get("planPhase"))
+        self._notify_input_event("\n".join([
+            f"run {self.cfg.run_id}: the input timeout fired on an "
+            "unanswered park",
+            f"plan phase: {question.get('planPhase')}",
+            f"judge: {judge}",
+            f"trigger: {question.get('trigger')}",
+            f"outcome taken: {outcome}",
+        ]))
+        taken = await self._take_phase_input_outcome(
+            str(question.get("planPhase")), judge, outcome)
+        if taken[:2] == ("advance", "paused"):
+            return await self._step_paused()
+        return taken
 
     def set_input_timeout_min(self, value: float) -> None:
         """v0.36 E.1: change the input timeout of a LIVE run

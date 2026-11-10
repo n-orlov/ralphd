@@ -131,6 +131,7 @@ def test_a_peer_rejection_leaves_the_gate_closed_and_records_the_rejection(tmp_p
     ws = tmp_path / "workspace"
     _init_workspace(ws)
     RunDir(root=root).update_status(state="starting")
+    (root / "prd.md").write_text("# PRD\n")
     sup = _supervisor(tmp_path, {
         "planning": [_plan], "worker": [_worker, _plan],
         "review": [judges.review], "verdict_gate": [judges.peer]},

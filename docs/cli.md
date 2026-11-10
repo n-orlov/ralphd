@@ -1987,6 +1987,12 @@ timeout fires naming the outcome taken (SPEC.md §12; a run with `operator_input
 or none at all, never holds the run: the park still parks and the timeout still
 fires.
 
+A park a plan phase's gate raised (the phase review or its peer gate, SPEC.md
+§4.2) carries `inputQuestion.planPhase` and is answered the same way, inside
+that phase: `--cure-rounds K` (K >= 1) cures the accepted findings in that
+phase, waiving every blocking finding sets its gate `passed`, and
+`--cure-rounds 0` archives the approach and replans.
+
 `--no-operator-input-needed-pause` (job.yaml `operator_input_needed_pause:
 false`) means the timeout fires at the moment of the park: the run never waits
 on findings, but still emits `input.parked` and `input.timed_out`.
