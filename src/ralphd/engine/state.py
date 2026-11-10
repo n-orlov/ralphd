@@ -11047,6 +11047,14 @@ class RunDir:
         that key instead of setting it -- `termination=None` and "this
         episode was never told to stop" are different claims to a `--json`
         consumer, and only key absence states the second one.
+
+        PRD v0.37 F.2: EVERY publication of `status.json` carries `planPhase`
+        -- the active phase of the persisted plan as the specified object,
+        or an explicit `null` when there is no phased plan (initial planning
+        before any task write, a plan with no phases, a resumed run dir
+        whose status predates the key). It is derived here, from the plan on
+        disk, at the one place the engine writes the file, so no caller (and
+        no ordering of calls) can publish a status without it.
         """
         status = self.read_status()
         for key, value in patch.items():
@@ -11054,6 +11062,7 @@ class RunDir:
                 status.pop(key, None)
             else:
                 status[key] = value
+        status["planPhase"] = plan_phase_status(self.read_tasks())
         status["updatedAt"] = utcnow()
         atomic_write_json(self.status_file, status)
         return status
@@ -11103,7 +11112,7 @@ class RunDir:
         if self.status_file.is_file():
             phase = plan_phase_status(data)
             if self.read_status().get("planPhase", _MISSING) != phase:
-                self.update_status(planPhase=phase)
+                self.update_status()
 
     def read_tasks(self) -> dict:
         """The tasks.json payload, via the hardened read path (task 002/#15):
