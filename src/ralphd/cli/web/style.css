@@ -309,6 +309,11 @@ footer.autorefresh {
    reads as the same kind of fact everywhere it shows up. */
 .task-row-blocked { background: rgba(200, 120, 0, 0.08); }
 
+/* PRD v0.37 G.4 (#313): a plan phase's group header in the task table. */
+.phase-group-header th { text-align: left; background: rgba(127, 127, 127, 0.14); }
+.phase-group-header .phase-rounds { font-weight: normal; }
+.phase-group-header .phase-record { font-weight: normal; margin-left: 0.4em; }
+
 /* task 056 (#1): the PRD (and, task 057, task-detail) dialog. Plain
    <dialog>, no library: a scrollable monospace text box whose content is
    inserted as text nodes only (see app.js's openTextDialog). */

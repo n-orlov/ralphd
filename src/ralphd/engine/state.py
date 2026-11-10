@@ -1160,17 +1160,20 @@ def build_input_question(
     cure_rounds_used: int, cure_rounds_allowed: int,
     approach: int, max_approaches: int, parked_at_epoch: float,
     timeout_min: float | None = None, kind: str = "findings",
+    plan_phase: str | None = None,
 ) -> dict:
     """The `inputQuestion` object `status.json` carries while the run is
     `awaiting_input` (PRD C.1). `expiresAt` is the park time plus the input
     timeout (default `DEFAULT_INPUT_TIMEOUT_MIN`), absolute so a restart keeps
     the same expiry; `null` when the timeout is 0 and always for a `secret`
-    question, which never expires."""
+    question, which never expires. A park raised by a phase's gate (PRD v0.37
+    D.3) carries `planPhase`, the phase id; every other question has no such
+    key."""
     minutes = DEFAULT_INPUT_TIMEOUT_MIN if timeout_min is None else timeout_min
     expires_at = None
     if kind != "secret" and minutes and minutes > 0:
         expires_at = utc_from_epoch(parked_at_epoch + minutes * 60)
-    return {
+    question = {
         "kind": kind,
         "trigger": trigger,
         "judge": judge,
@@ -1188,6 +1191,9 @@ def build_input_question(
                           all(f["curable"]
                               for f in input_question_findings(blocking)))),
     }
+    if plan_phase is not None:
+        question["planPhase"] = plan_phase
+    return question
 
 
 def parked_question(run_root: Path, status: dict) -> dict | None:
@@ -3186,6 +3192,178 @@ def _emit_rejected_dependency_edges(run: "RunDir", task_id: str,
                  edge=r.get("edge"), reason=r.get("reason"), source=source)
 
 
+# PRD v0.37 requirement A.4: a task the engine inserts into a PHASED plan
+# (tasks.json carries a top-level `phases` list) always gets a `phase`; a plan
+# without `phases` never gets the key written. These readers take the tasks
+# document (`RunDir.read_tasks()`), never the run, so each insertion path
+# resolves its phase from the same one read it already holds.
+PHASE_GATE_PASSED = "passed"
+PHASE_GATE_CLOSED = "closed"
+PHASE_GATE_REVIEWING = "reviewing"
+
+
+_MISSING = object()
+
+
+def plan_phase_ids(data: dict) -> list[str]:
+    """The ids of `data`'s `phases`, in plan order; `[]` for an unphased
+    plan (the one fact every phase rule below keys on)."""
+    phases = data.get("phases") if isinstance(data, dict) else None
+    if not isinstance(phases, list):
+        return []
+    return [p["id"] for p in phases
+            if isinstance(p, dict) and isinstance(p.get("id"), str)]
+
+
+def last_phase_id(data: dict) -> str | None:
+    """The id of the plan's last phase, `None` for an unphased plan. The
+    final review's and the peer gate's cure tasks go here (A.4)."""
+    ids = plan_phase_ids(data)
+    return ids[-1] if ids else None
+
+
+def earliest_open_phase_id(data: dict) -> str | None:
+    """The earliest phase whose gate is not `passed`, `None` for an
+    unphased plan. The last phase has no gate of its own, so when every
+    earlier gate has passed this is the last phase."""
+    phases = data.get("phases") if isinstance(data, dict) else None
+    if not isinstance(phases, list):
+        return None
+    for p in phases:
+        if (isinstance(p, dict) and isinstance(p.get("id"), str)
+                and p.get("gate") != PHASE_GATE_PASSED):
+            return p["id"]
+    return last_phase_id(data)
+
+
+def plan_phase_status(data: dict) -> dict | None:
+    """PRD v0.37 F.2: the `planPhase` object `status.json`, `GET /status` and
+    `ralphctl status` carry -- `{id, title, index, count, gate}` for the
+    active phase (the earliest phase whose gate is not `passed`, else the
+    last phase; `index` is 1-based, `gate` is that phase's gate state) --
+    and `None` (published as `planPhase: null`) for a plan with no phases."""
+    ids = plan_phase_ids(data)
+    pid = earliest_open_phase_id(data)
+    if not ids or pid is None:
+        return None
+    entry = phase_entry(data, pid) or {}
+    return {"id": pid, "title": entry.get("title"),
+            "index": ids.index(pid) + 1, "count": len(ids),
+            "gate": entry.get("gate")}
+
+
+def phase_is_due(data: dict, phase_id: str | None) -> bool:
+    """PRD v0.37 requirement B.4: a phase is DUE when its gate is `closed`
+    and every one of its tasks has a status in `TASK_TERMINAL_STATUSES`.
+    `awaiting-validation` and `validation-failed` are not terminal, so a task
+    whose verify reached no verdict holds the gate closed until it is
+    re-verified. A phase whose tasks `failed`, were `skipped` or
+    `petitioned` is still due: the reviewer judges the phase, and a failed
+    task does not reject it automatically. A phase with no task is never due
+    (nothing to judge), and neither is an unknown phase id or an unphased
+    plan. Whether the phase is the last one (no gate of its own) is the
+    dispatcher's rule, not this one's."""
+    phases = data.get("phases") if isinstance(data, dict) else None
+    if not isinstance(phases, list) or phase_id is None:
+        return False
+    phase = next((p for p in phases
+                  if isinstance(p, dict) and p.get("id") == phase_id), None)
+    if phase is None or phase.get("gate") != PHASE_GATE_CLOSED:
+        return False
+    own = [t for t in data.get("tasks", [])
+           if isinstance(t, dict) and t.get("phase") == phase_id]
+    return bool(own) and all(task_is_terminal(t) for t in own)
+
+
+def due_phase_id(data: dict) -> str | None:
+    """The open phase's id when it is due (`phase_is_due`), else `None`. Only
+    the open phase can be due: every earlier gate has passed and a later
+    phase's tasks are never scheduled while it is open."""
+    open_id = earliest_open_phase_id(data)
+    return open_id if phase_is_due(data, open_id) else None
+
+
+def record_phase_start_head(data: dict, phase_id: str | None,
+                            head: str | None) -> bool:
+    """PRD v0.37 requirement B.3: record `head` (the workspace HEAD) as
+    `phase_id`'s `startHead`, in `data` (the caller writes it back through
+    `RunDir.write_tasks`). Written once: a phase that already has a
+    `startHead`, an unknown phase and an unreadable HEAD (`None`) leave
+    `data` untouched. True when it wrote."""
+    if not head:
+        return False
+    for p in data.get("phases") or []:
+        if isinstance(p, dict) and p.get("id") == phase_id:
+            if p.get("startHead"):
+                return False
+            p["startHead"] = head
+            return True
+    return False
+
+
+def phase_entry(data: dict, phase_id: str | None) -> dict | None:
+    """The `phases[]` entry for `phase_id` in `data`, `None` when absent."""
+    for p in (data.get("phases") if isinstance(data, dict) else None) or []:
+        if isinstance(p, dict) and p.get("id") == phase_id:
+            return p
+    return None
+
+
+def set_phase_gate(data: dict, phase_id: str | None, gate: str) -> bool:
+    """Set `phase_id`'s `gate` in `data` (the caller writes it back through
+    `RunDir.write_tasks`: gate state is engine-owned, decision 3). True when
+    the entry exists."""
+    entry = phase_entry(data, phase_id)
+    if entry is None:
+        return False
+    entry["gate"] = gate
+    return True
+
+
+def append_phase_record(data: dict, phase_id: str | None, path: str) -> bool:
+    """Append `path` to `phase_id`'s `records` once (C.3); the caller writes
+    `data` back through `RunDir.write_tasks`."""
+    entry = phase_entry(data, phase_id)
+    if entry is None:
+        return False
+    records = entry.get("records")
+    if not isinstance(records, list):
+        records = entry["records"] = []
+    if path not in records:
+        records.append(path)
+    return True
+
+
+def next_phase_id(data: dict, phase_id: str | None) -> str | None:
+    """The id of the phase after `phase_id` in plan order, `None` for the
+    last phase or an unknown id."""
+    ids = plan_phase_ids(data)
+    if phase_id not in ids:
+        return None
+    i = ids.index(phase_id) + 1
+    return ids[i] if i < len(ids) else None
+
+
+def phase_review_dispatchable(data: dict, phase_id: str | None) -> bool:
+    """PRD v0.37 decision 5: the last phase has no gate, so only a due phase
+    BEFORE the last one is ever dispatched to a phase review."""
+    return (phase_id is not None and phase_id != last_phase_id(data)
+            and phase_is_due(data, phase_id))
+
+
+def _task_phase(tasks: list, task_id) -> str | None:
+    for t in tasks:
+        if isinstance(t, dict) and t.get("id") == task_id:
+            phase = t.get("phase")
+            return phase if isinstance(phase, str) and phase else None
+    return None
+
+
+def _phase_index(data: dict, phase: str | None) -> int | None:
+    ids = plan_phase_ids(data)
+    return ids.index(phase) if phase in ids else None
+
+
 def steer_task_insert(run: "RunDir", task: dict) -> dict:
     """Insert one new task at the end of `tasks.json`'s task list. Always
     lands `pending` -- any `status` key the caller supplied is IGNORED,
@@ -3217,10 +3395,56 @@ def steer_task_insert(run: "RunDir", task: dict) -> dict:
     new_task = dict(task)
     new_task["status"] = "pending"
     new_task["origin"] = TASK_ORIGIN_STEER
+    # PRD v0.37 requirement A.4: on a phased plan the task lands in the
+    # phase it names, or in the earliest phase whose gate is not `passed`
+    # when it names none. A phase whose gate has passed is refused, naming
+    # the earliest open phase; a phase the plan does not hold is refused
+    # too. A plan without `phases` never writes the key.
+    phase_ids = plan_phase_ids(data)
+    requested_phase = new_task.pop("phase", None)
+    if not phase_ids:
+        if requested_phase not in (None, ""):
+            return {"inserted": False, "taskId": task_id,
+                    "reason": (f"the plan has no phases, so a task cannot "
+                               f"name phase {requested_phase!r}")}
+    else:
+        open_phase = earliest_open_phase_id(data)
+        if requested_phase in (None, ""):
+            new_task["phase"] = open_phase
+        elif requested_phase not in phase_ids:
+            return {"inserted": False, "taskId": task_id,
+                    "reason": (f"phase {requested_phase!r} is not a phase of "
+                               f"this plan (phases: {', '.join(phase_ids)}); "
+                               f"the earliest open phase is {open_phase!r}")}
+        else:
+            gate = next(p.get("gate") for p in data["phases"]
+                        if isinstance(p, dict) and p.get("id") == requested_phase)
+            if gate == PHASE_GATE_PASSED:
+                return {"inserted": False, "taskId": task_id,
+                        "reason": (f"phase {requested_phase!r} has already "
+                                   f"passed its gate; the earliest open "
+                                   f"phase is {open_phase!r}")}
+            new_task["phase"] = requested_phase
     candidate_depends_on = new_task.get("dependsOn")
     if isinstance(candidate_depends_on, list):
         accepted, rejected = plan_ingestion.validate_dependency_edges(
             tasks, task_id, candidate_depends_on)
+        if phase_ids:
+            # A dependency on a LATER phase would wait on a phase the gate
+            # keeps closed until this task's own phase passes (A.2(f)).
+            own_index = _phase_index(data, new_task["phase"])
+            kept = []
+            for edge in accepted:
+                dep_index = _phase_index(data, _task_phase(tasks, edge))
+                if (own_index is not None and dep_index is not None
+                        and dep_index > own_index):
+                    rejected.append({
+                        "edge": edge,
+                        "reason": (f"task {edge!r} is in a later phase "
+                                   f"than {new_task['phase']!r}")})
+                else:
+                    kept.append(edge)
+            accepted = kept
         _emit_rejected_dependency_edges(run, task_id, rejected, "task-insert")
         new_task["dependsOn"] = accepted
     tasks.append(new_task)
@@ -4219,6 +4443,13 @@ class TasksRead:
         return task_counts(self.tasks)
 
     @property
+    def plan_phase(self) -> dict | None:
+        """v0.37 F.2: the `planPhase` object of this read's plan (`None` on a
+        plan with no phases), the one value `GET /status` and the CLI's
+        on-disk fallback both publish."""
+        return plan_phase_status(self.doc)
+
+    @property
     def failure_kinds(self) -> dict:
         """Task 025 (#33): `{task id: kind}` for the failed tasks of this read
         -- derived, so a pre-v0.7 plan answers too (`task_failure_kinds`)."""
@@ -4922,6 +5153,8 @@ def insert_worker_split_tasks(run: "RunDir", proposed_tasks: list,
     data = run.read_tasks()
     tasks = data.setdefault("tasks", [])
     existing_ids = {t.get("id") for t in tasks if isinstance(t, dict)}
+    parent_phase = (_task_phase(tasks, assigned_task_id)
+                    if plan_phase_ids(data) else None)
     inserted = []
     for t in proposed_tasks:
         if not isinstance(t, dict):
@@ -4933,6 +5166,10 @@ def insert_worker_split_tasks(run: "RunDir", proposed_tasks: list,
         new_task["status"] = "pending"
         new_task["origin"] = TASK_ORIGIN_WORKER
         new_task["splitFrom"] = assigned_task_id
+        # PRD v0.37 requirement A.4: a child lands in its parent's phase.
+        # An unphased plan (a parent with no `phase`) writes no key.
+        if parent_phase is not None:
+            new_task["phase"] = parent_phase
         tasks.append(new_task)
         existing_ids.add(tid)
         inserted.append(tid)
@@ -5857,7 +6094,8 @@ def cure_pass_preview(tasks: list, blocking: list[dict]) -> dict:
 
 def insert_cure_tasks(run: "RunDir", approach: int, blocking: list,
                       pre_cure_head: str | None = None,
-                      pass_kind: str = "granted") -> list:
+                      pass_kind: str = "granted",
+                      phase: str | None = None) -> list:
     """Task 009 (PRD requirement C.1, #141; cured under task 006, C.1
     finding 4): append exactly one cure task per entry of `blocking` (in
     finding order) to `tasks.json` and return exactly one id per entry.
@@ -6106,9 +6344,26 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list,
     regardless of the freeze's own `priority`. A plan with no named
     freeze task (`freeze_id is None`) leaves this a no-op, same as the
     list-position splice already does in that case.
+
+    PRD v0.37 requirement A.4: on a PHASED plan every task this call
+    appends (a cure task, and a fresh re-take task) carries a `phase`, and
+    a plan without `phases` never gets the key. `phase` names the phase of
+    the gate whose findings are being cured (a phase-gate cure pass); left
+    `None` it is the plan's LAST phase, which is where the final review's
+    and the peer verdict gate's cure tasks go. A `remedy_for` finding that
+    names the task its petition was filed against (`petitioned_task_id`)
+    goes in THAT task's phase instead. A `phase` this plan does not hold is
+    a caller bug and raises. The freeze task's splice and its `dependsOn`
+    edge apply only when the freeze task sits in the cure task's own phase
+    or a later one: an edge from an earlier phase onto a later phase's task
+    would wait on a gate the cure itself keeps closed.
     """
     data = run.read_tasks()
     tasks = data.setdefault("tasks", [])
+    phase_ids = plan_phase_ids(data)
+    if phase is not None and phase_ids and phase not in phase_ids:
+        raise ValueError(f"insert_cure_tasks: unknown plan phase {phase!r} "
+                         f"(phases: {', '.join(phase_ids)})")
     existing_ids = {t.get("id") for t in tasks if isinstance(t, dict)}
     freeze_id = last_code_touching_task_id(run, tasks)
     freeze_task = next(
@@ -6133,6 +6388,7 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list,
     # review reading this record back wants the same text review itself
     # wrote, not a later engine-side repair of it.
     pass_findings: dict = {}
+    lineage_phase: str | None = None
     for index, finding in enumerate(blocking, start=1):
         new_task = cure_task_from_finding(approach, index, finding)
         new_task["id"] = _unique_task_id(new_task["id"], existing_ids)
@@ -6150,11 +6406,32 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list,
         # covers BOTH cure writers in one line: review's own cure pass and
         # the peer verdict gate's, which had no bound check of any kind.
         _repair_cure_task_criteria(run, new_task)
-        if not _insert_before_id(tasks, new_task, freeze_id):
+        cure_phase = None
+        if phase_ids:
+            cure_phase = (_task_phase(tasks, finding.get("petitioned_task_id"))
+                          or phase or phase_ids[-1])
+            new_task["phase"] = cure_phase
+            if lineage_phase is None and (
+                    pass_kind != "granted" or phase is not None):
+                # PRD v0.37 D.4: the pass's lineage entry carries `planPhase`
+                # -- a phase-gate cure pass (explicit `phase`) and a petition
+                # remedy (the petitioned task's phase). A final-review or
+                # final-peer-gate cure pass (`phase` left `None`) carries
+                # none: those readers see only passes with no `planPhase`.
+                lineage_phase = cure_phase
+        # A freeze task in an EARLIER phase than the cure is left alone (see
+        # the docstring): no splice before it, no edge onto it.
+        freeze_in_reach = True
+        if freeze_task is not None and cure_phase is not None:
+            freeze_index = _phase_index(data, _task_phase(tasks, freeze_id))
+            freeze_in_reach = (freeze_index is None
+                               or freeze_index >= phase_ids.index(cure_phase))
+        if not (freeze_in_reach
+                and _insert_before_id(tasks, new_task, freeze_id)):
             tasks.append(new_task)
         existing_ids.add(cure_task_id)
         inserted.append(cure_task_id)
-        if freeze_task is not None:
+        if freeze_task is not None and freeze_in_reach:
             _append_validated_dependency_edge(
                 run, tasks, freeze_task, cure_task_id, "cure-insertion")
         # #209 defect 7's cheap substitute: search the finding's `clause`
@@ -6356,7 +6633,10 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list,
                 _emit_rejected_dependency_edges(
                     run, retake_id, rejected, "cure-insertion")
                 retake_task["dependsOn"] = accepted
-                if not _insert_after_id(tasks, retake_task, retake_anchor_id):
+                if cure_phase is not None:
+                    retake_task["phase"] = cure_phase
+                if not (freeze_in_reach and _insert_after_id(
+                        tasks, retake_task, retake_anchor_id)):
                     tasks.append(retake_task)
                 retake_anchor_id = retake_task["id"]
                 existing_ids.add(retake_task["id"])
@@ -6436,7 +6716,7 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list,
         record_cure_pass_lineage(run.root, approach=approach,
                                  pre_cure_head=pre_cure_head,
                                  findings_by_cure_task_id=pass_findings,
-                                 kind=pass_kind)
+                                 kind=pass_kind, plan_phase=lineage_phase)
     return inserted
 
 
@@ -6646,7 +6926,7 @@ def task_is_terminal(task: dict) -> bool:
     return isinstance(task, dict) and task.get("status") in TASK_TERMINAL_STATUSES
 
 
-def steering_origin_outstanding(tasks_doc) -> list:
+def steering_origin_outstanding(tasks_doc, phase: str | None = None) -> list:
     """Every steering-origin task (`is_steering_origin`) that is NOT yet
     terminal (`task_is_terminal`), in plan order.
 
@@ -6667,14 +6947,19 @@ def steering_origin_outstanding(tasks_doc) -> list:
     key) or a bare list of task dicts, mirroring `task_blocked_by`'s own
     tolerance -- callers that already hold one or the other should not have
     to unwrap it first.
+
+    `phase` (PRD v0.37 requirement C.4): when given, only the tasks of that
+    plan phase count, so a task in a later phase never holds an earlier
+    phase's gate.
     """
     tasks = (tasks_doc.get("tasks") if isinstance(tasks_doc, dict)
              else tasks_doc)
     return [t for t in (tasks or [])
-            if is_steering_origin(t) and not task_is_terminal(t)]
+            if is_steering_origin(t) and not task_is_terminal(t)
+            and (phase is None or t.get("phase") == phase)]
 
 
-def review_cure_origin_outstanding(tasks_doc) -> list:
+def review_cure_origin_outstanding(tasks_doc, phase: str | None = None) -> list:
     """Every `review-cure`-origin task (`is_review_cure_origin`) that is NOT
     yet terminal (`task_is_terminal`), in plan order -- the sibling of
     `steering_origin_outstanding` just above, for `_terminal_success_
@@ -6694,7 +6979,8 @@ def review_cure_origin_outstanding(tasks_doc) -> list:
     tasks = (tasks_doc.get("tasks") if isinstance(tasks_doc, dict)
              else tasks_doc)
     return [t for t in (tasks or [])
-            if is_review_cure_origin(t) and not task_is_terminal(t)]
+            if is_review_cure_origin(t) and not task_is_terminal(t)
+            and (phase is None or t.get("phase") == phase)]
 
 
 def task_blocked_by(tasks: list, *,
@@ -7769,7 +8055,8 @@ def read_cure_lineage(run_root: Path) -> dict:
 def record_cure_pass_lineage(run_root: Path, *, approach: int,
                              pre_cure_head: str | None,
                              findings_by_cure_task_id: dict,
-                             kind: str = "granted") -> dict:
+                             kind: str = "granted",
+                             plan_phase: str | None = None) -> dict:
     """Append one pass entry -- `{"approach", "preCureHead", "findings",
     "kind", "recordedAt"}` -- to the lineage document and persist it.
     `findings` is `findings_by_cure_task_id` verbatim: one `{"clause",
@@ -7785,6 +8072,11 @@ def record_cure_pass_lineage(run_root: Path, *, approach: int,
     reader can tell the two apart on disk without inspecting which caller
     wrote the entry. `LoopSupervisor._latest_granted_cure_pass` is the one
     place that reads it back.
+
+    `plan_phase` (PRD v0.37 D.4) is the plan phase the pass belongs to: a
+    phase-gate cure pass names its own phase and a petition remedy names the
+    petitioned task's phase; the final review's and the final peer gate's
+    passes carry none. Readers filter on it (`_latest_granted_cure_pass`).
 
     Called once per granted cure pass, from `insert_cure_tasks` itself
     (never from its two callers directly) -- so a THIRD caller of `insert_
@@ -7809,6 +8101,11 @@ def record_cure_pass_lineage(run_root: Path, *, approach: int,
         "kind": kind,
         "recordedAt": utcnow(),
     }
+    if plan_phase is not None:
+        # PRD v0.37 D.4: lineage is scoped by plan phase. Only a phased
+        # plan's phase-gate pass or petition remedy carries the key, so a
+        # no-phase plan's lineage stays byte-for-byte what it was.
+        entry["planPhase"] = plan_phase
     passes.append(entry)
     atomic_write_json(cure_lineage_path(run_root), {**doc, "passes": passes})
     return entry
@@ -10799,6 +11096,14 @@ class RunDir:
         """
         privsep.write_protected_tasks_json(
             self.protected_tasks_file, self.tasks_file, data)
+        # PRD v0.37 F.2: `status.json`'s `planPhase` follows the plan --
+        # every gate move and every new plan is a `write_tasks`, so the sync
+        # lives here. Written only when it changed and only into a status
+        # file that exists (a run dir the engine has not started has none).
+        if self.status_file.is_file():
+            phase = plan_phase_status(data)
+            if self.read_status().get("planPhase", _MISSING) != phase:
+                self.update_status(planPhase=phase)
 
     def read_tasks(self) -> dict:
         """The tasks.json payload, via the hardened read path (task 002/#15):

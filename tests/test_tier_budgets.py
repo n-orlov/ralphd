@@ -916,8 +916,41 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # Task 013 second retry: -1 test in the same module (literal confinement:
     # the per-role pass cases fold into the flag list), measured
     # `--collect-only` -> fast 8769/548, smoke 6990/421.
-    "fast": {"tests": 8769, "modules": 548},
-    "smoke": {"tests": 6990, "modules": 421},
+    # v0.37 task 001: +22 tests / +1 module (tests/test_plan_phases_proposal.py),
+    # in both tiers -> fast 8791/549, smoke 7012/422 (ceilings, i.e. the prior
+    # ceiling plus the added tests).
+    # v0.37 task 002: +19 tests / +2 modules (tests/test_plan_phases_insertion.py,
+    # tests/test_plan_phases_planning_prompt.py), in both tiers -> fast
+    # 8810/551, smoke 7031/424 (the prior ceiling plus the added tests).
+    # v0.37 task 003: +25 tests / +1 module (tests/test_plan_phases_scheduler.py),
+    # in both tiers -> fast 8835/552, smoke 7056/425 (the prior ceiling plus
+    # the added tests).
+    # v0.37 task 004: +5 tests / +2 modules (tests/test_phase_review_dispatch.py,
+    # tests/test_phase_review_prompt.py), in both tiers -> fast 8840/554,
+    # smoke 7061/427 (the prior ceiling plus the added tests).
+    # v0.37 task 005: +12 tests / +1 module (tests/test_phase_gate_worker_edges.py),
+    # in both tiers -> fast 8852/555, smoke 7073/428 (the prior ceiling plus
+    # the added tests).
+    # v0.37 task 006: +8 tests / +1 module (tests/test_phase_gate_peer_and_resume.py),
+    # in both tiers -> fast 8860/556, smoke 7081/429 (the prior ceiling plus
+    # the added tests).
+    # v0.37 task 007: +7 tests / +1 module (tests/test_phase_gate_cure.py),
+    # in both tiers -> fast 8867/557, smoke 7088/430 (the prior ceiling plus
+    # the added tests).
+    # v0.37 task 008: +12 tests / +1 module (tests/test_phase_gate_ladder.py),
+    # in both tiers -> fast 8879/558, smoke 7100/431 (the prior ceiling plus
+    # the added tests).
+    # v0.37 task 009: +11 tests / +1 module (tests/test_phase_gate_final_and_record.py),
+    # in both tiers -> fast 8890/559, smoke 7111/432 (the prior ceiling plus
+    # the added tests).
+    # v0.37 task 010: +10 tests / +1 module (tests/test_phase_gate_surfaces.py),
+    # in both tiers -> fast 8900/560, smoke 7121/433 (the prior ceiling plus
+    # the added tests).
+    # v0.37 task 012: +9 tests / +2 modules (tests/test_plan_phases_no_phase_guard.py,
+    # tests/test_plan_phases_036_compat.py), in both tiers -> fast 8909/562,
+    # smoke 7130/435 (the prior ceiling plus the added tests).
+    "fast": {"tests": 8909, "modules": 562},
+    "smoke": {"tests": 7130, "modules": 435},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

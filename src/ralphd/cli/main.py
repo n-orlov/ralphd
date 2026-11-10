@@ -4213,6 +4213,9 @@ def cmd_status(args):
         # the CLI is a viewer, it does not write caches into a run dir.
         plan = read_tasks_doc(run_root(args.run_id), persist=False)
         status.update(plan.contract)
+        # v0.37 F.3: the on-disk fallback publishes the same `planPhase`
+        # `GET /status` does, read from the plan itself.
+        status["planPhase"] = plan.plan_phase
         if not status.get("tasks") and plan.tasks:
             status["tasks"] = plan.counts
     status["live"] = live
@@ -4434,6 +4437,13 @@ def cmd_status(args):
         phase_line,
         f"iteration: {status.get('iterationsUsed')}/{status.get('iterationsBudget')}",
     ]
+    # v0.37 F.3: the plan phase the run is in, only on a phased plan.
+    _plan_phase = status.get("planPhase")
+    if isinstance(_plan_phase, dict):
+        lines.append(
+            f"plan:      phase {_plan_phase.get('index')}/"
+            f"{_plan_phase.get('count')} {_plan_phase.get('title')} "
+            f"\u00b7 gate {_plan_phase.get('gate')}")
     # Task 012 (#14): name the model the run is actually talking to, as pi
     # resolved it -- omitted entirely (never `model: None`) when no iteration
     # has observed one yet, the same discipline as the approach segment above.

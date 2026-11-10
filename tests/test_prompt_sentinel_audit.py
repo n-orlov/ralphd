@@ -90,6 +90,50 @@ ENUMERATED_ABSENCE_ASSERTIONS: tuple[AbsenceAssertion, ...] = (
         "module object is named `log_render`, and the forbidden name is an "
         "import symbol, not a literal any prompt template could contain"),
     AbsenceAssertion(
+        "test_phase_gate_cure.py", (242,), ("## Confirmation review",),
+        "the final review's prompt after a phase-scoped cure: the phase's "
+        "cure lineage is scoped to that phase, so the whole-PRD review "
+        "carries no confirmation section (#313)", ("review.md",)),
+    AbsenceAssertion(
+        "test_phase_gate_final_and_record.py", (110, 224, 292),
+        ("## Phase review",),
+        "the final review's / final peer gate's rendered prompt (and the "
+        "first-approach review prompt a fake judge reads) on a phased plan: "
+        "the `## Phase review` section is a phase-scoped dispatch's context "
+        "only, injected by `_phase_review_context` (#313)", ALL),
+    AbsenceAssertion(
+        "test_phase_gate_final_and_record.py", (249, 268),
+        ("## Earlier phase reviews",),
+        "a phase-scoped judge's prompt, and the final review's prompt on a "
+        "plan without phases: the `## Earlier phase reviews` section is "
+        "injected by `_earlier_phase_reviews_context` into the final "
+        "judges of a phased plan only (#313)", ALL),
+    AbsenceAssertion(
+        "test_phase_gate_peer_and_resume.py", (81,), ("criterion two",),
+        "the phase-scoped peer gate's prompt: a fixture criterion of a task "
+        "in a later phase, which the phase scope must leave out (#313)",
+        ALL),
+    AbsenceAssertion(
+        "test_phase_review_prompt.py", (99, 100),
+        ("## Phase review", "Phase review"),
+        "the final review's prompt on a plan without phases: the "
+        "`## Phase review` section is a phase-scoped context block only "
+        "(#313)", ALL),
+    AbsenceAssertion(
+        "test_plan_phases_no_phase_guard.py", (119, 166),
+        ("## Phase review", "## Earlier phase reviews"),
+        "the review, verdict-gate, worker and verify prompts of a plan "
+        "without phases: both sections are phase-gate context blocks "
+        "(`_phase_review_context`, `_earlier_phase_reviews_context`) that "
+        "render only for a phase-scoped dispatch or the final judges of a "
+        "phased plan (#313)", ALL),
+    AbsenceAssertion(
+        "test_plan_phases_036_compat.py", (124,),
+        ("## Phase review", "## Earlier phase reviews"),
+        "every prompt a 0.37 engine builds while continuing a 0.36 run "
+        "directory (a plan without phases): neither phase-gate section "
+        "renders (#313)", ALL),
+    AbsenceAssertion(
         "test_confirmation_review_section.py", (157, 189),
         ("## Confirmation review",),
         "the review prompt: `LoopSupervisor._confirmation_review_context` "

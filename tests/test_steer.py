@@ -153,9 +153,9 @@ def test_steering_outranks_a_pending_task(tmp_path, monkeypatch):
     calls = []
     real_select = scheduler.select_next_task
 
-    def counting_select(tasks):
+    def counting_select(tasks, phases=None):
         calls.append(list(tasks))
-        return real_select(tasks)
+        return real_select(tasks, phases=phases)
 
     monkeypatch.setattr(scheduler, "select_next_task", counting_select)
 
@@ -186,9 +186,9 @@ def test_steering_outranks_a_validation_failed_retry(tmp_path, monkeypatch):
     calls = []
     real_select = scheduler.select_next_task
 
-    def counting_select(tasks):
+    def counting_select(tasks, phases=None):
         calls.append(list(tasks))
-        return real_select(tasks)
+        return real_select(tasks, phases=phases)
 
     monkeypatch.setattr(scheduler, "select_next_task", counting_select)
 

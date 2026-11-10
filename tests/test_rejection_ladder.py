@@ -364,9 +364,15 @@ def test_both_judges_call_the_one_ladder_implementation():
     assert "_run_rejection_ladder(" in gate
     assert hasattr(ladder, "decide")
     source = inspect.getsource(loop)
-    assert source.count("ladder.decide(") == 2, (
-        "only the one ladder method decides, and it decides twice over the "
-        "same facts")
+    # the ladder method decides twice over the same facts; the phase gates
+    # (PRD v0.37 D) ask the same function once, in `_phase_ladder_decision`,
+    # and nowhere else
+    phase = inspect.getsource(LoopSupervisor._phase_ladder_decision)
+    assert phase.count("ladder.decide(") == 1
+    assert source.count("ladder.decide(") == 3, (
+        "only the one ladder method and the phase ladder decision decide")
+    ladder_method = inspect.getsource(LoopSupervisor._run_rejection_ladder)
+    assert ladder_method.count("ladder.decide(") == 2
 
 
 def test_the_ladder_orders_budget_then_verified_then_waiver_then_park_then_cure():

@@ -453,7 +453,7 @@ harness (`JobConfig.harness_for`). The contract is the same either way.
 | `verify` | Task ID and `verified`/`rejected`, `reason`, optional `notes` array | Validate the completion (a verified verdict can carry notes) or record a validation failure. Retain verification-debt notes. |
 | `review` | `verified`/`rejected`, `reason`, and `findings_path`. Optional: `petition_adjudications` and `raise_operator_gate`. | Reconcile findings and route to success, cure, pause, or replan. `raise_operator_gate: true` lets the reviewer request the operator pause itself. |
 | `plan_review` | `approved`/`objected`, `reason`, `notes` | Permit work, or request a bounded plan revision. An undecidable reply spends a revision directly. |
-| `verdict_gate` | `verified`/`rejected`, `reason`, its own `findings_path` | Independently gate terminal success. A rejection takes a cure pass, an operator pause, a fresh approach, or ends the run, as described in section 7. |
+| `verdict_gate` | `verified`/`rejected`, `reason`, its own `findings_path`. Optional: `raise_operator_gate`, read only by a plan phase's peer gate. | Independently gate terminal success. A rejection takes a cure pass, an operator pause, a fresh approach, or ends the run, as described in section 7. |
 | `steer` | `settled`, `notes`, `application` (`applied` or `partially-applied`) | Record message settlement separately from completion of the resulting tasks. |
 | `reflect` | Optional `notes` only | Record post-run analysis. The engine derives "report written" and "suggestions written" from `artifacts/reflection/` on disk, not from the reply. |
 
@@ -828,6 +828,40 @@ approach and replan the next one (`next_approach`), or hold the run `exhausted`
 (`approaches`) when no approach is left (`exhausted_approaches`). The `secret`
 park never expires. The notifier gets one message at the park, one reminder
 before `expiresAt` and one when the timeout fires.
+
+A rejected plan phase climbs the same rejection ladder with the phase as its
+scope: budget spent holds `exhausted`, every blocking finding waived opens the
+gate, a park raises `awaiting_input` with `inputQuestion.planPhase` (answered
+with the same `ralphctl answer` options inside that phase; the phase-scoped
+peer gate parks on `raise_operator_gate` too), and a judge with no verdict --
+including a reply the contract ladder and every retry left unreadable, from
+either judge -- is an infra fault under the outage budget, never a rejection
+(SPEC.md §4.2).
+
+The last phase has no gate. When its last task is terminal the worker pass
+takes the ordinary edge to the final `review`, which judges the whole PRD with no
+phase-scoped dispatch in between (with the peer gate on, the final peer gate
+follows it); only those two judges can end the run `verified`. A phase's pass
+never ends the run: the next dispatch is the following phase's worker. On a
+phased plan the final review and the final peer gate read an `## Earlier phase
+reviews` section listing each recorded phase verdict (phase, round, judge,
+verdict, findings) with three rules: earlier verdicts, not evidence; re-check
+anything they cover; do not reject a requirement only because a planned step
+later destroyed the evidence a passed gate saw. Archiving an approach copies
+`artifacts/phase-reviews/` into `approaches/NN/phase-reviews/`, and the next
+approach plans its own phases with empty gates, rounds and records. The run
+record gains a `## Plan phases` section (title, gate, rounds, record paths) and
+a phase column in a task listing on phased plans only (SPEC.md §4.2, §11.3).
+
+A plan without phases is unchanged. Plan phases are opt-in: with no `phases` in
+the accepted plan, `tasks.json` has no `phases` key and no task a `phase` key,
+`events.jsonl` has no `phase_gate.*` event, `status.json` `planPhase` is `null`,
+iteration meta has no `planPhase`, the review, verdict-gate, worker and verify
+prompts carry neither `## Phase review` nor `## Earlier phase reviews` and equal
+the prompts built with `phases` absent from the loop's inputs, and
+`select_next_task(tasks)` equals `select_next_task(tasks, phases=None)`. A run
+directory written by 0.36 (mid-worker, `awaiting_input` or `exhausted`) loads on
+0.37 and continues as such a plan (SPEC.md §4.1).
 
 ### Cure passes
 

@@ -53,10 +53,27 @@ from __future__ import annotations
 
 from typing import Any
 
-from .state import TASK_DEPENDENCY_SATISFIED_STATUSES
+from .state import TASK_DEPENDENCY_SATISFIED_STATUSES, earliest_open_phase_id
 
 
-def pending_candidates(tasks: list) -> list:
+def _later_phase_ids(phases: list | None) -> set:
+    """PRD v0.37 requirement B.1: the ids of the phases AFTER the open phase
+    (the earliest whose gate is not `passed`); a task in one of them is never
+    scheduled. Empty for an absent/empty `phases` (no gating), and for a plan
+    whose open phase is the last one. A task of a phase BEFORE the open one
+    (a passed phase an `invalidates` walk re-opened a task of, B.2) is not in
+    this set, so it is schedulable at once as part of the open phase's work."""
+    if not isinstance(phases, list) or not phases:
+        return set()
+    ids = [p["id"] for p in phases
+           if isinstance(p, dict) and isinstance(p.get("id"), str)]
+    open_id = earliest_open_phase_id({"phases": phases})
+    if open_id not in ids:
+        return set()
+    return set(ids[ids.index(open_id) + 1:])
+
+
+def pending_candidates(tasks: list, phases: list | None = None) -> list:
     """The full pool step 3 of `select_next_task` (below) considers --
     every `pending` task whose `dependsOn` entries are all satisfied and
     which does not carry `deferredUntil` -- in plan (list) order, WITHOUT
@@ -70,7 +87,13 @@ def pending_candidates(tasks: list) -> list:
     a second time. `select_next_task` itself is unaffected: it still
     returns exactly the same single deterministic pick as before this
     task, over exactly this same pool.
+
+    PRD v0.37 requirement B.1: with `phases` (the tasks.json `phases` list),
+    a task of a phase later than the open phase is never a candidate, however
+    satisfied its `dependsOn` and however high its priority. Gating is this
+    argument, never a synthetic `dependsOn` edge.
     """
+    later_phases = _later_phase_ids(phases)
     entries = [t for t in tasks if isinstance(t, dict)]
     status_by_id: dict[str, Any] = {
         str(t.get("id")): t.get("status", "pending")
@@ -91,6 +114,8 @@ def pending_candidates(tasks: list) -> list:
         # sleep mechanism's business, not this pure function's.
         if t.get("deferredUntil"):
             continue
+        if later_phases and t.get("phase") in later_phases:
+            continue
         raw_deps = t.get("dependsOn")
         deps = raw_deps if isinstance(raw_deps, list) else []
         unmet = [dep for dep in deps
@@ -101,7 +126,7 @@ def pending_candidates(tasks: list) -> list:
     return candidates
 
 
-def select_next_task(tasks: list) -> dict | None:
+def select_next_task(tasks: list, phases: list | None = None) -> dict | None:
     """Pick the next task a worker iteration should work on, or `None` if
     nothing is viable. `tasks` is the plain list from `tasks.json`'s
     `{"tasks": [...]}` doc -- pass `doc.get("tasks", [])` if you have the
@@ -112,6 +137,11 @@ def select_next_task(tasks: list) -> dict | None:
     Returns the SAME dict object passed in (never a copy), so a caller that
     mutates the returned task's `status` in place and re-serialises `tasks`
     persists the change -- exactly the shape `write_tasks()` callers need.
+
+    PRD v0.37 requirement B.1: `phases` gates ONLY step 3 (the pending
+    pool, see `pending_candidates`); the `validation-failed` and
+    `in-progress` steps are not phase-gated, because a claimed task is
+    work already under way.
     """
     entries = [t for t in tasks if isinstance(t, dict)]
 
@@ -133,7 +163,7 @@ def select_next_task(tasks: list) -> dict | None:
     if in_progress:
         return _highest_priority_first(in_progress)
 
-    candidates = pending_candidates(entries)
+    candidates = pending_candidates(entries, phases)
     if not candidates:
         return None
 
