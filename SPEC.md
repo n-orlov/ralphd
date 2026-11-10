@@ -1160,10 +1160,17 @@ renders neither section.
 **Resuming a phase review (PRD v0.37 requirement C.5, #313).** A gate still
 `reviewing` on disk means the process died between dispatch and verdict.
 `_resume_point` (ahead of the mid-review case, which would run the final
-review) sets each such gate back to `closed`, removes the review channel files
-the dead attempt may have left, and resumes in `worker`, whose top-of-pass due
-check re-dispatches that phase review as a fresh first attempt (same round
-number, since no record was written). It never resumes into the final review.
+review) marks each such phase (any phase before the last) for re-dispatch,
+carrying the `edge` the interrupted dispatch's `meta.json` named, removes the
+review channel files the dead attempt may have left, and resumes in `worker`.
+The worker pass's top-of-pass check (`_due_phase_for_review`) takes a marked
+phase first, **whether or not its tasks are all terminal**: a phase review
+reached through a B.7 worker-exit backstop ran over a phase with nonterminal
+tasks, and the ordinary due predicate would not offer it again. The phase review
+is then a fresh first attempt (same round number, since no record was written;
+the review and, when on, the peer gate both run again) before any worker
+iteration. The gate stays `reviewing` on disk until that dispatch, so a second
+crash resumes the same way. It never resumes into the final review.
 
 **No worker exit reaches the final review past a closed gate (PRD v0.37
 requirement B.7, #313).** While a gate before the last phase is not `passed`,

@@ -750,6 +750,11 @@ class LoopSupervisor:
         # Phases whose review this process already ran without opening
         # the gate; the worker pass does not re-dispatch them in a spin.
         self._phase_review_unresolved: set[str] = set()
+        # PRD v0.37 C.5: phase ids whose gate was persisted `reviewing` when
+        # this process resumed (-> the `edge` the crashed dispatch carried,
+        # or None). The next worker pass re-dispatches each as a fresh first
+        # attempt, whatever the state of the phase's tasks.
+        self._phase_review_resume: dict[str, str | None] = {}
         self._last_task_snapshot: dict = {}
         self.deadline = time.monotonic() + cfg.job_timeout_s
         # Task 011 (#5): wall-clock twin of self.deadline (published as
@@ -4339,26 +4344,49 @@ class LoopSupervisor:
     def _reset_reviewing_phase_gates(self) -> list[str]:
         """PRD v0.37 requirement C.5: a gate still `reviewing` on disk means
         the prior process died between a phase review's dispatch and its
-        verdict being applied. Each such gate goes back to `closed` -- every
-        task of the phase is terminal, so the phase is due again -- and the
-        review channel files the dead attempt may have left are removed, so
-        the re-dispatch is a fresh first attempt that never reads the
-        crashed one's checkpoint. Returns the reset phase ids (in plan
-        order); nothing is written when there are none. The caller lands at
-        `worker`, whose top-of-pass due check dispatches the phase review;
-        landing at `review` would run the FINAL review over a phase that
-        never got its gate."""
+        verdict being applied. Each such phase is marked for a re-dispatch
+        (`_phase_review_resume`, with the `edge` the crashed dispatch's
+        iteration meta carried, if any) that the worker pass takes before any
+        task is selected, and the review channel files the dead attempt may
+        have left are removed, so the re-dispatch is a fresh first attempt
+        that never reads the crashed one's checkpoint. The marker does not
+        depend on the phase's tasks being terminal: a review reached through
+        a B.7 worker-exit backstop ran over a phase with nonterminal tasks.
+        The gate itself stays `reviewing` on disk until the dispatch, so a
+        second crash before it resumes the same way. Returns the phase ids in
+        plan order; nothing is written when there are none. The caller lands
+        at `worker`; landing at `review` would run the FINAL review over a
+        phase that never got its gate."""
         data = self.run.read_tasks()
+        last = state.last_phase_id(data)
         reset = [str(ph["id"]) for ph in data.get("phases") or []
                  if isinstance(ph, dict)
-                 and ph.get("gate") == state.PHASE_GATE_REVIEWING]
+                 and ph.get("gate") == state.PHASE_GATE_REVIEWING
+                 and ph.get("id") != last]
         if not reset:
             return []
+        crashed = self._crashed_dispatch_meta()
         for pid in reset:
-            state.set_phase_gate(data, pid, state.PHASE_GATE_CLOSED)
-        self.run.write_tasks(data)
+            edge = None
+            if crashed.get("scope") == "phase" and crashed.get(
+                    "planPhase") == pid:
+                edge = crashed.get("edge") or None
+            self._phase_review_resume[pid] = edge
         self._clear_review_channel_files()
         return reset
+
+    def _crashed_dispatch_meta(self) -> dict:
+        """The `meta.json` of the next iteration slot when it was started and
+        never ended (the dispatch a crash interrupted), else `{}`."""
+        meta_path = (self.run.root / "iterations"
+                     / f"{self.iterations_used + 1:04d}" / "meta.json")
+        try:
+            meta = json.loads(meta_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(meta, dict) or "endedAt" in meta:
+            return {}
+        return meta
 
     def _crashed_mid_review(self) -> bool:
         """True iff the NEXT iteration slot (`iterations_used + 1` -- the
@@ -14342,6 +14370,15 @@ class LoopSupervisor:
         decision 5: never the last phase), else `None`. A phase this process
         already reviewed without opening its gate is not offered again."""
         data = self.run.read_tasks()
+        # C.5: a gate that was `reviewing` when this process resumed is
+        # re-dispatched first, whether or not its tasks are all terminal.
+        for resumed in list(self._phase_review_resume):
+            entry = state.phase_entry(data, resumed)
+            if (entry is not None
+                    and entry.get("gate") == state.PHASE_GATE_REVIEWING
+                    and resumed != state.last_phase_id(data)):
+                return resumed
+            del self._phase_review_resume[resumed]
         pid = state.due_phase_id(data)
         if (pid is None or not state.phase_review_dispatchable(data, pid)
                 or pid in self._phase_review_unresolved):
@@ -14439,6 +14476,10 @@ class LoopSupervisor:
         (`"review"`: the review stage is settled, the peer gate still runs
         when on; `"verdict_gate"`: both are)."""
         approach = self._approach
+        if pid in self._phase_review_resume:
+            resumed_edge = self._phase_review_resume.pop(pid)
+            if edge is None:
+                edge = resumed_edge
         data = self.run.read_tasks()
         phase = state.phase_entry(data, pid) or {}
         start_head = phase.get("startHead")
