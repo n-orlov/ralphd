@@ -2791,6 +2791,7 @@ def refuted_remedy_cure_findings(adjudications, open_petitions,
         # preamble itself is blank (a remedy that opens directly on the
         # marker, with nothing before it).
         evidence = preamble
+        petitioned_task_id = None
         for t in tasks:
             if not isinstance(t, dict) or t.get("status") != "failed":
                 continue
@@ -2798,15 +2799,22 @@ def refuted_remedy_cure_findings(adjudications, open_petitions,
             if own and (own in norm or norm in own):
                 suffix = f"(petition REFUTED for task {t.get('id')})"
                 evidence = f"{evidence} {suffix}" if evidence else suffix
+                petitioned_task_id = t.get("id")
                 break
-        out.append({
+        finding = {
             "severity": "blocking",
             "curable": True,
             "clause": obligation.strip(),
             "evidence": evidence,
             "cured_when": "; ".join(clauses),
             "remedy_for": obligation.strip(),
-        })
+        }
+        if petitioned_task_id is not None:
+            # PRD v0.37 requirement A.4: on a phased plan the remedy task
+            # lands in the petitioned task's phase (`state.insert_cure_
+            # tasks` reads this key; it is not part of the task).
+            finding["petitioned_task_id"] = petitioned_task_id
+        out.append(finding)
     return out
 
 

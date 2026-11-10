@@ -234,6 +234,34 @@ offending task.
    points, gotchas) — everything OTHER than the standing-rules block, which
    the harness now owns.
 
+## Plan phases (optional)
+
+A plan may be cut into **phases**: an ordered `phases` list at the top level of
+`plan-proposal.json`, each entry `{"id": "<[a-z0-9-]+>", "title": "<text>",
+"reviewFocus": "<what the reviewer of that phase must check>"}`, and a `phase`
+field on EVERY task naming one of those ids. The harness reviews a phase before
+it lets the next one begin: no task of a later phase is picked until the
+earlier phase's review has passed. The last phase has no gate of its own -- the
+ordinary whole-PRD review judges it.
+
+**Use phases when** the PRD names phases or gates, or before a step that
+destroys or hides evidence -- tearing an environment down, a merge that deletes
+a branch, a data migration -- or that cannot be undone. Put everything that
+step would erase in an earlier phase, and the step itself in a later one, so
+the work is reviewed while its evidence still exists.
+
+**Do not use phases** only to group work. Grouping is what task order and
+`dependsOn` are for; a phase is a review checkpoint, and every extra one costs
+a review round. When no step of the plan destroys evidence or cannot be undone
+and the PRD names no phases or gates, omit `phases` and every task's `phase`.
+
+The proposal is refused when: `phases` is not a list, or an entry lacks `id` or
+`title`, or an `id` does not match `[a-z0-9-]+`; an id repeats; a task's `phase`
+names no phase; a task has no `phase` in a phased plan; a phase has no task; a
+`dependsOn` edge points from a task to a task of a LATER phase; `phases` lists
+only one phase (one phase is the no-phase plan: omit `phases`); or a
+`sweep: true` task sits outside the last phase.
+
 ## Plan-building practices
 
 A run ships two things: working code, proven by tests, and a product spec
