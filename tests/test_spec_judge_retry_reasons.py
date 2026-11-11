@@ -38,12 +38,18 @@ def test_verdict_gate_retry_row_names_crash_and_timeout_reasons():
     assert "phase-scoped" in row
 
 
-def test_review_retry_row_names_the_contract_fault_reasons():
+def test_review_retry_row_points_at_the_contract_fault_reasons_the_table_spells():
     # The reasons `_read_review_reply` reports for a non-empty unreadable reply
-    # are retry reasons too (`review.retry` carries them).
+    # are retry reasons too (`review.retry` carries them). They are retired pause
+    # reasons, so they are spelled only in §5.2's identifier table (the one place
+    # tests/test_spec_stop_states.py lets them live): the row says they exist and
+    # where they are spelled, and the table names each as a `review.retry` reason.
     row = _row("review.retry")
+    assert "contract-fault reasons" in row and "§5.2's identifier table" in row
     for reason in LoopSupervisor.REVIEW_CONTRACT_FAULTS:
-        assert f'"{reason}"' in row
+        table_row = next(line for line in SPEC.splitlines()
+                         if line.startswith(f"| `{reason}` |"))
+        assert "`review.retry`" in table_row
 
 
 def test_retry_rows_keep_the_bound_and_the_no_verdict_outcome():

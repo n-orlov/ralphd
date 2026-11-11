@@ -1347,7 +1347,7 @@ by the provider (`faultClass: "output_truncated"`): the peer `verdict_gate` hat,
 and the `review` hat; both also retry a reply that was empty after the
 contract ladder. Each retry emits a
 `verdict_gate.retry` or `review.retry` event
-(`hat`, `attempt`, `cap`, `reason` of `"output_truncated"` or `"empty_reply"`; review's also `"review_contract_unrepaired"` or `"review_findings_unusable"`, and a phase judge's `"judge_crashed"` or `"judge_timed_out"`),
+(`hat`, `attempt`, `cap`, `reason` of `"output_truncated"` or `"empty_reply"`; review's also its two contract-fault reasons, and a phase judge's `"judge_crashed"` or `"judge_timed_out"`),
 runs with the bounded-budget wording of `prompts/judge_retry.md` and one
 thinking step lower, and is refunded through `iterationsRefunded.infra`. When
 every retry also fails, nothing is rejected: the fault is an infra fault
