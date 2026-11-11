@@ -949,8 +949,23 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.37 task 012: +9 tests / +2 modules (tests/test_plan_phases_no_phase_guard.py,
     # tests/test_plan_phases_036_compat.py), in both tiers -> fast 8909/562,
     # smoke 7130/435 (the prior ceiling plus the added tests).
-    "fast": {"tests": 8909, "modules": 562},
-    "smoke": {"tests": 7130, "modules": 435},
+    # v0.37 cure C.5: +9 tests / +0 modules (tests/test_phase_gate_peer_and_
+    # resume.py), in both tiers -> fast 8918/562, smoke 7139/435 (the prior
+    # ceiling plus the added tests).
+    # v0.37 cure D.5: +7 tests / +0 modules (tests/test_phase_gate_ladder.py),
+    # in both tiers -> fast 8925/562, smoke 7146/435 (the prior ceiling plus
+    # the added tests).
+    # v0.37 cure D.5 retake: +15 tests / +0 modules (tests/test_phase_gate_
+    # ladder.py, the real-runner cut-short block), in both tiers -> fast
+    # 8940/562, smoke 7161/435 (the prior ceiling plus the added tests).
+    # v0.37 cure F.2: +6 tests / +1 module (tests/test_plan_phase_status_
+    # publish.py), in both tiers -> fast 8946/563, smoke 7167/436 (the prior
+    # ceiling plus the added tests).
+    # v0.37 cure C.4: +14 tests / +0 modules (tests/test_phase_gate_peer_
+    # and_resume.py), in both tiers -> fast 8960/563, smoke 7181/436 (the
+    # prior ceiling plus the added tests).
+    "fast": {"tests": 8960, "modules": 563},
+    "smoke": {"tests": 7181, "modules": 436},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

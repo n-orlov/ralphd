@@ -13,7 +13,7 @@ import json
 
 import pytest
 
-from ralphd.engine import petitions, state
+from ralphd.engine import findings, petitions, state
 from ralphd.engine.state import RunDir, atomic_write_json
 
 from tests.conftest import scripted_supervisor
@@ -146,6 +146,123 @@ def test_a_peer_rejection_leaves_the_gate_closed_and_records_the_rejection(tmp_p
          / "one-r1-verdict_gate.json").read_text())
     assert record["verdict"] == "rejected" and record["reason"] == "not convinced"
     assert _events(sup, "phase_gate.passed") == []
+
+
+# -- C.4: a rejected label over a residual-only findings channel ---------------
+
+def _residual(clause="wording"):
+    return {"severity": "residual", "curable": False, "clause": clause,
+            "evidence": f"a nonblocking gap in {clause}"}
+
+
+def _blocking(clause="requirement X"):
+    return {"severity": "blocking", "curable": True, "clause": clause,
+            "evidence": f"{clause} is not met",
+            "cured_when": f"{clause} is met"}
+
+
+def _rejecting_judge(judge, sidecar, *, before=None):
+    """A `judge` fake replying `rejected` and leaving `sidecar` (a findings
+    list, or a raw string written verbatim, or None for no channel)."""
+    def hat(sup, prompt=""):
+        path = (sup.run.findings_json_file if judge == "review"
+                else sup.run.verdict_gate_findings_json_file)
+        if before:
+            before(sup)
+        if isinstance(sidecar, str):
+            path.write_text(sidecar)
+        elif sidecar is not None:
+            findings.write_findings_json(path, sidecar)
+        return _ok(json.dumps({"verdict": "rejected", "reason": "see findings"}))
+    return hat
+
+
+def _phase_review_with(tmp_path, judge, sidecar, *, before=None, **cfg):
+    hats = {"review": [_verified_hat], "verdict_gate": [_verified_hat]}
+    hats[judge] = [_rejecting_judge(judge, sidecar, before=before)]
+    sup = _seeded_sup(
+        tmp_path, hats,
+        [("001", "one", "completed"), ("002", "two", "pending")],
+        peer_verdict_gate=True, **cfg)
+    (sup.run.root / "prd.md").write_text("# PRD\n")
+    outcome = asyncio.run(sup._run_phase_review("one"))
+    return sup, outcome
+
+
+def _verified_hat(sup, prompt=""):
+    return _ok(json.dumps({"verdict": "verified", "reason": "fine"}))
+
+
+def _no_cure_park_or_exhaustion(sup):
+    assert [e for e in _events(sup, "input.parked")] == []
+    assert _events(sup, "phase_gate.rejected") == []
+    assert not sup._budget_exhausted_tail
+    assert [t for t in sup.run.read_tasks()["tasks"]
+            if t.get("origin") == "review-cure"] == []
+    assert state.read_cure_lineage(sup.run.root)["passes"] == []
+
+
+@pytest.mark.parametrize("judge", ["review", "verdict_gate"])
+@pytest.mark.parametrize("residuals", [
+    [_residual()], [_residual("wording"), _residual("naming")]])
+def test_a_rejected_phase_verdict_with_only_residual_findings_opens_the_gate(
+        tmp_path, judge, residuals):
+    sup, outcome = _phase_review_with(tmp_path, judge, residuals)
+    assert outcome is None
+    data = sup.run.read_tasks()
+    assert data["phases"][0]["gate"] == "passed"
+    assert len(_events(sup, "phase_gate.passed")) == 1
+    record = json.loads((sup.run.artifacts_dir / "phase-reviews"
+                         / f"one-r1-{judge}.json").read_text())
+    assert record["findings"] == residuals
+    assert f"artifacts/phase-reviews/one-r1-{judge}.json" in data["phases"][0]["records"]
+    assert all(r["severity"] == "residual" for r in record["findings"])
+    _no_cure_park_or_exhaustion(sup)
+
+
+@pytest.mark.parametrize("judge", ["review", "verdict_gate"])
+def test_a_residual_only_rejection_is_still_held_by_the_ordinary_pass_preconditions(
+        tmp_path, judge):
+    def cure_task_arrives(sup):
+        data = sup.run.read_tasks()
+        data["tasks"].append({
+            "id": "009", "title": "remedy", "phase": "one",
+            "status": "pending", "origin": "review-cure",
+            "successCriteria": "criterion 009", "dependsOn": []})
+        sup.run.write_tasks(data)
+
+    sup, outcome = _phase_review_with(
+        tmp_path, judge, [_residual()], before=cure_task_arrives)
+    assert outcome is None
+    assert sup.run.read_tasks()["phases"][0]["gate"] == "closed"
+    assert _events(sup, "phase_gate.passed") == []
+    assert [e for e in _events(sup, "input.parked")] == []
+    assert not sup._budget_exhausted_tail
+
+
+@pytest.mark.parametrize("judge", ["review", "verdict_gate"])
+@pytest.mark.parametrize("sidecar", [None, "{not json", "[{\"severity\": \"nope\"}]"],
+                         ids=["missing", "unreadable", "invalid"])
+def test_a_missing_or_invalid_findings_channel_is_never_a_pass(
+        tmp_path, judge, sidecar):
+    sup, _ = _phase_review_with(
+        tmp_path, judge, sidecar, operator_input_needed_pause=False,
+        infra_outage_budget_s=0.0, contract_retry_max=0)
+    assert sup.run.read_tasks()["phases"][0]["gate"] != "passed"
+    assert _events(sup, "phase_gate.passed") == []
+
+
+@pytest.mark.parametrize("judge", ["review", "verdict_gate"])
+def test_a_rejection_with_a_blocking_finding_beside_residuals_still_climbs_the_ladder(
+        tmp_path, judge):
+    sup, outcome = _phase_review_with(
+        tmp_path, judge, [_residual(), _blocking()])
+    assert outcome is None
+    assert sup.run.read_tasks()["phases"][0]["gate"] == "closed"
+    assert _events(sup, "phase_gate.passed") == []
+    rejected = _events(sup, "phase_gate.rejected")
+    assert [e["judge"] for e in rejected] == [judge]
+    assert rejected[0]["blockingFindings"] == 1
 
 
 # -- C.4: what a pass waits for ----------------------------------------------
@@ -293,7 +410,9 @@ def test_resume_point_over_a_reviewing_gate_redispatches_that_phase_review_not_t
     assert (approach, skip_planning) == (1, True)
     assert step == "worker" and step != "review"
     data = fresh.run.read_tasks()
-    assert data["phases"][0]["gate"] == "closed"
+    # the gate stays `reviewing` on disk until the re-dispatch (a second crash
+    # before it must resume the same way); the dispatch is marked in memory.
+    assert data["phases"][0]["gate"] == "reviewing"
     assert not fresh.run.review_early_verdict_file.exists()
     # the worker pass re-dispatches the PHASE review as a fresh first attempt
     fresh._approach = 1
@@ -302,3 +421,159 @@ def test_resume_point_over_a_reviewing_gate_redispatches_that_phase_review_not_t
     assert [r["scoped"] for r in judges.reviews] == [True]
     assert fresh.run.read_tasks()["phases"][0]["gate"] == "passed"
     assert [e["round"] for e in _events(fresh, "phase_gate.due")] == [1]
+
+
+# -- C.5 with the B.7 worker-exit backstops: nonterminal tasks ---------------
+
+def _crashed_phase_review(tmp_path, tasks, *, edge=None, scoped=True,
+                          hats=None, **cfg):
+    """A run dir whose last process died inside a phase review (iteration 2,
+    never ended) with the first gate persisted `reviewing`; returns a fresh
+    supervisor over it, before `_resume_point`."""
+    _init_workspace(tmp_path / "workspace")
+    run = RunDir(root=tmp_path / "run")
+    run.update_status(state="running", phase="review", approach=1)
+    for n, ended in ((1, True), (2, False)):
+        meta = {"phase": "worker" if n == 1 else "review", "iteration": n,
+                "startedAt": "2026-01-01T00:00:00Z"}
+        if ended:
+            meta["endedAt"] = "2026-01-01T00:01:00Z"
+        elif scoped:
+            meta.update(planPhase="one", scope="phase")
+            if edge:
+                meta["edge"] = edge
+        (run.iteration_dir(n) / "meta.json").write_text(json.dumps(meta))
+    first = _supervisor(tmp_path, hats or {})
+    first._approach = 1
+    _seed(first, tasks, gate="reviewing")
+    first.run.review_early_verdict_file.write_text('{"verdict": "verified"}')
+    fresh = _supervisor(tmp_path, hats or {}, **cfg)
+    fresh._approach = 1
+    return fresh
+
+
+def _stop_after_first_worker(sup, prompt=""):
+    sup.abort("end observation after the first worker")
+    return _ok(json.dumps({"verdict": "no_verdict"}))
+
+
+@pytest.mark.parametrize("tasks", [
+    [("001", "one", "pending"), ("002", "two", "pending")],
+    [("001", "one", "completed"), ("002", "one", "in-progress"),
+     ("003", "two", "pending")],
+    [("001", "one", "validation-failed"), ("002", "two", "pending")],
+    [("001", "one", "completed"), ("002", "one", "pending", "review-cure"),
+     ("003", "two", "pending")],
+])
+def test_a_reviewing_gate_over_nonterminal_tasks_is_re_reviewed_before_any_worker(tmp_path, tasks):
+    judges = _Judges()
+    fresh = _crashed_phase_review(
+        tmp_path, tasks, edge="verdict_ready",
+        hats={"review": [judges.review], "worker": [_stop_after_first_worker]})
+    assert fresh._resume_point() == (1, True, "worker")
+    # not due by the ordinary terminal-task predicate ...
+    assert not state.phase_is_due(fresh.run.read_tasks(), "one")
+    # ... but marked for re-dispatch by the resume
+    assert fresh._due_phase_for_review() == "one"
+    asyncio.run(fresh._step_worker())
+    assert fresh.runner.phases_seen[:2] == ["review", "worker"], \
+        fresh.runner.phases_seen
+    assert [r["scoped"] for r in judges.reviews] == [True]  # never the final
+    due = _events(fresh, "phase_gate.due")
+    assert [(e["planPhase"], e["round"], e.get("edge")) for e in due] == [
+        ("one", 1, "verdict_ready")]
+    assert not fresh.run.review_early_verdict_file.exists()
+
+
+def test_the_resumed_dispatch_without_an_edge_in_the_crashed_meta_carries_none(tmp_path):
+    judges = _Judges()
+    fresh = _crashed_phase_review(
+        tmp_path, [("001", "one", "pending"), ("002", "two", "pending")],
+        scoped=False,
+        hats={"review": [judges.review], "worker": [_stop_after_first_worker]})
+    assert fresh._resume_point() == (1, True, "worker")
+    asyncio.run(fresh._step_worker())
+    assert fresh.runner.phases_seen[0] == "review"
+    due = _events(fresh, "phase_gate.due")
+    assert [(e["planPhase"], "edge" in e) for e in due] == [("one", False)]
+
+
+def test_a_second_crash_before_the_re_dispatch_resumes_the_same_way(tmp_path):
+    judges = _Judges()
+    tasks = [("001", "one", "pending"), ("002", "two", "pending")]
+    first = _crashed_phase_review(tmp_path, tasks, edge="blocked_with_failures",
+                                  hats={"review": [judges.review]})
+    assert first._resume_point() == (1, True, "worker")
+    # the process dies again before the worker pass dispatches the review
+    second = _supervisor(tmp_path, {"review": [judges.review]})
+    second._approach = 1
+    assert second.run.read_tasks()["phases"][0]["gate"] == "reviewing"
+    assert second._resume_point() == (1, True, "worker")
+    assert second._due_phase_for_review() == "one"
+
+
+def test_a_peer_stage_crash_re_runs_the_phase_review_then_the_peer_as_a_fresh_first_attempt(tmp_path):
+    judges = _Judges()
+    fresh = _crashed_phase_review(
+        tmp_path, [("001", "one", "completed"), ("002", "two", "pending")],
+        hats={"review": [judges.review], "verdict_gate": [judges.peer],
+              "worker": [_stop_after_first_worker]},
+        peer_verdict_gate=True)
+    assert fresh._resume_point() == (1, True, "worker")
+    asyncio.run(fresh._step_worker())
+    assert fresh.runner.phases_seen[:3] == ["review", "verdict_gate", "worker"]
+    assert [r["scoped"] for r in judges.reviews] == [True]
+    assert [p["scoped"] for p in judges.peers] == [True]
+    assert fresh.run.read_tasks()["phases"][0]["gate"] == "passed"
+    assert [e["round"] for e in _events(fresh, "phase_gate.due")] == [1]
+
+
+def test_a_non_reviewing_gate_leaves_nothing_to_re_dispatch(tmp_path):
+    fresh = _crashed_phase_review(
+        tmp_path, [("001", "one", "pending"), ("002", "two", "pending")])
+    data = fresh.run.read_tasks()
+    state.set_phase_gate(data, "one", "closed")
+    fresh.run.write_tasks(data)
+    fresh._resume_point()
+    assert fresh._phase_review_resume == {}
+    assert fresh._due_phase_for_review() is None
+
+
+def test_a_crash_after_a_remedy_insertion_re_reviews_the_phase_before_any_worker(tmp_path):
+    obligation = "Task 001: thing 001"
+
+    def review(sup, prompt=""):
+        return _ok(json.dumps({
+            "verdict": "verified",
+            "petition_adjudications": [{
+                "obligation": obligation, "adjudication": "REFUTED",
+                "remedy": "Render the fixture. Done when: the fixture renders."}]}))
+
+    class SimulatedCrash(BaseException):
+        pass
+
+    sup = _seeded_sup(tmp_path, {"review": [review]},
+                      [("001", "one", "failed"), ("002", "two", "pending")])
+    assert petitions.file_worker_petition(
+        sup.workspace, obligation, "environmental", "fixture unavailable",
+        run=sup.run) == []
+
+    def crash(pid):
+        raise SimulatedCrash()
+
+    sup._phase_pass_blockers = crash
+    with pytest.raises(SimulatedCrash):
+        asyncio.run(sup._run_phase_review("one"))
+    data = sup.run.read_tasks()
+    assert data["phases"][0]["gate"] == "reviewing"
+    assert any(t.get("remedyFor") == obligation and t["status"] == "pending"
+               for t in data["tasks"])
+    sup.run.update_status(state="running", phase="review", approach=1)
+    judges = _Judges()
+    fresh = _supervisor(tmp_path, {"review": [judges.review],
+                                   "worker": [_stop_after_first_worker]})
+    fresh._approach = 1
+    assert fresh._resume_point() == (1, True, "worker")
+    asyncio.run(fresh._step_worker())
+    assert fresh.runner.phases_seen[0] == "review", fresh.runner.phases_seen
+    assert [r["scoped"] for r in judges.reviews] == [True]

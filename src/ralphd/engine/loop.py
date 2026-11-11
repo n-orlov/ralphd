@@ -750,6 +750,11 @@ class LoopSupervisor:
         # Phases whose review this process already ran without opening
         # the gate; the worker pass does not re-dispatch them in a spin.
         self._phase_review_unresolved: set[str] = set()
+        # PRD v0.37 C.5: phase ids whose gate was persisted `reviewing` when
+        # this process resumed (-> the `edge` the crashed dispatch carried,
+        # or None). The next worker pass re-dispatches each as a fresh first
+        # attempt, whatever the state of the phase's tasks.
+        self._phase_review_resume: dict[str, str | None] = {}
         self._last_task_snapshot: dict = {}
         self.deadline = time.monotonic() + cfg.job_timeout_s
         # Task 011 (#5): wall-clock twin of self.deadline (published as
@@ -4339,26 +4344,49 @@ class LoopSupervisor:
     def _reset_reviewing_phase_gates(self) -> list[str]:
         """PRD v0.37 requirement C.5: a gate still `reviewing` on disk means
         the prior process died between a phase review's dispatch and its
-        verdict being applied. Each such gate goes back to `closed` -- every
-        task of the phase is terminal, so the phase is due again -- and the
-        review channel files the dead attempt may have left are removed, so
-        the re-dispatch is a fresh first attempt that never reads the
-        crashed one's checkpoint. Returns the reset phase ids (in plan
-        order); nothing is written when there are none. The caller lands at
-        `worker`, whose top-of-pass due check dispatches the phase review;
-        landing at `review` would run the FINAL review over a phase that
-        never got its gate."""
+        verdict being applied. Each such phase is marked for a re-dispatch
+        (`_phase_review_resume`, with the `edge` the crashed dispatch's
+        iteration meta carried, if any) that the worker pass takes before any
+        task is selected, and the review channel files the dead attempt may
+        have left are removed, so the re-dispatch is a fresh first attempt
+        that never reads the crashed one's checkpoint. The marker does not
+        depend on the phase's tasks being terminal: a review reached through
+        a B.7 worker-exit backstop ran over a phase with nonterminal tasks.
+        The gate itself stays `reviewing` on disk until the dispatch, so a
+        second crash before it resumes the same way. Returns the phase ids in
+        plan order; nothing is written when there are none. The caller lands
+        at `worker`; landing at `review` would run the FINAL review over a
+        phase that never got its gate."""
         data = self.run.read_tasks()
+        last = state.last_phase_id(data)
         reset = [str(ph["id"]) for ph in data.get("phases") or []
                  if isinstance(ph, dict)
-                 and ph.get("gate") == state.PHASE_GATE_REVIEWING]
+                 and ph.get("gate") == state.PHASE_GATE_REVIEWING
+                 and ph.get("id") != last]
         if not reset:
             return []
+        crashed = self._crashed_dispatch_meta()
         for pid in reset:
-            state.set_phase_gate(data, pid, state.PHASE_GATE_CLOSED)
-        self.run.write_tasks(data)
+            edge = None
+            if crashed.get("scope") == "phase" and crashed.get(
+                    "planPhase") == pid:
+                edge = crashed.get("edge") or None
+            self._phase_review_resume[pid] = edge
         self._clear_review_channel_files()
         return reset
+
+    def _crashed_dispatch_meta(self) -> dict:
+        """The `meta.json` of the next iteration slot when it was started and
+        never ended (the dispatch a crash interrupted), else `{}`."""
+        meta_path = (self.run.root / "iterations"
+                     / f"{self.iterations_used + 1:04d}" / "meta.json")
+        try:
+            meta = json.loads(meta_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(meta, dict) or "endedAt" in meta:
+            return {}
+        return meta
 
     def _crashed_mid_review(self) -> bool:
         """True iff the NEXT iteration slot (`iterations_used + 1` -- the
@@ -10155,6 +10183,8 @@ class LoopSupervisor:
         "unparseable_reply": "no verdict: unparseable reply",
         "unreadable_verdict": "no verdict: the verdict claim is unreadable",
         "unusable_findings": "no verdict: the findings channel is unusable",
+        "judge_crashed": "no verdict: the judge crashed",
+        "judge_timed_out": "no verdict: the judge timed out",
     }
 
     def _reset_judge_fault_episode(self) -> None:
@@ -10339,6 +10369,11 @@ class LoopSupervisor:
         empty. The caller decides whether a retry is still available."""
         if result is None:
             return False, None, None
+        cut_short = self._phase_judge_cut_short(result)
+        if cut_short is not None:
+            # PRD v0.37 D.5: a phase-scoped peer gate the engine cut short
+            # (a crash, the full iteration timeout) has no reply to repair.
+            return False, None, cut_short
         if getattr(result, "output_truncated", False) and not (
                 result.final_text or "").strip():
             return False, None, "output_truncated"
@@ -13685,7 +13720,11 @@ class LoopSupervisor:
             # task's tier -- `state.run_level_verify_tier()` takes no task
             # argument on purpose.
             result = await self._run_one_review_dispatch()
-            if not self._review_interrupted(result):
+            self._review_no_verdict = None
+            if (not self._review_interrupted(result)
+                    or self._phase_judge_cut_short(result)
+                    and not self._phase_timeout_checkpointed(
+                        result, approach)):
                 result, self._review_no_verdict = (
                     await self._judge_reply_with_retry(
                         "review", result, self._read_review_reply,
@@ -13698,17 +13737,60 @@ class LoopSupervisor:
                     self._review_no_verdict = None
                 if not self._review_interrupted(result):
                     return result
+                if self._review_no_verdict:
+                    # D.5: a phase judge that crashed or timed out on every
+                    # retry has no verdict; the caller parks it.
+                    return result
             self._advance("review", "review", "review_interrupted")
-            if result.timed_out and not self._abort_reason:
-                checkpoint = state.read_review_early_verdict(self.run.root)
-                if (isinstance(checkpoint, dict)
-                        and checkpoint.get("approach") == approach
-                        and checkpoint.get("verdict") in ("verified", "rejected")):
-                    self._review_checkpoint_timeout_not_budget = True
-                    return None
+            if (result.timed_out and not self._abort_reason
+                    and self._phase_timeout_checkpointed(result, approach,
+                                                         any_scope=True)):
+                self._review_checkpoint_timeout_not_budget = True
+                return None
             if not self.budget_left():
                 return None
             await self._gate()
+
+    def _phase_timeout_checkpointed(self, result, approach: int, *,
+                                    any_scope: bool = False) -> bool:
+        """True iff `result` timed out while an early-verdict checkpoint
+        (`record-verdict`) for THIS approach already sits on disk: a decisive
+        verdict is not repaired by asking again (task cure-01-05), so that
+        timeout keeps its salvage and is never a judge retry."""
+        if not result.timed_out or self._abort_reason:
+            return False
+        if not any_scope and self._phase_review_scope is None:
+            return False
+        checkpoint = state.read_review_early_verdict(self.run.root)
+        return (isinstance(checkpoint, dict)
+                and checkpoint.get("approach") == approach
+                and checkpoint.get("verdict") in ("verified", "rejected"))
+
+    def _phase_judge_cut_short(self, result) -> str | None:
+        """PRD v0.37 requirement D.5: inside a phase review's scope, a judge
+        iteration the engine cut short -- a crash (an abnormal exit) or the
+        full iteration timeout (or the startup-window watchdog) -- is a judge
+        with no verdict, not an interruption to ask again until the job's
+        iterations are gone. Returns the no-verdict reason
+        (`judge_timed_out` / `judge_crashed`), or `None` outside a phase
+        scope, for a reply that ran to completion, for an operator's
+        interrupt and while the run is aborting: those keep the
+        `review_interrupted` handling.
+
+        The operator's interrupt is read from the supervisor's own record of
+        it (`operator_abort_requested`: a `POST /interrupt` that reached this
+        iteration, or an abort), never from `result.interrupted`: the runner
+        sets that flag on EVERY negative exit, so the engine's own timeout
+        (SIGINT, then SIGKILL: exit -2 or -9) and a signal death such as
+        SIGSEGV (-11) carry it too, and reading it as the operator's interrupt
+        would send exactly those judges back into the self-loop."""
+        if (result is None or self._phase_review_scope is None
+                or self.operator_abort_requested
+                or not self._iteration_cut_short_by_engine(result)):
+            return None
+        if result.timed_out or result.no_traffic_timeout:
+            return "judge_timed_out"
+        return "judge_crashed"
 
     async def _read_review_reply(self, result):
         """One reading of a review iteration's reply for
@@ -13721,7 +13803,14 @@ class LoopSupervisor:
         all empty the reading is `empty_reply`, while a non-empty reply the
         ladder could not repair reads as `review_contract_unrepaired` or
         `review_findings_unusable` (retried the same way, then an infra fault
-        under the outage budget through `_review_contract_fault`)."""
+        under the outage budget through `_review_contract_fault`).
+
+        In a phase review's scope a reply the engine cut short is read as
+        `judge_crashed` / `judge_timed_out` (`_phase_judge_cut_short`), with
+        no contract ladder: there is no reply to repair."""
+        if (result is not None and self._phase_review_scope is not None
+                and self._review_interrupted(result)):
+            return result, self._phase_judge_cut_short(result)
         if (result is not None and not self._review_interrupted(result)
                 and getattr(result, "output_truncated", False)
                 and not (result.final_text or "").strip()):
@@ -14342,6 +14431,15 @@ class LoopSupervisor:
         decision 5: never the last phase), else `None`. A phase this process
         already reviewed without opening its gate is not offered again."""
         data = self.run.read_tasks()
+        # C.5: a gate that was `reviewing` when this process resumed is
+        # re-dispatched first, whether or not its tasks are all terminal.
+        for resumed in list(self._phase_review_resume):
+            entry = state.phase_entry(data, resumed)
+            if (entry is not None
+                    and entry.get("gate") == state.PHASE_GATE_REVIEWING
+                    and resumed != state.last_phase_id(data)):
+                return resumed
+            del self._phase_review_resume[resumed]
         pid = state.due_phase_id(data)
         if (pid is None or not state.phase_review_dispatchable(data, pid)
                 or pid in self._phase_review_unresolved):
@@ -14385,7 +14483,15 @@ class LoopSupervisor:
         atomic_write_json(d / f"{stem}.json", record)
         (d / f"{stem}.md").write_text(md_text)
         rel = Path("artifacts") / "phase-reviews"
-        return [str(rel / f"{stem}.json"), str(rel / f"{stem}.md")]
+        paths = [str(rel / f"{stem}.json"), str(rel / f"{stem}.md")]
+        # C.3: a completed verdict reaches `phases[].records` the moment its
+        # files exist, before any later judge runs -- a stop, park, return
+        # or crash after this point cannot lose it.
+        data = self.run.read_tasks()
+        for path in paths:
+            state.append_phase_record(data, pid, path)
+        self.run.write_tasks(data)
+        return paths
 
     def _clear_review_channel_files(self) -> None:
         """A phase review writes the same findings files and early-verdict
@@ -14439,6 +14545,10 @@ class LoopSupervisor:
         (`"review"`: the review stage is settled, the peer gate still runs
         when on; `"verdict_gate"`: both are)."""
         approach = self._approach
+        if pid in self._phase_review_resume:
+            resumed_edge = self._phase_review_resume.pop(pid)
+            if edge is None:
+                edge = resumed_edge
         data = self.run.read_tasks()
         phase = state.phase_entry(data, pid) or {}
         start_head = phase.get("startHead")
@@ -14760,6 +14870,12 @@ class LoopSupervisor:
             result = await self._dispatch_verdict_gate()
         self._reset_judge_fault_episode()
         self._record_verdict_gate_peek(approach)
+        if not approved and self._phase_gate_residual_only(payload):
+            # PRD v0.37 C.4: a rejection whose valid structured findings
+            # channel holds only residual findings is a pass, whatever the
+            # label said -- the same recomputation `_review_verdict` makes
+            # for the phase review. The residuals stay in the record below.
+            approved = True
         paths = self._write_phase_review_records(
             pid, round_, "verdict_gate",
             verdict="verified" if approved else "rejected",
@@ -14767,6 +14883,30 @@ class LoopSupervisor:
             head_reviewed=self._workspace_head_sha(),
             iteration=self.iterations_used)
         return approved, paths, payload, False
+
+    def _phase_gate_residual_only(self, payload: dict | None) -> bool:
+        """PRD v0.37 C.4: True when a REJECTED phase-scoped peer-gate verdict
+        (a well-formed payload) comes with a present, valid structured
+        findings channel (`_gate_findings`) that holds no blocking finding.
+        A missing, unreadable or invalid channel, or a reply with no usable
+        payload, is never a pass (`_gate_findings` reads `None` for the
+        first two). The residuals are emitted, never dropped; no cure, park
+        or exhaustion follows from them."""
+        if payload is None or payload.get("verdict") != "rejected":
+            return False
+        findings_list = self._gate_findings()
+        if (findings_list is None
+                or findings.compute_verdict(findings_list) != "verified"):
+            return False
+        residual = [f for f in findings_list
+                    if f.get("severity") == "residual"]
+        self.run.emit(
+            "review.verdict_recomputed", approach=self._approach,
+            judge="verdict_gate", claimed_verdict="rejected",
+            computed_verdict="verified", residual_count=len(residual),
+            residual_findings=residual,
+            planPhase=(self._phase_review_scope or {}).get("planPhase"))
+        return True
 
     # -- the park rung of a phase rejection (PRD v0.37 D.3) ---------------------
 
