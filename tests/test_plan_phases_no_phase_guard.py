@@ -16,7 +16,9 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import time
 
+from ralphd.engine import loop as loop_mod
 from ralphd.engine import scheduler
 from ralphd.engine.state import RunDir, atomic_write_json, read_events
 
@@ -157,9 +159,26 @@ def _built(tmp_path, name):
     return sup
 
 
+class _FrozenTime:
+    """`time` as the loop module sees it, with the wall clock held still."""
+
+    def __init__(self, now):
+        self._now = now
+
+    def time(self):
+        return self._now
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
 def test_no_phase_prompts_equal_the_prompts_built_with_phases_out_of_the_inputs(
         tmp_path, monkeypatch):
+    # The job context prints the deadline and the minutes left to it. Two
+    # supervisors built a second apart disagree on both, so hold the clock
+    # still and give both the same deadline: only the phase readers may differ.
     sup = _built(tmp_path, "a")
+    monkeypatch.setattr(loop_mod, "time", _FrozenTime(sup._deadline_epoch - 5400))
     with_hooks = _prompts(sup)
     for name, prompt in with_hooks.items():
         for heading in HEADINGS:
@@ -168,6 +187,7 @@ def test_no_phase_prompts_equal_the_prompts_built_with_phases_out_of_the_inputs(
     # `phases` taken out of the loop's inputs: neither phase reader may
     # contribute a byte, and nothing may read the plan's `phases`.
     other = _built(tmp_path, "b")
+    other._deadline_epoch = sup._deadline_epoch
     monkeypatch.setattr(type(other), "_phase_review_context",
                         lambda self: "")
     monkeypatch.setattr(type(other), "_earlier_phase_reviews_context",
