@@ -4465,14 +4465,16 @@ were all empty, before any verdict is recorded. A truncated reply skips the
 ladder, since the same hat with the same output budget would be cut off again.
 The retry is capped by `judge_retry_max` (default `2`, `0` disables it,
 negative values are refused), emits `verdict_gate.retry` with `hat`, `attempt`,
-`cap` and `reason` (`output_truncated` or `empty_reply`), and is refunded
+`cap` and `reason` (`output_truncated` or `empty_reply`; for a phase-scoped
+gate also `judge_crashed` or `judge_timed_out`), and is refunded
 through the `infra` counter so it never costs an iteration or an approach. It
 differs from the attempt it replaces: `prompts/judge_retry.md` is appended to
 its prompt (the previous attempt ran out of output budget; emit the verdict
 within a bounded investigation) and its thinking level is one step lower
 (`high` to `medium`; the lowest level, or no level, is kept). Review's retry
 fires on `output_truncated` and on `empty_reply` (its contract ladder was
-exhausted on replies that were all empty), emits `review.retry`, and goes
+exhausted on replies that were all empty; in a phase scope also on
+`judge_crashed` and `judge_timed_out`), emits `review.retry`, and goes
 through the same helper; when every retry fails review takes the judge-fault
 route below. A non-empty malformed review reply keeps the contract ladder; its
 exhaustion (`review_contract_unrepaired`, `review_findings_unusable`) is the
