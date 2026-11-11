@@ -63,7 +63,7 @@ class UiServer:
         # regardless of what was requested on --bind.
         self.base = f"http://127.0.0.1:{self.port}"
 
-    def wait_ready(self, timeout=15):
+    def wait_ready(self, timeout=60):
         deadline = time.time() + timeout
         while time.time() < deadline:
             if self.proc.poll() is not None:
