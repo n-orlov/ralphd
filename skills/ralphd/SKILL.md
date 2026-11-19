@@ -122,7 +122,6 @@ not just the task.
 ralphctl doctor                      # preflight first
 ralphctl start --prd PRD.md --workspace ~/Projects/thing \
   --run-id thing-phase1 --iterations 500 --max-approaches 8 \
-  --model-for planning=<ref> --model-for worker=<ref> --thinking high \
   --timeout 720 --iteration-timeout 120 \
   --skills DIR --creds DIR --network host --vigilant --reflect
 ```
@@ -137,13 +136,24 @@ ralphctl start --prd PRD.md --workspace ~/Projects/thing \
 - **`--skills` / `--creds` are copied at start and are not recorded in
   `job.yaml`.** When relaunching or reproducing a run, diff against the previous
   run's config dir instead of trusting `job.yaml` to tell you what it had.
-- Hats that can take their own model: `planning`, `worker`, `verify`, `review`,
-  `reflect`, `router`; per-tier via `--model-for-tier HAT:TIER=REF`
+- **Models and harnesses come from the host by default.** The registry config
+  (`~/.ralphd/config.yaml`: `model`, `thinking`, `models:`, `model_tiers:`,
+  `harnesses:`) is the operator's lineup, and a `start` with no model flags
+  inherits it. `--template`, `--model-for`, `--model-for-tier`,
+  `--harness-for` and `--thinking` each override it for the hats they name, so
+  pass them only when the operator asks for that override. Do not pick a
+  "better" or "newer" model yourself: keeping the lineup current is the
+  operator's job, done in that file.
+- When the operator does ask: hats that can take their own model are
+  `planning`, `worker`, `verify`, `review`, `plan_review`, `reflect`, `router`,
+  `steer` and `verdict_gate`; per tier via `--model-for-tier HAT:TIER=REF`
   (`trivial`/`normal`/`hard`).
 
 **Confirm the parameters with the operator before starting.** A launch commits
-hours of wall clock and real money; state the run id, model per hat, iteration
-and approach budgets, timeout, network and workspace, and let them correct you.
+hours of wall clock and real money; state the run id, the model per hat **as
+resolved from the host lineup** (read it back from the registry config, plus
+any override the operator asked for), iteration and approach budgets, timeout,
+network and workspace, and let them correct you.
 
 ## Steering
 
