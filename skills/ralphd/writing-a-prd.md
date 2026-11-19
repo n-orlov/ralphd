@@ -81,13 +81,20 @@ it: no CI-run report, record, close-out, notes file or doc touch-up.
 `origin/main`'s head when the run ends is the swept sha. Issue closure is a
 comment, not a tracked file. A stale sweep is never process: if `origin/main`
 moved past the swept sha, the sweep is stale and must re-run before the plan
-can be called done. Since 0.29 the plan marks the sweep task `sweep: true`,
+can be called done. The plan marks the sweep task `sweep: true`,
 so a cure pass re-opens it instead of leaving a stale sweep behind.
 
 - **One sweep, at the end, and nothing committed after it.** If the PRD needs
   CI green, say "all lanes green at the final pushed sha" and make the sweep
   the last task. A clause that demands a record of the sweep *in the repo*
   creates a commit that makes the sweep stale — a loop with no exit.
+- **Heavy tiers run in CI, not on the run's host.** Mutation testing, and any
+  tier that spawns many containers or processes, runs only in the project's
+  CI (e.g. the extended Jenkins lane); the local sweep step runs the suite and
+  the gates with mutation deferred, and never phrases a criterion as "reports
+  produced at this head" that forces a local run. On 12 Nov 2026 a local
+  mutation sweep leaked 39 testcontainers, swapped the workstation's container
+  slice and failed the run; the same leak had put 237 on the CI agent.
 - **DO NOT demand self-referential finals.** "The final record must cite the
   commits that made the final record" and "the guard must be green at HEAD as
   the last commit, recorded in a file" are fixed-point chases: every cure
@@ -223,6 +230,8 @@ writes. Say so in the PRD, and:
       it, `origin/main`'s head is the swept sha, issue closure is a comment,
       a stale sweep is never process, and the sweep task is marked
       `sweep: true`.
+- [ ] Mutation and other container-heavy tiers run only in CI; the local
+      sweep defers them and no criterion forces a local run.
 - [ ] The Standing rules block gives the test recipes verbatim, the
       only-the-sweep-runs-a-tier rule, the sweep's execution shape, the
       deferred-wait rule and the CI dispatch recipe.

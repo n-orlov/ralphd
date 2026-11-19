@@ -198,13 +198,13 @@ ralphctl resume <run> --iterations +500
   `~/.ralphd/configs/<run>/job.yaml`, read when the engine starts — so editing
   it before resuming grants a full fresh window.
 - `--iterations +N` adds to the existing budget; a bare integer sets it.
-- **Docker access is replayed (since 0.32.2, #297).** A run started with
+- **Docker access is replayed.** A run started with
   `--allow-docker` keeps the socket on a bare `resume` and on auto-resume;
   `resume --no-allow-docker` drops it and later bare resumes keep it dropped.
   If a recorded socket is missing, resume refuses (exit 2) instead of
   dropping it silently. `ralphctl status` shows it on the `docker:` line. A
-  run started before 0.32.2 has no record: pass `--allow-docker` once and it
-  is recorded from then on.
+  run with no recorded docker setting needs `--allow-docker` once; it is
+  recorded from then on.
 - `--network` and the image default to what the run recorded. **Do not pin
   `--image` without a reason** — the default already reproduces the recorded
   image and keeps its provenance, which pinning discards.
