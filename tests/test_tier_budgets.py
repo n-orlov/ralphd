@@ -975,8 +975,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.38 CI cure (fast lane red at ca76ee9b0): +2 tests in
     # tests/test_stub_env_marker_atomic.py, in both tiers -> fast 9022,
     # smoke 7241.
-    "fast": {"tests": 9022, "modules": 565},
-    "smoke": {"tests": 7241, "modules": 438},
+    # v0.38 task 006 retry: +18 tests in tests/test_cli_version_probe_
+    # outcomes.py (empty probe output, stderr-only output, a non-executable
+    # CLI on PATH, the live wrappers end to end), in both tiers -> fast
+    # 9040, smoke 7259.
+    "fast": {"tests": 9040, "modules": 565},
+    "smoke": {"tests": 7259, "modules": 438},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
