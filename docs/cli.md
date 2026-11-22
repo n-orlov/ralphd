@@ -2027,8 +2027,12 @@ same way (`judge: verdict_gate`) when it would be dispatched on the key its own
 earlier verdict judged, whatever the budget now allows: the key is compared
 before the budget, so a cure-round top-up, `ralphctl budget <run> --iterations`
 lowered to the iterations already used, or a passed deadline still parks it
-rather than holding `exhausted` (an abort still ends the run); a phase review is
-never parked.
+rather than holding `exhausted` (an abort still ends the run), and the park
+keeps holding with no budget left, re-parking on each release with nothing
+changed. To spend a cure round on a rejection the gate already returned, answer
+the gate's own operator-input park (`ralphctl answer <run>`, optionally after
+`ralphctl budget <run> --cure-passes`): the cure edge is taken without
+dispatching the gate again. A phase review is never parked.
 The key alone decides: a blocker that went away without changing the key (a
 steering message since consumed, a review-cure or steering origin marker cleared)
 still parks, and the remembered VERIFIED is never taken in place of a review.

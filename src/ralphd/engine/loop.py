@@ -15452,6 +15452,19 @@ class LoopSupervisor:
         judged = self._review_key_entry(approach).get("gateJudged")
         return isinstance(judged, dict) and judged.get("key") == key
 
+    @staticmethod
+    def _is_verdict_gate_unchanged_park(status: dict) -> bool:
+        """True iff `status` records the final peer gate's own
+        `verified_unchanged` park (v0.38 B.3): `pauseReason:
+        verified_unchanged` with an `inputQuestion` whose `judge` is
+        `verdict_gate`. Review's own B.2 park (`judge: review`) is not
+        this park."""
+        question = status.get("inputQuestion")
+        return (status.get("pauseReason")
+                == state.VERIFIED_UNCHANGED_INPUT_TRIGGER
+                and isinstance(question, dict)
+                and question.get("judge") == "verdict_gate")
+
     def _record_gate_judged_key(self, approach: int, key: dict) -> None:
         """The final peer gate returned a usable verdict on `key`: remember
         it, so a later dispatch on the same key is held. A no-verdict outcome
@@ -15997,12 +16010,24 @@ class LoopSupervisor:
         shares this one entry point and gets the identical fix for free --
         none of them has a reason to keep parking once the run's own
         clock is what would decide there is nothing left to wait for.
+
+        v0.38 B.3 is the one exception: the final peer gate's own
+        `verified_unchanged` park (`judge: verdict_gate`). The gate compares
+        its judged key BEFORE the budget and parks on an equal key whatever
+        the budget allows; turning that park into the `exhausted` tail here,
+        one step later, would make the budget decide after all. The park
+        dispatches and charges nothing, and its answer re-enters
+        `_step_verdict_gate`, where a changed key still meets the budget
+        check. An operator abort is not a budget change and still takes the
+        tail.
         """
-        if not self.budget_left():
-            self._budget_exhausted_tail = True
-            return ("tail",)
         opening = self.run.read_status()
         reason = opening.get("pauseReason")
+        if not self.budget_left() and not (
+                self._abort_reason is None
+                and self._is_verdict_gate_unchanged_park(opening)):
+            self._budget_exhausted_tail = True
+            return ("tail",)
         phase_park = (isinstance(opening.get("inputQuestion"), dict)
                       and bool(opening["inputQuestion"].get("planPhase")))
         if (opening.get("state") == AWAITING_INPUT_STATE
@@ -16054,9 +16079,7 @@ class LoopSupervisor:
             self._advance("paused", "worker",
                           "paused_resumed_unresolvable_edge")
             return ("advance", "worker", "paused_resumed_unresolvable_edge")
-        if (reason == state.VERIFIED_UNCHANGED_INPUT_TRIGGER
-                and isinstance(opening.get("inputQuestion"), dict)
-                and opening["inputQuestion"].get("judge") == "verdict_gate"):
+        if self._is_verdict_gate_unchanged_park(opening):
             # v0.38 B.3: the final peer gate's own unchanged-key park
             # re-enters `verdict_gate`, which compares the key again.
             self._advance("paused", "verdict_gate",

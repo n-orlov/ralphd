@@ -2187,7 +2187,15 @@ charges nothing, so an iteration budget lowered to (or below) the iterations
 already used (`ralphctl budget <run> --iterations`, `PATCH /config/budget`) or a
 passed job deadline parks `verified_unchanged` on an equal key rather than taking
 the `exhausted` hold; only a changed key meets the budget check, and an operator
-abort still ends the run through its own tail. Another attempt on the same HEAD and task triples parks
+abort still ends the run through its own tail. The park also holds with no
+budget left: `_step_paused` takes the out-of-budget tail over every other park
+(review's own `verified_unchanged` park included) but not over the gate's, so
+each release with nothing changed re-enters `verdict_gate` and parks again. A
+cure round on a rejection the gate already returned is spent by answering the
+gate's own operator-input park (`ralphctl answer <run>`, optionally after
+`ralphctl budget <run> --cure-passes`), which takes the cure-pass edge from the
+recorded rejection with no second gate dispatch; a top-up followed by a plain
+release of that park re-enters the gate and parks `verified_unchanged`. Another attempt on the same HEAD and task triples parks
 `verified_unchanged` without another gate dispatch, whether the earlier verdict
 approved or rejected, and a final-review attempt on that key leaves the gate's
 record in place (it only supersedes the review's own remembered deferral).

@@ -1083,8 +1083,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # test_budget_cure_passes.py: the top-up-then-unpause node rewritten to
     # park verified_unchanged, plus the answer path taking the cure pass), in
     # both tiers -> fast 9352, smoke 7571.
-    "fast": {"tests": 9352, "modules": 579},
-    "smoke": {"tests": 7571, "modules": 452},
+    # v0.38 task cure-01-05 second retry: +7 tests, no module (tests/test_
+    # review_state_key.py: the gate park holds through the paused step with
+    # no budget left x2, an abort over it still ends the run, other parks
+    # still take the budget tail x2, a raised iteration/approach budget does
+    # not reopen the key x2), in both tiers -> fast 9359, smoke 7578.
+    "fast": {"tests": 9359, "modules": 579},
+    "smoke": {"tests": 7578, "modules": 452},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
