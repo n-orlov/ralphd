@@ -22,7 +22,6 @@ import json
 import pytest
 
 from ralphd.engine import state as engine_state
-from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from tests.conftest import ScriptedRunner, attach_runner, make_supervisor
 
@@ -125,12 +124,6 @@ def _step_review(sup):
     return asyncio.run(asyncio.wait_for(sup._step_review(), 30.0))
 
 
-def _deferral_events(sup) -> int:
-    return sum(
-        1 for line in sup.run.events_file.read_text().splitlines()
-        if "VERIFIED verdict deferring" in line)
-
-
 def test_the_key_is_recorded_per_dispatch_and_stored_with_a_deferred_verified(
         tmp_path):
     sup, runner = _supervisor(tmp_path)
@@ -169,9 +162,8 @@ def test_board_shape_dispatches_review_at_most_twice_then_parks_verified_unchang
         _run(sup, "review")
 
     assert runner.calls["review"] <= 2, runner.phases_seen
-    # the hold's own bound was spent once, on the way back to review
-    assert runner.calls["worker"] == (
-        LoopSupervisor.PETITION_HELD_MAX_NO_TASK_ITERATIONS)
+    # the hold on the judged state spends no no-task worker iteration
+    assert runner.calls.get("worker", 0) == 0, runner.phases_seen
     assert snapshot["state"] == "awaiting_input"
     assert snapshot["pauseReason"] == "verified_unchanged"
     question = snapshot["inputQuestion"]
@@ -232,14 +224,33 @@ def test_a_changed_key_dispatches_review_normally(tmp_path, change):
     assert entry["verifiedDeferred"]["key"] == entry["dispatched"]
 
 
-def test_a_settled_steering_message_dispatches_review_on_an_equal_key(tmp_path):
-    """A message the `steer` hat settled changes neither HEAD nor a task
-    triple, yet it is what held the VERIFIED: the review is asked again."""
+def test_the_deferral_stores_the_key_the_review_was_dispatched_on(tmp_path):
+    """HEAD moving while the review runs is a state the review never saw:
+    the remembered key is the dispatch's, so the next dispatch runs."""
     sup, runner = _supervisor(tmp_path)
-    doc = sup.run.read_tasks()
-    for t in doc["tasks"]:
-        t["status"] = "completed"
-    sup.run.write_tasks(doc)
+    dispatched_head = sup._head
+
+    def verified_after_a_commit(s, prompt):
+        s._head = "c" * 40          # a commit lands mid-review
+        return _ok({"verdict": "verified"})
+
+    runner.handlers["review"] = [verified_after_a_commit, _verified]
+    assert _step_review(sup)[2] == "steering_pending_at_verified"
+    entry = sup.run.read_status()["reviewStateKeys"]["1"]
+    assert entry["verifiedDeferred"]["key"] == entry["dispatched"]
+    assert entry["verifiedDeferred"]["key"]["head"] == dispatched_head
+
+    out = _step_review(sup)
+
+    assert runner.calls["review"] == 2, "the new HEAD is judged"
+    assert out[:2] == ("advance", "worker")
+
+
+def test_a_consumed_noop_steering_message_on_an_equal_key_parks(tmp_path):
+    """A message the `steer` hat consumed without moving HEAD or any task
+    triple leaves the judged state as it was: the equal key parks
+    `verified_unchanged` instead of dispatching the review again."""
+    sup, runner = _supervisor(tmp_path)
     sup.run.add_steering("also check the ordering", name="note")
     assert _step_review(sup)[2] == "steering_pending_at_verified"
     assert runner.calls["review"] == 1
@@ -247,5 +258,27 @@ def test_a_settled_steering_message_dispatches_review_on_an_equal_key(tmp_path):
     sup.run.consume_steering(sup.run.pending_steering(), 1)
     out = _step_review(sup)
 
-    assert runner.calls["review"] == 2
+    assert out == ("advance", "paused", "verified_unchanged")
+    assert runner.calls["review"] == 1, "the review hat was not dispatched"
+    status = sup.run.read_status()
+    assert status["state"] == "awaiting_input"
+    assert status["pauseReason"] == "verified_unchanged"
+
+
+def test_an_equal_key_with_nothing_holding_the_verified_reuses_it(tmp_path):
+    """Every task terminal, the VERIFIED deferred only on a steering message
+    the `steer` hat then consumed without moving HEAD or a task: the equal
+    key does not dispatch the review again; the remembered VERIFIED takes
+    review's verified edge (a park would name nothing an answer changes)."""
+    sup, runner = _supervisor(tmp_path)
+    for tid in [HELD] + STEERING:
+        _set_status(sup, tid, "completed")
+    sup.run.add_steering("also check the ordering", name="note")
+    assert _step_review(sup)[2] == "steering_pending_at_verified"
+
+    sup.run.consume_steering(sup.run.pending_steering(), 1)
+    out = _step_review(sup)
+
     assert out == ("done", "succeeded")
+    assert runner.calls["review"] == 1, "the review hat was not dispatched"
+    assert '"review_verdict_reused"' in (sup.run.root / "events.jsonl").read_text()

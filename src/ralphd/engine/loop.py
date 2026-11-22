@@ -11306,7 +11306,28 @@ class LoopSupervisor:
                 petition_held_streak += 1
             else:
                 petition_held_streak = 0
-            if (petition_held_this_pass and petition_held_streak
+            # v0.38 B.2: a hold on the very state a deferred VERIFIED of
+            # this approach already judged (equal review state key) spends
+            # no no-task iteration at all -- none could change the answer
+            # -- and goes straight to `review`, whose own key check parks
+            # `verified_unchanged` without dispatching the review hat.
+            held_on_judged_state = (
+                petition_held_this_pass
+                and self._review_key_unchanged(
+                    approach, self._review_state_key()))
+            if held_on_judged_state:
+                self.run.emit(
+                    "log", level="warning",
+                    message=(
+                        "the entire actionable remainder is held on a "
+                        "petitioned dependency and the final review "
+                        "already returned VERIFIED on this HEAD and these "
+                        "task statuses -- routing to review (which parks "
+                        "verified_unchanged) instead of spending a no-task "
+                        "worker iteration (v0.38 B.2, #320)"),
+                    heldTaskIds=sorted(blocked_incl_petitioned.keys()),
+                    dependentTaskIds=sorted(actionable_ids))
+            elif (petition_held_this_pass and petition_held_streak
                     > self.PETITION_HELD_MAX_NO_TASK_ITERATIONS):
                 self.run.emit(
                     "log", level="error",
@@ -11320,6 +11341,9 @@ class LoopSupervisor:
                         "requirement C.4, #187)"),
                     heldTaskIds=sorted(blocked_incl_petitioned.keys()),
                     dependentTaskIds=sorted(actionable_ids))
+            if held_on_judged_state or (
+                    petition_held_this_pass and petition_held_streak
+                    > self.PETITION_HELD_MAX_NO_TASK_ITERATIONS):
                 if self._open_gate_before_last() is None:
                     self._advance("worker", "review",
                                   "petition_held_no_task_bound")
@@ -14481,6 +14505,15 @@ class LoopSupervisor:
         # here, so one comparison covers them all.
         review_key = self._review_state_key()
         if self._review_key_unchanged(approach, review_key):
+            if not self._terminal_success_blockers():
+                # Nothing holds the remembered VERIFIED any more (the only
+                # blocker was a steering message the `steer` hat consumed
+                # without moving HEAD or a task): the verdict already
+                # returned for this exact state stands. Not dispatched, and
+                # not a park either -- a park with no blocker would name
+                # nothing an answer could change.
+                return self._reuse_verified_on_unchanged_key(
+                    approach, review_key)
             return self._park_for_verified_unchanged(approach, review_key)
         self._record_review_dispatch_key(approach, review_key)
         result = await self._run_review_iteration(approach)
@@ -15346,12 +15379,12 @@ class LoopSupervisor:
         """True iff a deferred VERIFIED of this approach is remembered and
         its key equals `key`: the review would judge the same state twice."""
         deferred = self._review_key_entry(approach).get("verifiedDeferred")
-        # The blockers recorded with the verdict are compared as well: a
-        # steering message the `steer` hat settled changes neither HEAD nor
-        # a task triple, yet it is exactly what held the VERIFIED, so a
-        # review asked once it is settled judges a different state.
-        return (isinstance(deferred, dict) and deferred.get("key") == key
-                and deferred.get("blockers") == self._terminal_success_blockers())
+        # The key alone decides (B.2). The blockers recorded with the
+        # verdict are context for the park question, never part of the
+        # comparison: a steering message the `steer` hat consumed without
+        # moving HEAD or any task triple leaves the state the VERIFIED was
+        # returned for exactly as it was.
+        return isinstance(deferred, dict) and deferred.get("key") == key
 
     def _record_review_dispatch_key(self, approach: int, key: dict) -> None:
         """Record the key a final-review dispatch is made on. A new dispatch
@@ -15362,14 +15395,40 @@ class LoopSupervisor:
     def _record_deferred_verified_key(
         self, approach: int, blockers: list[str],
     ) -> None:
-        """A VERIFIED verdict is deferring to the worker: remember the key
-        of the state it was returned for (read now, after any adjudication
-        the review applied) with the verdict and what held it."""
+        """A VERIFIED verdict is deferring to the worker: remember, with the
+        verdict and what held it, the key this dispatch was MADE on (the
+        `dispatched` key `_record_review_dispatch_key` wrote) -- the state
+        the review actually judged. Never a key re-read now: a HEAD or a
+        task status that moved while the review ran is a state the review
+        never saw, so the next dispatch on it must run."""
         entry = dict(self._review_key_entry(approach))
+        dispatched = entry.get("dispatched")
+        if not isinstance(dispatched, dict):
+            # No dispatch key on record (a verdict reached without
+            # `_step_review`'s own dispatch): nothing judged to remember.
+            return
         entry["verifiedDeferred"] = {
-            "key": self._review_state_key(), "verdict": "VERIFIED",
+            "key": dispatched, "verdict": "VERIFIED",
             "blockers": list(blockers)}
         self._write_review_key_entry(approach, entry)
+
+    def _reuse_verified_on_unchanged_key(self, approach: int,
+                                         key: dict) -> tuple:
+        """v0.38 B.2: the key equals a deferred VERIFIED's and no terminal-
+        success blocker remains. The review hat is not dispatched; the
+        remembered VERIFIED takes review's own verified edge through the
+        same ladder a fresh one climbs (a spent budget holds `exhausted`)."""
+        self.run.emit("review_verdict_reused", approach=approach,
+                      verdict="VERIFIED", reviewStateKey=key)
+        self.run.emit("log", level="info", message=(
+            "the final review already returned VERIFIED on this HEAD and "
+            "these task statuses, and nothing holds it any more -- taking "
+            "that verdict instead of dispatching the review again "
+            "(v0.38 B.2, #320)"))
+        outcome = self._run_rejection_ladder(
+            "review", approach, None, verified=True)
+        return (self._review_verified_edge(approach) if outcome is None
+                else outcome)
 
     def _verified_unchanged_entries(self) -> list[dict]:
         """The non-terminal tasks that held the earlier VERIFIED, and what

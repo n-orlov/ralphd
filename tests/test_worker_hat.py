@@ -2617,7 +2617,8 @@ def test_the_deferred_edge_is_settled_by_the_steer_hat_then_review_verifies(
     ordinary dispatch loop: the deferral lands in `worker`, whose
     absolute-top-priority check (task 012) routes to the `steer` hat, which
     settles the message and consumes the file on its clean exit -- and only
-    then does a re-review's VERIFIED verdict make the run terminal."""
+    then does the VERIFIED verdict make the run terminal (v0.38 B.2: on the
+    unchanged state that verdict is reused, the review is not re-run)."""
     root = tmp_path / "run"
     run = _seed(root, [{"id": svd013_TASK_1, "status": "completed"}])
     fname = run.add_steering("hold on, check one more thing", "lastcall")

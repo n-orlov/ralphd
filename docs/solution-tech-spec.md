@@ -574,10 +574,14 @@ The same state is never judged twice. Each final-review dispatch records a revie
 state key in the approach's state (`status.json` `reviewStateKeys`): the workspace
 HEAD sha plus the sorted `(task id, status, settled)` triples over every task of the
 plan. A VERIFIED verdict that defers to the worker ("VERIFIED verdict deferring")
-stores the key with the verdict. Before any final-review dispatch on that approach,
-from any edge into `review`, the engine compares the current key with the stored
-one, and the blockers stored with it (a steering message settled since counts as a
-change); if they are equal it does not dispatch. It parks in `awaiting_input`
+stores the key that dispatch was made on with the verdict (never a key re-read when
+the verdict arrives). Before any final-review dispatch on that approach, from any
+edge into `review`, the engine compares the current key with the stored one, the key
+alone (a steering message consumed without moving HEAD or a task is no change); if
+they are equal it does not dispatch. The petition-held route spends no no-task
+worker iteration on an equal key and goes straight to `review`. When nothing blocks
+terminal success any more, the remembered VERIFIED stands (`review_verdict_reused`)
+and review's verified edge is taken. Otherwise it parks in `awaiting_input`
 (`pauseReason: verified_unchanged`, `inputQuestion.kind: verified_unchanged`, never
 expires) naming the non-terminal tasks that held the earlier VERIFIED and what
 blocks each. A changed HEAD or a changed task status dispatches the review as

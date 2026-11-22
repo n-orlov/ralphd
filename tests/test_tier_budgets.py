@@ -1001,8 +1001,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # in both tiers -> fast 9093, smoke 7312.
     # v0.38 task 003: +7 tests / +1 module (tests/test_review_state_key.py),
     # in both tiers -> fast 9100/570, smoke 7319/443.
-    "fast": {"tests": 9100, "modules": 570},
-    "smoke": {"tests": 7319, "modules": 443},
+    # v0.38 task 003 retry: +2 tests in tests/test_review_state_key.py (the
+    # deferral stores the dispatch key; an equal key with nothing holding
+    # the VERIFIED reuses it), in both tiers -> fast 9102, smoke 7321.
+    "fast": {"tests": 9102, "modules": 570},
+    "smoke": {"tests": 7321, "modules": 443},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
