@@ -1085,24 +1085,52 @@ def _read_extra_env_wiring(cdir: Path) -> list[str]:
     return list(doc.get("extra_env") or [])
 
 
-# recognized creds extras copied verbatim alongside *.env files
+# recognized creds extras copied verbatim alongside *.env and *.vars files
 _CREDS_EXTRA_FILES = ("gitconfig", "git-credentials", "netrc", "setup.sh")
+_CREDS_SKIP_REASON = "not `*.env`, `*.vars` or a recognized extra"
+
+
+def _creds_skipped(src: Path) -> list[tuple[str, bool]]:
+    """`(name, is_dir)` for every entry of the creds directory `src` that
+    `_copy_creds` would NOT copy, sorted by name: anything that is not a
+    `*.env`/`*.vars` file, a recognized extra file or the `ssh/` directory.
+    Hidden entries count -- nothing is dropped without being named."""
+    copied_globs = {p for pat in ("*.env", "*.vars") for p in src.glob(pat)
+                    if p.is_file()}
+    out: list[tuple[str, bool]] = []
+    for entry in sorted(src.iterdir(), key=lambda p: p.name):
+        if entry in copied_globs:
+            continue
+        if entry.name in _CREDS_EXTRA_FILES and entry.is_file():
+            continue
+        if entry.name == "ssh" and entry.is_dir():
+            continue
+        out.append((entry.name, entry.is_dir()))
+    return out
+
+
+def _creds_skipped_line(name: str, is_dir: bool) -> str:
+    kind = "directory " if is_dir else ""
+    return f"ignored {kind}`{name}{'/' if is_dir else ''}` ({_CREDS_SKIP_REASON})"
 
 
 def _copy_creds(src: Path, cdir: Path) -> None:
-    """Copy `*.env` plus recognized extras (gitconfig, git-credentials,
-    netrc, ssh/, setup.sh) from `src` into the job config dir's `creds/`.
-    Anything else in `src` is ignored. The engine (not this CLI) places
-    these under $HOME/.creds etc. at container startup -- this only stages
-    the config-dir copy that gets mounted read-only at /config.
+    """Copy `*.env`, `*.vars` (non-secret values, #314) plus recognized
+    extras (gitconfig, git-credentials, netrc, ssh/, setup.sh) from `src`
+    into the job config dir's `creds/`. Anything else in `src` is not copied,
+    and every such file or directory is named on stderr. The engine (not this
+    CLI) places these under $HOME/.creds etc. at container startup -- this
+    only stages the config-dir copy that gets mounted read-only at /config.
     """
     src = src.expanduser().resolve()
     if not src.is_dir():
         die(2, f"--creds: {src} is not a directory")
     dest = cdir / "creds"
     dest.mkdir(exist_ok=True)
-    for env_file in sorted(src.glob("*.env")):
-        shutil.copy2(env_file, dest / env_file.name)
+    for pattern in ("*.env", "*.vars"):
+        for cred_file in sorted(src.glob(pattern)):
+            if cred_file.is_file():
+                shutil.copy2(cred_file, dest / cred_file.name)
     for name in _CREDS_EXTRA_FILES:
         f = src / name
         if f.is_file():
@@ -1112,6 +1140,41 @@ def _copy_creds(src: Path, cdir: Path) -> None:
     ssh_src = src / "ssh"
     if ssh_src.is_dir():
         shutil.copytree(ssh_src, dest / "ssh", dirs_exist_ok=True)
+    for name, is_dir in _creds_skipped(src):
+        print(f"--creds: {_creds_skipped_line(name, is_dir)}", file=sys.stderr)
+
+
+def _doctor_creds_skipped(reg: Path) -> list[dict]:
+    """What `--creds` would skip, for `ralphctl doctor`: the registry's
+    default creds directory (`<registry>/creds`) and every template's creds
+    directory (the `creds:` name in its `job.yaml`, default `creds`). Only
+    directories that exist are reported; one entry per skipped file or
+    directory: `{source, name, directory}`."""
+    sources: list[tuple[str, Path]] = [("registry creds", reg / "creds")]
+    tdir_root = reg / "templates"
+    if tdir_root.is_dir():
+        for tdir in sorted(p for p in tdir_root.iterdir() if p.is_dir()):
+            cname = "creds"
+            cfg_file = tdir / "job.yaml"
+            try:
+                cfg = yaml.safe_load(cfg_file.read_text()) if cfg_file.is_file() else None
+            except (OSError, yaml.YAMLError):
+                cfg = None
+            if isinstance(cfg, dict) and cfg.get("creds"):
+                cname = str(cfg["creds"])
+            sources.append((f"template {tdir.name}", tdir / cname))
+    found: list[dict] = []
+    for label, d in sources:
+        try:
+            if not d.is_dir():
+                continue
+            skipped = _creds_skipped(d)
+        except OSError:
+            continue
+        for name, is_dir in skipped:
+            found.append({"source": label, "path": str(d), "name": name,
+                          "directory": is_dir})
+    return found
 
 
 def _copy_skills(sdir: str, cdir: Path) -> None:
@@ -8520,6 +8583,9 @@ def cmd_doctor(args):
 
     registry_issues = _registry_schema_issues(reg)
     checks["registry_schema"] = not registry_issues
+    # #314: report-only, like strays -- a stray file in a creds directory is
+    # news, not a broken install.
+    creds_skipped = _doctor_creds_skipped(reg)
 
     strays = _stray_sibling_containers()
     dangling = _dangling_registry_entries()
@@ -8586,6 +8652,12 @@ def cmd_doctor(args):
         report += "\n! registry schema issues:"
         for issue in registry_issues:
             report += f"\n    {issue}"
+    if creds_skipped:
+        report += ("\n! creds files `--creds` would not copy (only `*.env`, "
+                   "`*.vars`, recognized extras and `ssh/` are):")
+        for c in creds_skipped:
+            report += (f"\n    {c['source']}: "
+                       f"{_creds_skipped_line(c['name'], c['directory'])}")
     if strays:
         report += "\n! stray ralphd.run containers (no matching run dir):"
         for s in strays:
@@ -8665,6 +8737,7 @@ def cmd_doctor(args):
     out(args, {"ok": ok, "checks": checks, "strayContainers": strays,
                "imageStaleness": image_verdict, "runImageStaleness": run_images,
                "danglingRegistryEntries": dangling, "registryIssues": registry_issues,
+               "credsSkipped": creds_skipped,
                "defaultLlmProfile": default_profile_name,
                "defaultLlmProfileError": default_llm_profile_error,
                "hostNetworkApiBindNote": host_network_note,
@@ -9150,7 +9223,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--env", action="append", metavar="KEY=VAL")
     s.add_argument("--skills", action="append", metavar="DIR")
     s.add_argument("--creds", metavar="DIR",
-                   help="copy *.env + recognized extras from DIR into the job's"
+                   help="copy *.env, *.vars + recognized extras from DIR into the job's"
                         " config dir creds/")
     s.add_argument("--allow-docker", action="store_true",
                    help="mount the host docker socket into the job container "

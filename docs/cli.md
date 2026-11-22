@@ -135,6 +135,29 @@ every process. Recognized extras (`gitconfig`, `git-credentials`, `netrc`,
 `ssh/`) are placed conventionally; an executable `setup.sh` runs once before the
 first iteration. Nothing from this directory is copied into the run dir or logged.
 
+**Non-secret values: `<name>.vars`.** Every value in a `*.env` file is treated as
+a secret and masked in transcripts, notes and review evidence, so a server URL or
+a user name kept there becomes unreadable. Put such values in a companion
+`<name>.vars` file (`KEY=value` lines) beside the `.env` and have the `.env`
+source `~/.creds/<name>.vars`. A `*.vars` file is copied by `--creds` (and from a
+template's `creds/`), placed by the engine at `~/.creds/<name>.vars` (mode 0600)
+and rebuilt on every placement, so deleting one takes effect — exactly like a
+`.env` — with one difference: **its values are never scrubbed**. The name-based
+masking still applies to the variable *names* (`*TOKEN*`, `*KEY*`, `*SECRET*`,
+`*PASSWORD*`), so a token pasted into a `.vars` file by mistake is still
+treated as secret by name, but it is not a place to keep one.
+
+Exactly these are copied from the directory: `*.env`, `*.vars`, `gitconfig`,
+`git-credentials`, `netrc`, `setup.sh` (files) and `ssh/` (a directory). **Nothing
+else is dropped silently**: `start` names every other file and directory on
+stderr, one line each, e.g. ``--creds: ignored `foo.txt` (not `*.env`, `*.vars`
+or a recognized extra)`` (a directory reads ``ignored directory `extras/` ...``).
+`ralphctl doctor` reports the same for the registry's default creds directory
+(`<registry>/creds`) and for every template's creds directory (the `creds:` name
+in its `job.yaml`, default `creds/`): a `! creds files `--creds` would not copy`
+block in the human report and a `credsSkipped` list (`source`, `path`, `name`,
+`directory`) in `--json`. Report-only: it never changes `ok`.
+
 The job image (`--image <ref>`) — by default `start` **builds it**, keyed by the
 content of its inputs: `container/` (the Dockerfile and its entrypoint),
 `pyproject.toml` and `src/ralphd/`. Those hash to a short digest, the image is
@@ -300,7 +323,7 @@ Job templates (`--template <name>`, PRD req 25): a directory
 templates/<name>/
 ├── job.yaml     # optional: scalar job defaults (see below)
 ├── prd.md       # optional: PRD skeleton, used when --prd is omitted
-├── creds/       # optional: default --creds directory (same env-file convention)
+├── creds/       # optional: default --creds directory (same convention: *.env, *.vars, recognized extras)
 └── <skill-dir>/ # optional: default skill(s), referenced by job.yaml's `skills:` list
 ```
 
@@ -1726,7 +1749,7 @@ reached `finishing` (task 006, B.1) -- absent before that, same
   anything matching `TOKEN|KEY|SECRET|PASSWORD`) is replaced with
   `***REDACTED***`, and every **value** this host knows to be a secret — from
   its own environment, `~/.creds`, and the run's own staged config dir
-  (`creds/*.env`, `llm-wiring.json`, `env-wiring.json`, `pi/models.json`) — is
+  (`creds/*.env` — never `creds/*.vars` —, `llm-wiring.json`, `env-wiring.json`, `pi/models.json`) — is
   scrubbed as `[REDACTED:<label>]` wherever it appears, including inside an
   innocently-named key like `on_complete_cmd`. Key order, structure and every
   non-secret value survive verbatim, so the output is still the file. Output of

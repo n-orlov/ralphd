@@ -383,12 +383,17 @@ def config_dir_secrets(config_dir: Path) -> dict[str, str]:
     an unreadable or unexpected file contributes nothing rather than raising,
     because this is a defense-in-depth layer over the name-based masking, not
     a parser contract.
+
+    `creds/*.vars` (#314) is deliberately NOT read: it holds non-secret values
+    (a server URL, a user name) that must stay readable in transcripts. Only
+    the name-based masking (`is_secret_name`/`mask_secret_names`/the env
+    candidate filter) still looks at the variable names such a file defines.
     """
     out: dict[str, str] = {}
     cdir = Path(config_dir)
     creds = cdir / "creds"
     if creds.is_dir():
-        for p in sorted(creds.glob("*.env")):
+        for p in sorted(creds.glob("*.env")):  # never `*.vars`: see above
             _from_env_file(p, out)
         _from_git_credentials(creds / "git-credentials", out)
         _from_netrc(creds / "netrc", out)

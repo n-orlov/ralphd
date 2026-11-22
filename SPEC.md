@@ -308,7 +308,7 @@ docker run -d --name ralphd-<run-id> --init \
   `--workspace` at all the engine creates `/workspace` inside the run dir and
   planning clones the PRD's repositories itself.
 - **Credentials are placed by the engine, not the entrypoint** —
-  `creds.place_creds()` copies `/config/creds/*.env` to `~/.creds/*.env` at mode
+  `creds.place_creds()` copies `/config/creds/*.env` and `*.vars` to `~/.creds/` at mode
   `0600`, keeping secret handling inside the same process that guarantees values never
   reach `/run/ralphd`, `events.jsonl`, stdout or the persisted `job.yaml`. Values
   are *not* exported into the engine's or the agent's environment: a credential is
@@ -618,7 +618,7 @@ out of scope (#319 item 2).
 | `src/ralphd/harness/codex_normalise.py` | The pure Codex-event to pi-event normaliser; it imports no SDK and does no I/O. `CodexNormaliser(model_ref=...)` takes decoded `codex exec --json` events through `feed` and returns pi events: `thread.started` and `turn.started` give none; a `reasoning` item gives `thinking_start` and `thinking_delta`; an `agent_message` gives `text_delta` and `text_end`; a `command_execution` gives `tool_execution_start` (`bash`, `args.command`) and `tool_execution_end` (`isError` when `exit_code` is non-zero, `result` the aggregated output); a `file_change` gives one `write` (kind `add`) or `edit` pair per change with `path` and `kind`; an `mcp_tool_call` on server `ralphd` gives a pair with the bare tool name; `turn.completed` gives `message_end` and `turn.failed` an error `message_end`. Codex has no message ids: a reasoning or agent message that follows a tool item starts a new assistant message, a group holding a tool call ends `toolUse` and one without ends `stop`, `provider` is `openai` and `model` is the model ref (`state.model_ids` resolves it). An unknown event or item type, and an `error` event, give no pi event and are not stall traffic (`is_traffic`). Usage maps as `input` = `input_tokens - cached_input_tokens - cache_write_input_tokens`, `cacheRead` = `cached_input_tokens`, `cacheWrite` = `cache_write_input_tokens`, `output` = `output_tokens`, `totalTokens` = `input_tokens + output_tokens`, a missing field counting as 0; Codex's `usage` is cumulative for the thread, so each `message_end` carries the delta from the previous `turn.completed`, and no `cost` block (the engine prices the tokens). `turn.failed` gives `stopReason` `error` with the message as `errorMessage` and `ralphd.httpStatus` when a status code is parseable from it (absent otherwise); a message naming `max_output_tokens` gives `length` and keeps the partial text, so a text-free one classifies `output_truncated`; a `Reconnecting... n/5` `error` event is non-terminal. Tolerance rule: an unknown event or item type gives no pi event, no exception and no stall-resetting traffic, and a stream with no terminal event is closed by `finish(error)` as a `stopReason` `error` message. |
 | `src/ralphd/harness/claude_code.py` | The `claude-code` harness wrapper, run as a child process and the only module that imports `claude_agent_sdk`: scrubs its own env (credentials, `CLAUDE_CODE_*` and gateway/cloud routing, §6.5), refuses a CLI below `CLAUDE_CODE_MIN_VERSION` (compared with the shared `ralphd.cli.versions.compare_versions`; a `-v` probe that times out or cannot be run ends in-band with the transient `claude_code_version_probe_failed`, and one that prints nothing with the transient `claude_code_version_probe_empty`, never "too old", §8.3), calls the SDK's `query()` with an isolated Claude Code (fresh config dir and home, no setting sources, `skills=[]`, no persisted session, `bypassPermissions`, exactly the six built-in tools, `EFFORT_TABLE`), and prints a raw envelope plus the normalised pi events for every SDK message. `--probe-version` prints the SDK and CLI versions. |
 | `src/ralphd/engine/commit_scan.py` | Task 029 (PRD v0.25 requirement I.2, #210): the git sink's bound. `redact.py` scrubs known secret VALUES out of everything the engine persists or serves; a commit the worker writes and pushes is neither, and that sink is irrevocable. `scan_commits_for_secrets` is the detector — VALUE matching only against the redaction map's `value -> label` pairs, never a "looks like a token" shape, over every commit in a boundary range's MESSAGE and then DIFF. `push_if_clean` is the engine-side gate (scan first; a `git push` subprocess starts only on a clean scan), `install_push_gate`/`gate_push_refs`/`hook_main` are the same scan reached from git's OWN `pre-push` hook through an engine-owned `core.hooksPath` outside the workspace — the layer that stops the WORKER's own mid-iteration push, which the task boundary is too late to prevent — and `refusal_text` is the one refusal spelling, naming the variable NAME only and never the matched value. `LoopSupervisor._scan_task_boundary_commits`/`_install_commit_scan_push_gate` are the production call sites; fails open on an unreadable git read, like its `loop.py` siblings. |
-| `src/ralphd/engine/creds.py` | `place_creds()`: `/config/creds` (plus overlay and tombstones) → `~/.creds/*.env` at `0600`, conventional extras (`gitconfig`, `git-credentials`, `netrc`, `ssh/`), and the one-shot `setup.sh` escape hatch. Logs names, never contents. |
+| `src/ralphd/engine/creds.py` | `place_creds()`: `/config/creds` (plus overlay and tombstones) → `~/.creds/*.env` and `*.vars` at `0600`, conventional extras (`gitconfig`, `git-credentials`, `netrc`, `ssh/`), and the one-shot `setup.sh` escape hatch. Logs names, never contents. |
 | `src/ralphd/engine/skills.py` | `place_skills()`: rebuild `~/.pi/agent/skills/` from scratch (symlinks) out of mounted skills, API-origin overlay skills that win over same-named mounted ones, and tombstones — cheap enough to re-run after every mutation, so skill CRUD needs no restart. `link_skills()` links the same sources into a `claude-code` iteration's config dir, and `verify_placement()` checks both roots. |
 | `src/ralphd/engine/llm.py` | The mid-run LLM path: `PUT /config/llm` writes the env-override set to the overlay (read fresh each iteration) and deep-merges a `models.json` fragment into the file `pi` itself reads, so a rotated key applies to the next invocation. `provider_keys()`/`check_hat_routes()` (§3.1) take `home` as a required keyword-only argument — no ambient `$HOME` fallback — so a caller that omits it gets a `TypeError` before either ever reads a filesystem path. |
 | `src/ralphd/cli/main.py` | `ralphctl`: every subcommand, the `docker run` assembly for `start`/`resume`, the registry and its defaults, templates, run-id generation, the API client, `--json` output and exit codes, `logs`/`watch` streaming and `tail`-style argv preprocessing, `doctor`/`doctor --fix`/`repair`, the auto-resume opt-in and its crash-loop guard, and `AUTO_RESUME_DEFAULT` as the single default literal. |
@@ -4272,9 +4272,24 @@ creds/
 └── sonarqube.env     # SONAR_TOKEN=…
 ```
 
-`start --creds <dir>` copies `*.env` plus four recognized extras (`gitconfig`,
-`git-credentials`, `netrc`, an executable `setup.sh`) and an `ssh/` subdirectory
-into `<config-dir>/creds/`; anything else in the directory is ignored.
+`start --creds <dir>` copies `*.env` and `*.vars` (below) plus four recognized
+extras (`gitconfig`, `git-credentials`, `netrc`, an executable `setup.sh`) and an
+`ssh/` subdirectory into `<config-dir>/creds/`. Anything else in the directory is
+not copied, and is never dropped silently: `_copy_creds` names every skipped file
+and directory on stderr (``--creds: ignored `foo.txt` (not `*.env`, `*.vars` or a
+recognized extra)``), and `ralphctl doctor` reports the same, report-only
+(`credsSkipped`), for the registry's default creds directory (`<registry>/creds`)
+and for every template's creds directory.
+
+**Non-secret companion: `<name>.vars`.** Every value in a `.env` is a secret to
+the scrubber, so a server URL or a user name kept there is masked. A
+`<name>.vars` file (`KEY=value` lines) is handled everywhere a `.env` is — copied
+by `--creds` and from a template's `creds/`, placed by the engine at
+`~/.creds/<name>.vars` (`0600`) and rebuilt on every placement so a delete takes
+effect — except by the scrubber: `config_dir_secrets` never reads `*.vars`
+values. Name-based masking (`*TOKEN*`, `*KEY*`, `*SECRET*`, `*PASSWORD*`) still
+applies to the variable names in one. A `.env` can source
+`~/.creds/<name>.vars`.
 
 Placement inside the container is the **engine's** job
 (`engine/creds.py:place_creds()`, at startup and after every mutation), not the
