@@ -557,7 +557,9 @@ A remainder held on a `petitioned` ancestor is adjudicated at once: on the first
 hold the engine runs the mid-run adjudication episode before it spends any no-task
 worker iteration. CONFIRMED settles the task and REFUTED fails it with its remedy;
 if the plan moved, the loop re-selects in the same pass, so a CONFIRMED outcome
-starts the first dependent immediately. If the judge returns no adjudication, or
+starts the first dependent immediately. The hold means the unsettled `petitioned`
+tasks the remainder waits on: a REFUTED task now `failed` is a dead dependency,
+not a hold, so it never parks the run. If the judge returns no adjudication, or
 the hold is unchanged, the run parks in `awaiting_input` (`inputQuestion.kind:
 petition_hold`, never expires) and does not route to the final review. The
 question names each petitioned task, its petition, its dependents and the two

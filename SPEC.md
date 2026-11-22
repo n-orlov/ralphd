@@ -3156,7 +3156,11 @@ no-task worker iteration. The episode's adjudications apply as before: CONFIRMED
 settles the task, and REFUTED moves it to `failed` with its remedy. When the
 episode moved the plan (the hold released, or its held set changed) the loop
 re-selects in the same pass, so a CONFIRMED outcome starts the first dependent
-without a no-task worker iteration in between. When the judge had its shot (the
+without a no-task worker iteration in between. The hold is the set of unsettled
+`petitioned` tasks the remainder waits on, compared by id and status, never the
+raw blocker ids: a REFUTED outcome that moves the held task to `failed` keeps its
+id among the blockers, but the hold is gone, so the loop re-selects (the failed
+dependency is then handled like any other dead dependency) and never parks. When the judge had its shot (the
 episode ran, or this process already gave the same open petitions theirs) and the
 hold is unchanged -- no adjudication, or one that did not touch the held tasks --
 the run parks: `status.json` `state: "awaiting_input"`, `pauseReason:

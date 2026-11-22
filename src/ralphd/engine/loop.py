@@ -8503,6 +8503,22 @@ class LoopSupervisor:
                                        cause=self.COMMIT_SECRET_SCAN_EVENT)
                 return
 
+    @staticmethod
+    def _unsettled_petitioned_among(
+        tasks_doc: dict, task_ids: list[str], settled,
+    ) -> list[str]:
+        """The ids in `task_ids` whose task is still `petitioned` and not
+        settled -- the petition hold proper, without the failed/skipped
+        blockers `state.task_blocked_by` also names."""
+        settled_ids = {str(x) for x in (settled or ())}
+        statuses = {str(t.get("id")): t.get("status", "pending")
+                    for t in tasks_doc.get("tasks") or []
+                    if isinstance(t, dict)}
+        return sorted(
+            tid for tid in task_ids
+            if statuses.get(tid) == state.TASK_STATUS_PETITIONED
+            and tid not in settled_ids)
+
     def _petition_hold_entries(
         self, tasks_doc: dict, blocked: dict, held_task_ids: list[str],
     ) -> list[dict]:
@@ -11204,9 +11220,23 @@ class LoopSupervisor:
                         after_held = sorted({
                             tid for ids in after_blocked.values()
                             for tid in ids})
+                        # The petition hold itself: the unsettled
+                        # `petitioned` blockers only. `task_blocked_by`
+                        # also names failed/skipped (doomed) blockers, so
+                        # a REFUTED adjudication that moved a petitioned
+                        # task to `failed` leaves the blocker ids alone
+                        # while the hold is gone.
+                        before_hold = self._unsettled_petitioned_among(
+                            tasks_before, held_task_ids,
+                            settled_petitioned)
+                        after_hold = self._unsettled_petitioned_among(
+                            after_doc, after_held,
+                            self._settled_petitioned_ids(after_doc))
                         still_held = bool(after_actionable) and (
                             after_actionable <= set(after_blocked))
-                        if not still_held or after_held != held_task_ids:
+                        if (not still_held or not after_hold
+                                or after_hold != before_hold
+                                or after_held != held_task_ids):
                             # A.4: the adjudication moved the plan (CONFIRMED
                             # settled a task, REFUTED failed it, or part of
                             # the hold went): re-select in THIS pass, never
@@ -11215,7 +11245,7 @@ class LoopSupervisor:
                         # A.5: the judge could not settle it; ask the
                         # operator and do not route to the final review.
                         self._park_for_petition_hold(
-                            after_doc, after_blocked, held_task_ids)
+                            after_doc, after_blocked, after_hold)
                         continue
                 # v0.20 task 022 (PRD requirement C.1, #156): the sleep-
                 # and-wake mechanism task 021's own scheduler docstring

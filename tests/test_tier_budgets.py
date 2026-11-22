@@ -996,8 +996,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # tiers -> fast 9086, smoke 7305.
     # v0.38 task 002: +6 tests / +1 module (tests/test_petition_hold_prompt_
     # adjudication.py), in both tiers -> fast 9092/569, smoke 7311/442.
-    "fast": {"tests": 9092, "modules": 569},
-    "smoke": {"tests": 7311, "modules": 442},
+    # v0.38 task 002 retry: +1 test in tests/test_petition_hold_prompt_
+    # adjudication.py (a REFUTED outcome fails the task and does not park),
+    # in both tiers -> fast 9093, smoke 7312.
+    "fast": {"tests": 9093, "modules": 569},
+    "smoke": {"tests": 7312, "modules": 442},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

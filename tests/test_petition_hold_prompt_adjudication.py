@@ -240,3 +240,32 @@ def test_paused_declares_the_petition_hold_resume_edge():
     assert transitions.is_legal("paused", "worker", vigilant=False)
     assert "paused_resumed_petition_hold" in transitions.guard_names(
         "paused", vigilant=False)
+
+
+def test_a_refuted_outcome_fails_the_task_and_does_not_park(tmp_path):
+    """A REFUTED adjudication of the held task moves it to `failed` with its
+    remedy. The petition hold is gone (the blocker id is unchanged, but it is
+    now a failed dependency, not a petitioned one), so the run re-selects in
+    the same pass instead of parking on a hold that no longer exists."""
+    sup = _supervisor(tmp_path)
+    remedy = "rewrite criterion 2 so it names an existing sha"
+    runner = attach_runner(sup, ScriptedRunner({
+        "review": [_judge([{"obligation": OBLIGATION,
+                            "adjudication": "REFUTED",
+                            "remedy_type": "form",
+                            "remedy": remedy}])],
+        "worker": [_no_task_worker]}))
+    snapshot = _park_recorder(sup)
+
+    try:
+        asyncio.run(asyncio.wait_for(sup._step_worker(), 30.0))
+    except _Parked:
+        pytest.fail(f"parked on a hold the REFUTED outcome removed: {snapshot!r}")
+
+    held = next(t for t in sup.run.read_tasks()["tasks"] if t["id"] == HELD)
+    assert held["status"] == "failed"
+    assert remedy in json.dumps(held)
+    status = sup.run.read_status()
+    assert status.get("state") != "awaiting_input"
+    assert status.get("pauseReason") != "petition_hold"
+    assert runner.phases_seen.count("review") == 1, runner.phases_seen
