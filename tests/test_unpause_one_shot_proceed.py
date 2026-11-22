@@ -215,6 +215,21 @@ def _gate_fixture(root: Path, *, gate_findings: list[dict]) -> LoopSupervisor:
     return sup
 
 
+def _move_review_state(root: Path) -> None:
+    """Change the review state key between two gate passes (a new task
+    triple in the plan). v0.38 B.3 holds a second final peer gate dispatch
+    on an UNCHANGED key as `verified_unchanged` without asking the judge
+    (covering node: tests/test_review_state_key_edges.py::
+    test_the_final_peer_gate_is_not_dispatched_twice_on_an_unchanged_key),
+    so the re-ask these tests drive needs the state to have moved."""
+    run = RunDir(root=root)
+    doc = run.read_tasks()
+    tasks = list(doc.get("tasks") or [])
+    tasks.append({"id": f"moved-{len(tasks) + 1}", "title": "state moved",
+                  "status": "completed", "successCriteria": "c"})
+    run.write_tasks({**doc, "version": doc.get("version", 1), "tasks": tasks})
+
+
 def test_gate_park_bare_resume_grants_no_proceed_and_the_same_rejection_parks_again(
         tmp_path):
     root = tmp_path / "run"
@@ -235,6 +250,7 @@ def test_gate_park_bare_resume_grants_no_proceed_and_the_same_rejection_parks_ag
     assert "noRulingProceed" not in status
 
     # a brand-new supervisor over the same disk-backed run.
+    _move_review_state(root)   # v0.38 B.3: an unchanged key would not re-ask
     sup2 = _gate_fixture(root, gate_findings=_gate_findings_a())
 
     orig = LoopSupervisor.run_iteration
@@ -271,6 +287,7 @@ def test_gate_park_unpause_different_rejection_still_parks(tmp_path):
 
     # a genuinely different gate rejection -- must not consume the proceed
     # granted for the earlier signature.
+    _move_review_state(root)   # v0.38 B.3: an unchanged key would not re-ask
     sup2 = _gate_fixture(root, gate_findings=_gate_findings_b())
 
     orig = LoopSupervisor.run_iteration
@@ -331,6 +348,7 @@ def test_gate_park_bare_resume_of_a_mixed_rejection_parks_again(tmp_path):
     assert "noRulingProceed" not in status
 
     # a brand-new supervisor over the same disk-backed run, SAME rejection.
+    _move_review_state(root)   # v0.38 B.3: an unchanged key would not re-ask
     sup2 = _gate_fixture(root, gate_findings=_mixed_1c_1i_gate_findings())
 
     orig = LoopSupervisor.run_iteration
