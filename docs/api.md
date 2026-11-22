@@ -1579,9 +1579,19 @@ job's credentials — protect the token, not individual routes.
 | Method & path | Body / response |
 |---------------|-----------------|
 | `GET /config/creds` | list: name, size, mtime — no values |
-| `GET /config/creds/{name}` | `text/plain` — the env file contents |
+| `GET /config/creds/{name}` | `text/plain` — the file contents |
 | `PUT /config/creds/{name}` | `text/plain` env-file body → `~/.creds/{name}.env` (0600); recognized extras (`gitconfig`, `netrc`, `ssh/`) get conventional re-placement; `204` |
 | `DELETE /config/creds/{name}` | removes the file from `~/.creds/`; `204` |
+
+**`kind`.** Every route above takes an optional `kind` query parameter, `env`
+(the default, a secret file whose values are scrubbed) or `vars` (a non-secret
+`{name}.vars` file whose values are never scrubbed). `PUT /config/creds/{name}?kind=vars`
+writes the body to `~/.creds/{name}.vars` (0600), `DELETE ...?kind=vars` removes
+that file (a `404` when no such `vars` entry exists, a mounted one is
+tombstoned like an `.env`), and `GET` / the list read the `vars` entries only.
+The two kinds are independent: `ci.env` and `ci.vars` coexist, and deleting one
+leaves the other. Without `kind` every route behaves exactly as before. Any
+other `kind` value is `422` and changes nothing.
 
 Changes to skills and creds take effect at the next iteration (prompts embed the
 current inventory at iteration start). Credential values never appear in

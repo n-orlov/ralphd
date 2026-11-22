@@ -87,13 +87,14 @@ def _env_sources(config_dir: Path, kind: str = "env"
     return mounted, api
 
 
-def effective_env_source(config_dir: Path, name: str) -> tuple[Path, str] | None:
-    """The `<name>.env` file + origin ("api"/"mounted") that is/would be
-    placed at `~/.creds/<name>.env`, or None if not visible (deleted or
-    never existed)."""
-    if name in _deleted_env_names():
+def effective_env_source(config_dir: Path, name: str, kind: str = "env"
+                         ) -> tuple[Path, str] | None:
+    """The `<name>.<kind>` file + origin ("api"/"mounted") that is/would be
+    placed at `~/.creds/<name>.<kind>` (`kind` is `env` or `vars`), or None
+    if not visible (deleted or never existed)."""
+    if name in _deleted_names(kind):
         return None
-    mounted, api = _env_sources(config_dir)
+    mounted, api = _env_sources(config_dir, kind)
     if name in api:
         return api[name], "api"
     if name in mounted:
@@ -101,15 +102,16 @@ def effective_env_source(config_dir: Path, name: str) -> tuple[Path, str] | None
     return None
 
 
-def list_creds(config_dir: Path) -> list[dict]:
+def list_creds(config_dir: Path, kind: str = "env") -> list[dict]:
     """Effective credential inventory for `GET /config/creds`: name, size,
-    mtime -- never values. Deterministic (sorted by name)."""
-    mounted, api = _env_sources(config_dir)
-    deleted = _deleted_env_names()
+    mtime -- never values. Deterministic (sorted by name). `kind` selects
+    the `*.env` (default) or `*.vars` inventory."""
+    mounted, api = _env_sources(config_dir, kind)
+    deleted = _deleted_names(kind)
     names = sorted((set(mounted) | set(api)) - deleted)
     out = []
     for name in names:
-        src, _origin = effective_env_source(config_dir, name)  # type: ignore[misc]
+        src, _origin = effective_env_source(config_dir, name, kind)  # type: ignore[misc]
         st = src.stat()
         out.append({"name": name, "size": st.st_size, "mtime": st.st_mtime})
     return out

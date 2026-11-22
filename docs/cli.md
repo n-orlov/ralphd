@@ -2996,7 +2996,7 @@ ralphctl skills install --force            # overwrite a locally-modified instal
   `ralphctl`'s own; report-only, like the job-image staleness line, so it
   never flips the overall verdict.
 
-### `ralphctl creds <run-id> [ls|get <name>|add <file>.env|rm <name>]`
+### `ralphctl creds <run-id> [ls|get <name>|add <file>.env|rm <name>] [--kind env|vars]`
 
 Runtime credential management (API-backed, env-file convention).
 
@@ -3005,11 +3005,21 @@ ralphctl creds <run-id> ls                # name, size, mtime -- never values
 ralphctl creds <run-id> get <name>        # prints the file contents to stdout
 ralphctl creds <run-id> add <file>.env    # uploads/replaces; name is <file>'s stem
 ralphctl creds <run-id> rm <name>
+ralphctl creds <run-id> add <file>.vars   # a non-secret .vars entry (see --kind)
+ralphctl creds <run-id> rm <name> --kind vars
 ```
 
-`add` requires a `*.env` file (exit `2` otherwise, naming the file); the
+`--kind env|vars` (every action; default `env`) selects the credential kind
+(the API's `kind` field, see `docs/api.md`): `env` is a secret file, `vars` a
+non-secret `<name>.vars` file whose values are never scrubbed. `add` takes the
+kind from the file's suffix when `--kind` is not given; a `--kind` that
+contradicts the suffix exits `2` (`--kind vars` with `ci.env`). `rm`, `get` and
+`ls` need `--kind vars` to act on a `.vars` entry, and `--json` on `add`/`rm`
+reports the `kind`. `ci.env` and `ci.vars` are independent entries.
+
+`add` requires a `*.env` or `*.vars` file (exit `2` otherwise, naming the file); the
 credential's name is the file's stem (`github.env` -> `github`), and it lands
-at `~/.creds/<name>.env` (mode 0600) in the container immediately, no restart
+at `~/.creds/<name>.<kind>` (mode 0600) in the container immediately, no restart
 needed. `get` prints the file (read-back is by design — the API token *is*
 the cred boundary); `rm` deletes. `--json` on `ls` emits the raw
 `GET /config/creds` list (never a `value` field). Exit `3` if `<run-id>` has

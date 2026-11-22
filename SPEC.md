@@ -4334,8 +4334,11 @@ Runtime CRUD mirrors skills: `ralphctl creds <run-id> ls | get <name> | add
 <file>.env | rm <name>`. `ls` reports name, size and mtime, never values; `add`
 takes a `*.env` file (its stem is the credential name) and lands it at
 `~/.creds/<name>.env` immediately, no restart, reflected in the next iteration's
-prompt. `get` reads a value back, which is deliberate: **holding the API bearer
-token is defined as equivalent to holding the job's credentials.**
+prompt. `--kind env|vars` (the API's `kind` query parameter on `PUT`/`DELETE`/`GET
+/config/creds`) selects a secret `.env` (default) or a non-secret `<name>.vars`
+entry, which `add` also infers from a `*.vars` file's suffix. `get` reads a value
+back, which is deliberate: **holding the API bearer token is defined as
+equivalent to holding the job's credentials.**
 
 ### 7.5 Verifying a profile
 
@@ -6514,7 +6517,7 @@ validation-failed / in-progress flags) beside the rendered cells.
 |------|---------|----------|
 | `0` | success | including a fallback that served on-disk data |
 | `1` | generic error | `docker run` failed; malformed `status.json`; a `doctor`/`repair` run that found issues; `--no-detach` finishing unverified; a declined `rm` confirmation; an `iteration <n>` or `docs <name>` that was never written |
-| `2` | usage error | argparse rejection; missing `--prd`; a run id that already exists; a `--workspace`/`--creds`/`--skills` path that is not a directory; an unnamed second `--workspace`; a malformed `--iterations`/`budget` spec; an invalid `--set-state` value or `--env KEY=VAL`; an invalid `prompts set` phase; a non-`.env` `creds add`; a `skills add` dir with no `SKILL.md`; an unknown `config` key or invalid value; an unknown `docs` name; `steer --list` combined with a message to send; two of `--image`/`--base-image`/`--dockerfile` set at one level; a `--dockerfile` path that is not a file with a `FROM` |
+| `2` | usage error | argparse rejection; missing `--prd`; a run id that already exists; a `--workspace`/`--creds`/`--skills` path that is not a directory; an unnamed second `--workspace`; a malformed `--iterations`/`budget` spec; an invalid `--set-state` value or `--env KEY=VAL`; an invalid `prompts set` phase; a `creds add` file that is neither `.env` nor `.vars`, or a `--kind` that contradicts it; a `skills add` dir with no `SKILL.md`; an unknown `config` key or invalid value; an unknown `docs` name; `steer --list` combined with a message to send; two of `--image`/`--base-image`/`--dockerfile` set at one level; a `--dockerfile` path that is not a file with a `FROM` |
 | `3` | run or profile not found | no such run dir; an unknown `--template`; an unknown LLM profile name |
 | `4` | container or API unreachable | `API unreachable: …`; no `apiUrl` recorded; `could not connect to event stream` |
 | `5` | operation invalid in the current job state | HTTP `409` from the engine; `resume`/`repair` against a running container; `stop` on a live job without `--force`; `rm` while the container exists; `rm --force` on a run whose recorded state is not terminal; `budget` below `iterationsUsed`; `steer` on a finished job; `retry` on a run that is not waiting; `undefer` on a finished job or a task that is not deferred |

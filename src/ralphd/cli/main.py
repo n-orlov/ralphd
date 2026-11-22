@@ -5740,10 +5740,27 @@ def cmd_skills(args):
 
 
 # ---------------------------------------------------------------- creds
+def _creds_kind_path(name: str, kind: str) -> str:
+    """`/config/creds/<name>` plus `?kind=vars` for a `.vars` entry (the env
+    kind is the engine's default, so its URL is unchanged)."""
+    return f"/config/creds/{name}" + ("" if kind == "env" else f"?kind={kind}")
+
+
 def cmd_creds(args):
     _require_run(args.run_id)
+    kind = getattr(args, "kind", None)
+    if args.action == "add":
+        src = Path(args.file).expanduser().resolve()
+        suffix_kind = src.suffix[1:] if src.suffix in (".env", ".vars") else None
+        if suffix_kind is None:
+            die(2, f"creds add: {src} is not a *.env or *.vars file")
+        if kind and kind != suffix_kind:
+            die(2, f"creds add: --kind {kind} does not match {src.name}")
+        kind = suffix_kind
+    kind = kind or "env"
     if args.action == "ls":
-        creds = api(args.run_id, "GET", "/config/creds")
+        creds = api(args.run_id, "GET",
+                    "/config/creds" + ("" if kind == "env" else f"?kind={kind}"))
         if args.json:
             print(json.dumps(creds, indent=2))
         else:
@@ -5752,21 +5769,20 @@ def cmd_creds(args):
             if not creds:
                 print("(no creds)")
     elif args.action == "get":
-        body = api(args.run_id, "GET", f"/config/creds/{args.name}", raw=True)
+        body = api(args.run_id, "GET", _creds_kind_path(args.name, kind), raw=True)
         print(body, end="" if body.endswith("\n") else "\n")
     elif args.action == "add":
-        src = Path(args.file).expanduser().resolve()
-        if src.suffix != ".env":
-            die(2, f"creds add: {src} is not a *.env file")
         if not src.is_file():
             die(2, f"creds add: {src} does not exist")
         name = src.stem
-        api(args.run_id, "PUT", f"/config/creds/{name}", data=src.read_bytes(),
+        api(args.run_id, "PUT", _creds_kind_path(name, kind), data=src.read_bytes(),
            content_type="text/plain")
-        out(args, {"added": name}, f"credential '{name}' uploaded")
+        out(args, {"added": name, "kind": kind},
+            f"credential '{name}' ({kind}) uploaded")
     elif args.action == "rm":
-        api(args.run_id, "DELETE", f"/config/creds/{args.name}")
-        out(args, {"removed": args.name}, f"credential '{args.name}' removed")
+        api(args.run_id, "DELETE", _creds_kind_path(args.name, kind))
+        out(args, {"removed": args.name, "kind": kind},
+            f"credential '{args.name}' ({kind}) removed")
 
 
 # ---------------------------------------------------------------- prompts
@@ -9461,13 +9477,20 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("creds", help="inspect or hot-swap credentials on a running job")
     s.add_argument("run_id")
     crsub = s.add_subparsers(dest="action", required=True)
-    crsub.add_parser("ls", help="list credential names (no values)")
+    kind_help = ("credential kind: env (secret, default) or vars "
+                 "(non-secret values, never value-scrubbed)")
+    ls_ = crsub.add_parser("ls", help="list credential names (no values)")
+    ls_.add_argument("--kind", choices=("env", "vars"), help=kind_help)
     g = crsub.add_parser("get", help="print a credential file's contents")
     g.add_argument("name")
-    a = crsub.add_parser("add", help="upload/replace a *.env credential file")
+    g.add_argument("--kind", choices=("env", "vars"), help=kind_help)
+    a = crsub.add_parser("add", help="upload/replace a *.env or *.vars credential file")
     a.add_argument("file")
+    a.add_argument("--kind", choices=("env", "vars"),
+                   help=kind_help + "; default: from the file's suffix")
     r = crsub.add_parser("rm", help="delete a credential")
     r.add_argument("name")
+    r.add_argument("--kind", choices=("env", "vars"), help=kind_help)
     s.set_defaults(func=cmd_creds)
 
     s = sub.add_parser("prompts", help="inspect or hot-swap phase prompts on a running job")

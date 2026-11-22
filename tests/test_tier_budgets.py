@@ -986,8 +986,10 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # tiers -> fast 9069/567, smoke 7288/440.
     # v0.38 task 008 retry: +3 tests in tests/test_creds_vars.py (template
     # default `creds/` without job.yaml) -> fast 9072, smoke 7291.
-    "fast": {"tests": 9072, "modules": 567},
-    "smoke": {"tests": 7291, "modules": 440},
+    # v0.38 task 009: +8 tests / +1 module (tests/test_creds_vars_api_cli.py),
+    # in both tiers -> fast 9080/568, smoke 7299/441.
+    "fast": {"tests": 9080, "modules": 568},
+    "smoke": {"tests": 7299, "modules": 441},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
