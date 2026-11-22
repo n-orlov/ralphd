@@ -972,8 +972,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # parametrized nodes in tests/test_cli_fault_explanation.py), +16 tests /
     # +1 module in smoke -> fast 9020/565, smoke 7239/438 (the prior ceiling
     # plus the added tests).
-    "fast": {"tests": 9020, "modules": 565},
-    "smoke": {"tests": 7239, "modules": 438},
+    # v0.38 CI cure (fast lane red at ca76ee9b0): +2 tests in
+    # tests/test_stub_env_marker_atomic.py, in both tiers -> fast 9022,
+    # smoke 7241.
+    "fast": {"tests": 9022, "modules": 565},
+    "smoke": {"tests": 7241, "modules": 438},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
