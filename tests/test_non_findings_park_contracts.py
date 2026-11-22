@@ -253,3 +253,132 @@ def test_notification_docs_separate_best_effort_from_the_retried_path(doc):
         assert needle in text, (doc, needle)
     assert "never `notification.escalation_undelivered`" in text or (
         "`notification.escalation_undelivered` is never" in text)
+
+
+# -- the configured notifier, counted at the HTTP seam -----------------------
+#
+# The recorder above proves the call shape; these count real POSTs through
+# `_notify_via_configured_notifier` -> `hat_tools.send_notification` with a
+# poster that fails ONCE (503) and would succeed (200) on any second POST, so
+# any retry -- the per-call retry-once or the escalation's outer retry -- is
+# visible as a second POST.
+
+NOTIFIER_URL = "http://notifier.invalid/notify"
+
+
+def _flaky_poster(monkeypatch):
+    from ralphd.engine import hat_tools
+    posts: list[str] = []
+
+    def poster(url, text, timeout_s):
+        posts.append(text)
+        return (503 if len(posts) == 1 else 200), None
+
+    monkeypatch.setattr(hat_tools, "_http_post_text", poster)
+    return posts
+
+
+def _real_notifier_park(tmp_path, monkeypatch, which):
+    posts = _flaky_poster(monkeypatch)
+    sup = make_supervisor(
+        tmp_path / "run", run_id="park-contracts", cfg_defaults=False,
+        max_approaches=1, vigilant=False, on_complete="exit", iterations=30,
+        approach=1, peer_verdict_gate=which.endswith("_gate"),
+        notifier_url=NOTIFIER_URL, tasks=[
+            {"id": "001", "title": "held", "status": "petitioned",
+             "successCriteria": "c1"},
+            {"id": "002", "title": "waits", "status": "pending",
+             "dependsOn": ["001"], "successCriteria": "c2"}])
+    assert sup.notifier == sup._notify_via_configured_notifier
+    sup._now_epoch = lambda: 1_800_000_000.0
+    sup._sleep_before_escalation_retry = lambda seconds: None
+    return sup, posts
+
+
+def _notification_events(sup):
+    return [e["type"] for e in read_events(sup.run.root)
+            if e["type"].startswith("notification.")]
+
+
+@pytest.mark.parametrize("which", KINDS)
+def test_configured_notifier_makes_one_post_of_the_question_text(
+        tmp_path, monkeypatch, which):
+    sup, posts = _real_notifier_park(tmp_path, monkeypatch, which)
+    if which == "petition_hold":
+        sup._park_for_petition_hold(
+            sup.run.read_tasks(), {"002": ["001"]}, ["001"])
+    else:
+        sup._workspace_head_sha = lambda: HEAD
+        key = {"head": HEAD, "tasks": [["001", "petitioned", False]]}
+        judge = "verdict_gate" if which.endswith("_gate") else "review"
+        sup._park_for_verified_unchanged(1, key, judge)
+
+    question = sup.run.read_status()["inputQuestion"]
+    # one POST, despite a notifier that would have accepted a second
+    assert len(posts) == 1
+    # the park's own question text, never the escalation digest
+    assert posts[0].startswith("run park-contracts is parked in awaiting_input\n")
+    assert question["text"][:200] in posts[0]
+    assert "pauseReason:" not in posts[0]
+    assert "spent this approach:" not in posts[0]
+    # exactly one failed event, and nothing from the escalation path
+    assert _notification_events(sup) == ["notification.failed"]
+    assert "operator_escalation" not in _types(sup)
+    assert sup.run.read_status()["state"] == "awaiting_input"
+
+
+# Two cases of the same rule the review finding did not name: the paths the
+# documentation contrasts these parks with really do retry.
+
+def test_contrast_escalation_park_retries_with_a_digest(tmp_path, monkeypatch):
+    sup, posts = _real_notifier_park(tmp_path, monkeypatch, "commit_secret")
+    sup.run.update_status(state="running", phase="worker", approach=1,
+                          maxApproaches=1)
+    sup.run.emit(sup.COMMIT_SECRET_SCAN_EVENT, sha="0" * 40, part="blob",
+                 variable="REVIEW_TEST_VARIABLE", pushed=False)
+    sup._park_for_commit_secret(None, None)
+
+    # the escalation's outer retry: the failed first attempt is retried and
+    # the second succeeds, each attempt one POST and one event
+    assert len(posts) == 2
+    assert "pauseReason: commit_secret" in posts[0]
+    assert posts[0] == posts[1]
+    assert _notification_events(sup) == ["notification.failed",
+                                         "notification.sent"]
+    assert "notification.escalation_undelivered" not in _types(sup)
+
+
+def test_contrast_a_notice_naming_no_attempt_count_keeps_retry_once(
+        tmp_path, monkeypatch):
+    # the petition-held notice's own call shape: `self._notify(text)`
+    sup, posts = _real_notifier_park(tmp_path, monkeypatch, "notice")
+    sup._notify("run park-contracts: a petition holds 001")
+    assert len(posts) == 2
+    assert _notification_events(sup) == ["notification.sent"]
+
+
+def test_contrast_park_reminder_is_also_single_best_effort(
+        tmp_path, monkeypatch):
+    # the shared `_notify_input_event` seam the docs name for the reminder
+    sup, posts = _real_notifier_park(tmp_path, monkeypatch, "reminder")
+    sup._send_input_reminder({"expiresAt": "2027-01-15T08:00:00Z",
+                              "judge": "review", "trigger": "incurable"})
+    assert len(posts) == 1
+    assert _notification_events(sup) == ["notification.failed"]
+
+
+RETIRED_OVERCLAIMS = {
+    "docs/api.md": "**Every engine-initiated pause notifies the operator",
+    "SPEC.md": "non-escalation `self._notify(...)` call site keeps that retry unchanged",
+    "docs/cli.md": "every engine-recorded pause\nalso POSTs the operator a bounded digest",
+    "docs/architecture.md": "Every engine-initiated pause holds the loop first",
+}
+
+
+@pytest.mark.parametrize("doc", sorted(RETIRED_OVERCLAIMS))
+def test_no_doc_claims_every_pause_posts_a_retried_digest(doc):
+    text = (ROOT / doc).read_text()
+    assert RETIRED_OVERCLAIMS[doc] not in text
+    # and each names the exception in its own words
+    assert "`petition_hold`" in text and "`verified_unchanged`" in text
+    assert "best-effort" in text

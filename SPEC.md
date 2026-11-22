@@ -2328,8 +2328,14 @@ escalation ever makes (task cure-01-01-3, PRD requirement A.4's own DoD 1),
 never a second, independent three-attempt budget stacked underneath it:
 each of the 3 outer attempts calls `_notify(text, max_attempts=1)`, which
 disables `hat_tools.send_notification`'s own separate task 017/requirement
-A.7 retry-once-immediately-no-backoff for this path only -- every other,
-non-escalation `self._notify(...)` call site keeps that retry unchanged.
+A.7 retry-once-immediately-no-backoff for this path. The single best-effort
+park notification (`_notify_input_event`: the plan-phase gate's park, the
+`petition_hold` and `verified_unchanged` parks, and every park's reminder and
+timeout message) passes `max_attempts=1` too, with NO outer retry: one POST,
+one `notification.sent`/`notification.failed`, never a digest and never
+`notification.escalation_undelivered`. Only a `self._notify(...)` call that
+names no attempt count (the petition-held notice, the engine's other non-park
+notices) keeps `send_notification`'s retry-once: at most two POSTs, one event.
 If the LAST attempt still failed, the engine emits one additional, distinct
 event,
 `notification.escalation_undelivered` (`reason` names the pause reason that
@@ -2344,7 +2350,8 @@ the in-memory hold is in force first. For every reasoned site that also means
 first delivery attempt returns: the recorded `state` (with `pauseReason`) is
 `awaiting_input` with `inputQuestion`.
 The retry belongs to these escalation sites alone. The petition-hold and
-unchanged-review parks (v0.38 A.5, B.2) are not escalations: each makes one
+unchanged-review parks (v0.38 A.5, B.2) are not escalations and post no digest
+(their message is the park's own question text): each makes one
 best-effort notification attempt (`_notify_input_event`, `max_attempts=1`), never
 retried and never followed by `notification.escalation_undelivered`.
 An incurable finding is persisted like every other ladder park, never held in

@@ -1047,8 +1047,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # findings_park_contracts.py: the petition_hold and verified_unchanged
     # answer, event and notification contracts), in both tiers -> fast
     # 9275/575, smoke 7494/448.
-    "fast": {"tests": 9275, "modules": 575},
-    "smoke": {"tests": 7494, "modules": 448},
+    # v0.38 task cure-01-01-3 retry: +10 tests in that same module (the
+    # configured-notifier POST counts and the doc overclaim guards), in both
+    # tiers -> fast 9285/575, smoke 7504/448.
+    "fast": {"tests": 9285, "modules": 575},
+    "smoke": {"tests": 7504, "modules": 448},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

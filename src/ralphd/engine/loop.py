@@ -1107,8 +1107,10 @@ class LoopSupervisor:
     # delivery attempts") calls each outer attempt through `_notify` with
     # `max_attempts=1`, which disables `hat_tools.send_notification`'s own,
     # separate, task 017/requirement A.7 retry-once-immediately-no-backoff
-    # for THIS path only (every other, non-escalation `self._notify(...)`
-    # call site keeps that retry, via `_notify`'s own default of 2) -- so
+    # for THIS path (a `self._notify(...)` call that names no attempt count
+    # keeps that retry, via `_notify`'s own default of 2; the single
+    # best-effort `_notify_input_event` park notification also passes 1 and
+    # has no outer retry at all) -- so
     # these three outer attempts are the ONLY retrying that happens, and
     # the total number of real notifier POSTs an escalation ever makes is
     # exactly this bound, never `_ESCALATION_DELIVERY_MAX_ATTEMPTS` times

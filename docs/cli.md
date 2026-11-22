@@ -2403,13 +2403,19 @@ The rate-limit ceiling ends the run `failed` with the rate-limit-ceiling `ending
 continues, and `ralphctl budget <run-id> --rate-limit-wait +N` raises it on a
 live run.
 
-With a notifier configured (`--notifier-url`), every engine-recorded pause
+With a notifier configured (`--notifier-url`), every operator-escalation pause
+(review's and the peer gate's findings parks, the commit-secret park)
 also POSTs the operator a bounded digest (at most `MAX_NOTIFY_CHARS`) instead
 of the raw diagnostic text: run id, `pauseReason`, `approach n of m`,
 blocking/residual counts, tasks reopened/inserted, spend this approach, the
 hub URL when `hub_base_url` is configured, and the exact answer command(s)
-for that reason, phrased the way the paragraph above describes. That covers
-every park reason, including the commit-secret park (`pauseReason:
+for that reason, phrased the way the paragraph above describes, retried up to
+3 times with 60/120 s backoff and recorded `notification.escalation_undelivered`
+after the last failure. The `petition_hold` and `verified_unchanged` parks
+(and the plan-phase gate's park) are not escalations: each sends ONE
+best-effort notification, its own question text rather than a digest, in a
+single POST with no retry; a failure is one `notification.failed` and leaves
+the park in place. The digest covers every escalation reason, including the commit-secret park (`pauseReason:
 commit_secret`, `state: awaiting_input`, raised from `worker`, which
 continues at `worker`, not `review`): its digest names the offending
 commit's `sha`, the `part` and the variable NAME, never the matched value,
