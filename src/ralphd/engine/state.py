@@ -7446,19 +7446,20 @@ def task_blocked_by(tasks: list, *,
 def task_blocked_by_chain(tasks: list, *, settled=()) -> dict[str, list[str]]:
     """`task_blocked_by(include_petitioned=True)` extended through dependency
     CHAINS (v0.38 A.4, #306): a task that depends, however many hops away,
-    on a task the one-hop map holds -- an unsettled `petitioned` ancestor or
-    a dead/doomed one -- is held as well, because the task in between can
-    never complete either.
+    on an unsettled `petitioned` task or a dead (`failed`/`skipped`) one is
+    held as well, because the task in between can never complete either.
 
-    A direct entry keeps its own causes. A chain member's causes are the
-    causes of the held tasks it depends on, i.e. the petitioned (or dead)
-    ROOTS, so a reader names the held task rather than an intermediate
-    pending one. A finished task (a sink) and a `failed`/`skipped` task
-    (a source of doom, never a key) are never added. The display surfaces
-    keep the one-hop `task_blocked_by`; the engine's hold detection reads
-    this one.
+    Same key set as the one-hop map plus every chain member, but each task's
+    list names the ROOTS it waits on -- the unsettled petitioned and dead
+    tasks -- never an intermediate pending one, and it names ALL of them:
+    the union over every `dependsOn` branch. A task held directly by one
+    petitioned task and, on another branch, through a chain by a second one
+    lists both, so every held task's dependents (the A.5 question's
+    `dependents`) include it. A held petitioned task is a root and is not
+    traversed further. A finished task (a sink), a held petitioned task and
+    a `failed`/`skipped` task are never keys. The display surfaces keep the
+    one-hop `task_blocked_by`; the engine's hold detection reads this one.
     """
-    out = task_blocked_by(tasks, include_petitioned=True, settled=settled)
     depends_on: dict[str, list[str]] = {}
     status_by_id: dict[str, str] = {}
     order: list[str] = []
@@ -7471,21 +7472,27 @@ def task_blocked_by_chain(tasks: list, *, settled=()) -> dict[str, list[str]]:
         raw = t.get("dependsOn")
         depends_on[tid] = ([str(d) for d in raw]
                            if isinstance(raw, list) else [])
+    roots = {tid for tid, status in status_by_id.items()
+             if status in TASK_DEPENDENCY_DEAD_STATUSES
+             or (status == "petitioned"
+                 and not task_dependency_satisfied(tid, status, settled))}
+    reach: dict[str, set[str]] = {}
     changed = True
-    while changed:
+    while changed:  # sets only grow and are bounded, so a cycle terminates
         changed = False
         for tid in order:
             status = status_by_id[tid]
-            if (tid in out or status in TASK_DEPENDENCY_DEAD_STATUSES
-                    or task_dependency_satisfied(tid, status, settled)):
+            if tid in roots or task_dependency_satisfied(tid, status, settled):
                 continue
-            roots: set[str] = set()
+            found: set[str] = set()
             for dep in depends_on.get(tid, []):
-                roots.update(out.get(dep, ()))
-            if roots:
-                out[tid] = sorted(roots)
+                if dep in roots:
+                    found.add(dep)
+                found |= reach.get(dep, set())
+            if found and found != reach.get(tid):
+                reach[tid] = found
                 changed = True
-    return out
+    return {tid: sorted(reach[tid]) for tid in order if tid in reach}
 
 
 # Task 021: the field name under which the derived blocked-by map is

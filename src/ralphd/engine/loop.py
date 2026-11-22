@@ -11171,31 +11171,24 @@ class LoopSupervisor:
                 # starved" -- reached this line only when `doom_fault`
                 # just above is `None` (the actionable remainder is NOT
                 # entirely dead-doomed). If it is instead entirely
-                # blocked on a `petitioned` ancestor (`state.
-                # task_blocked_by(..., include_petitioned=True)`, the
-                # SAME derivation task 013 wired into every display
-                # surface, here read for a fifth purpose: deciding
-                # whether the only reason nothing is schedulable this pass
-                # is a hold, never a stuck plan), the engine runs the SAME
-                # bounded, off-budget mid-run adjudication episode
-                # (`_maybe_run_midrun_adjudication_episode`, already
-                # deduped per obligation by `self._petition_adjudication_
-                # seen` so calling it here on every held pass is a cheap
-                # no-op once an obligation has had its bounded shot)
-                # IMMEDIATELY -- right here, rather than waiting for a
-                # `pending_verify` cycle that will never arrive while
-                # nothing is being worked on -- instead of just letting the
-                # loop idle along to the ordinary "nothing selectable"
-                # worker dispatch a few lines below. `petition_held_this_
-                # pass` is read further down (right where the
-                # infra/signal fault-class carve-outs already skip the
-                # stagnation diff formula) so THIS pass's lack of
-                # tasks.json/commit/contract/tool-activity progress is
-                # never charged to the stagnation counter either -- the
-                # ordinary worker dispatch below still runs (a held plan
-                # still gets its normal chance to report `plan_complete`/
-                # a fresh petition/etc.), only the STAGNATION bookkeeping
-                # is exempted.
+                # held on unsettled `petitioned` tasks -- directly or
+                # through a chain of dependents (`state.task_blocked_by_
+                # chain`, v0.38 A.4: each held task lists every petitioned
+                # or dead root it reaches, on every branch) -- the engine
+                # handles the hold on THIS pass, before any no-task worker
+                # dispatch: it runs the bounded, off-budget mid-run
+                # adjudication episode (`_maybe_run_midrun_adjudication_
+                # episode`, deduped per obligation by `self._petition_
+                # adjudication_seen`), re-selects in the same pass when the
+                # episode moved the hold, and otherwise parks with the A.5
+                # `petition_hold` question (`_park_for_petition_hold`) --
+                # also when nothing could be adjudicated (no petition on
+                # file). The one exception is a hold on a state a deferred
+                # VERIFIED already judged (B.2): that routes to `review`
+                # (guard `petition_held_no_task_bound`), which parks
+                # `verified_unchanged` without dispatching the review hat.
+                # `petition_held_this_pass` also exempts the pass from the
+                # stagnation diff formula.
                 blocked_incl_petitioned = state.task_blocked_by_chain(
                     tasks_before.get("tasks", []),
                     settled=settled_petitioned)

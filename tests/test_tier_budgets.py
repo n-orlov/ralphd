@@ -1053,8 +1053,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.38 task cure-01-01-4: +7 tests / +1 module (tests/test_petition_
     # hold_chain_and_unfiled.py: chain holds, a hold beside a doomed task, an
     # unfiled petition), in both tiers -> fast 9292/576, smoke 7511/449.
-    "fast": {"tests": 9292, "modules": 576},
-    "smoke": {"tests": 7511, "modules": 449},
+    # v0.38 task cure-01-01-4 retry: +6 tests in that same module (every
+    # root on every branch: two-root fan-in, deep two-branch joins, a join of
+    # a petitioned and a dead branch, a cycle, the SPEC guard), in both
+    # tiers -> fast 9298/576, smoke 7517/449.
+    "fast": {"tests": 9298, "modules": 576},
+    "smoke": {"tests": 7517, "modules": 449},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

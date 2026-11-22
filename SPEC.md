@@ -3245,7 +3245,9 @@ satisfies nothing, waiver or not.
 
 **A held petitioned task is adjudicated at once, and parks the run when the
 judge cannot settle it (v0.38 A.4/A.5, #306, #320).** When every actionable
-remaining task waits only on unsettled `petitioned` tasks, `_step_worker` runs
+remaining task waits only on unsettled `petitioned` tasks, directly or through a
+chain of dependents (some of the remainder may instead wait on a dead task),
+`_step_worker` runs
 `_maybe_run_midrun_adjudication_episode` on the FIRST hold, before it spends any
 no-task worker iteration. The episode's adjudications apply as before: CONFIRMED
 settles the task, and REFUTED moves it to `failed` with its remedy. When the
@@ -3264,7 +3266,9 @@ the run parks: `status.json` `state: "awaiting_input"`, `pauseReason:
 park does not route to the final review, and emits no `operator_escalation`
 event with an `approach` field. `inputQuestion.heldTasks` has one entry per
 petitioned task (`taskId`, `title`, `petition` -- `obligation`, `type`,
-`evidence`, or `null` -- and `dependents`), and `inputQuestion.text` names each
+`evidence`, or `null` -- and `dependents`, every actionable task that waits on it
+directly or through a chain, a task that also waits on another petitioned task on
+a different branch included), and `inputQuestion.text` names each
 task, its petition, its dependents and the two operator answers:
 `ralphctl amend <run> --waive <task> <reason>` and `ralphctl amend <run> <task>
 --status validated|skipped <reason>`. `amend` writes the ruling file on the host and never applies it
@@ -3278,8 +3282,16 @@ unpause` is refused with the same two answers named, and a hold the ruling did
 not move parks again without a second adjudication. A restarted engine over the
 park resumes at `worker` (`paused -> worker`, guard `paused_resumed_petition_hold`).
 A hold with no open petition to adjudicate at all (a `petitioned` task whose
-petition is not on file) keeps the earlier bound: three no-task worker iterations,
-then `petition_held_no_task_bound`.
+petition is not on file) cannot be settled by the judge either, so it parks
+`petition_hold` the same way on that first pass: no no-task worker iteration is
+dispatched and the final review is not reached. The engine reads the hold through
+`state.task_blocked_by_chain`, which lists for each held task every unsettled
+`petitioned` or dead root it reaches across all of its `dependsOn` branches (the
+display surfaces keep the one-hop `taskBlockedBy`). The one exception is a hold on
+a state a deferred VERIFIED of this approach already judged (equal review state
+key, B.2): the worker spends no no-task iteration and goes straight to `review`
+(guard `petition_held_no_task_bound`), which parks `verified_unchanged` without
+dispatching the review hat.
 
 The `taskBlockedBy` overlay reads the same rule on every surface, so a settled
 task is never shown as a blocker its dependent has already been scheduled past.

@@ -152,3 +152,146 @@ def test_chain_map_ignores_settled_finished_and_unheld_branches():
     done = [dict(t, status="completed") if t["id"] == "004" else t
             for t in tasks]
     assert "004" not in state.task_blocked_by_chain(done)
+
+
+# --- every root, on every branch (cure-01-01-4 retry) -------------------------
+#
+# A task held directly by one petitioned task and, through a chain on another
+# branch, by a second one is a dependent of BOTH: its blocker list is the union
+# of the roots over all of its `dependsOn` branches, never only the direct one.
+
+SECOND = "101"
+SECOND_TITLE = "the other impossible one"
+
+
+def _file_second_petition(sup):
+    path = sup.workspace / "artifacts" / "reports" / "v0.38-petitions.md"
+    obligation = f"Task {SECOND}: {SECOND_TITLE}"
+    with path.open("a") as f:
+        f.write(f"\n## Petition: {obligation}\n\n"
+                f"**Obligation**: {obligation}\n"
+                "**Type**: environmental\n"
+                "**Evidence**: no route to the device from this sandbox\n")
+
+
+def _two_root_plan() -> list[dict]:
+    """HELD (001) and SECOND (101) petitioned; 103 waits on HELD; 104 waits
+    on SECOND directly and on 103 (so on HELD through a chain)."""
+    return [
+        {"id": SECOND, "title": SECOND_TITLE, "status": "petitioned",
+         "successCriteria": "the device answers"},
+        {"id": HELD, "title": TITLE, "status": "petitioned",
+         "successCriteria": "criterion 2 holds"},
+        {"id": "103", "title": "on held", "status": "pending",
+         "dependsOn": [HELD], "successCriteria": "c"},
+        {"id": "104", "title": "on both", "status": "pending",
+         "dependsOn": [SECOND, "103"], "successCriteria": "d"},
+    ]
+
+
+def _dependents(question) -> dict:
+    return {h["taskId"]: h["dependents"] for h in question["heldTasks"]}
+
+
+def test_a_direct_blocker_does_not_hide_a_chain_blocker_on_another_branch():
+    chain = state.task_blocked_by_chain(_two_root_plan())
+    assert chain == {"103": [HELD], "104": [HELD, SECOND]}
+
+
+def test_fruitless_two_root_hold_names_the_transitive_dependent_of_each(tmp_path):
+    """The verifier's probe: one fruitless adjudication, zero workers, and
+    the question lists 104 under BOTH petitioned tasks."""
+    sup = _with_plan(tmp_path, _two_root_plan())
+    _file_second_petition(sup)
+    runner = attach_runner(sup, ScriptedRunner({
+        "review": [_judge([])], "worker": [_no_task_worker]}))
+
+    snapshot = _run_to_park(sup, runner)
+
+    assert runner.phases_seen == ["review"], runner.phases_seen
+    question = snapshot["inputQuestion"]
+    assert question["kind"] == "petition_hold"
+    assert _dependents(question) == {HELD: ["103", "104"], SECOND: ["104"]}
+    assert "104" in question["text"].split(f"Petitioned task {HELD}")[1]
+
+
+def test_two_deep_branches_with_no_petition_on_file_park_naming_both(tmp_path):
+    """Not in the finding: no direct edge to either root, each reached two
+    hops deep, nothing on file to adjudicate -> park at once, 104 listed
+    under both roots, no hat dispatched."""
+    plan = [
+        {"id": SECOND, "title": SECOND_TITLE, "status": "petitioned",
+         "successCriteria": "x"},
+        {"id": HELD, "title": TITLE, "status": "petitioned",
+         "successCriteria": "y"},
+        {"id": "102", "title": "a", "status": "pending",
+         "dependsOn": [HELD], "successCriteria": "a"},
+        {"id": "103", "title": "b", "status": "pending",
+         "dependsOn": [SECOND], "successCriteria": "b"},
+        {"id": "105", "title": "a2", "status": "pending",
+         "dependsOn": ["102"], "successCriteria": "a2"},
+        {"id": "106", "title": "b2", "status": "pending",
+         "dependsOn": ["103"], "successCriteria": "b2"},
+        {"id": "104", "title": "join", "status": "pending",
+         "dependsOn": ["105", "106"], "successCriteria": "j"},
+    ]
+    sup = _with_plan(tmp_path, plan, filed=False)
+    runner = attach_runner(sup, ScriptedRunner({"worker": [_no_task_worker]}))
+
+    snapshot = _run_to_park(sup, runner)
+
+    assert runner.phases_seen == [], runner.phases_seen
+    assert _dependents(snapshot["inputQuestion"]) == {
+        HELD: ["102", "104", "105"], SECOND: ["103", "104", "106"]}
+
+
+def test_a_join_of_a_petitioned_and_a_dead_branch_parks_naming_the_join(tmp_path):
+    """Not in the finding: 104 waits on HELD directly and on 105, doomed by a
+    skipped 106. Its roots are both, and the park still lists it under HELD.
+    (103 waits on HELD alone: without it the whole remainder is dead-doomed,
+    which is the doomed-plan route, not a petition hold.)"""
+    plan = [
+        {"id": HELD, "title": TITLE, "status": "petitioned",
+         "successCriteria": "y"},
+        {"id": "103", "title": "on held", "status": "pending",
+         "dependsOn": [HELD], "successCriteria": "c"},
+        {"id": "106", "title": "dead", "status": "skipped",
+         "successCriteria": "n/a"},
+        {"id": "105", "title": "doomed", "status": "pending",
+         "dependsOn": ["106"], "successCriteria": "never"},
+        {"id": "104", "title": "join", "status": "pending",
+         "dependsOn": [HELD, "105"], "successCriteria": "j"},
+    ]
+    assert state.task_blocked_by_chain(plan) == {
+        "103": [HELD], "105": ["106"], "104": [HELD, "106"]}
+    sup = _with_plan(tmp_path, plan)
+    runner = attach_runner(sup, ScriptedRunner({
+        "review": [_judge([])], "worker": [_no_task_worker]}))
+
+    snapshot = _run_to_park(sup, runner)
+
+    assert runner.phases_seen == ["review"], runner.phases_seen
+    assert _dependents(snapshot["inputQuestion"]) == {HELD: ["103", "104"]}
+
+
+def test_chain_map_terminates_on_a_cycle_and_names_the_root_for_each_member():
+    plan = [
+        {"id": HELD, "title": TITLE, "status": "petitioned",
+         "successCriteria": "y"},
+        {"id": "201", "title": "a", "status": "pending",
+         "dependsOn": ["202", HELD], "successCriteria": "a"},
+        {"id": "202", "title": "b", "status": "pending",
+         "dependsOn": ["201"], "successCriteria": "b"},
+    ]
+    assert state.task_blocked_by_chain(plan) == {"201": [HELD], "202": [HELD]}
+
+
+def test_spec_states_an_unfiled_hold_parks_with_no_no_task_iteration():
+    from pathlib import Path
+    spec = (Path(__file__).resolve().parents[1] / "SPEC.md").read_text()
+    flat = " ".join(spec.split())
+    assert "keeps the earlier bound" not in flat
+    assert "three no-task worker iterations, then `petition_held_no_task_bound`" \
+        not in flat
+    assert ("petition is not on file) cannot be settled by the judge either, so "
+            "it parks `petition_hold` the same way on that first pass") in flat

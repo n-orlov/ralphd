@@ -569,7 +569,9 @@ operator answers, `ralphctl amend <run> --waive <task>` and `ralphctl amend <run
 <run>` releases the park and the worker re-reads the plan. The hold reaches
 through dependency chains: a task that waits on a task that waits on a
 `petitioned` one is held too (the engine reads the hold through
-`state.task_blocked_by_chain`; the display surfaces keep the one-hop map). A hold
+`state.task_blocked_by_chain`, which names every petitioned or dead root a task
+reaches on every branch, so a task waiting on two petitioned tasks is a dependent
+of both; the display surfaces keep the one-hop map). A hold
 with no open petition to adjudicate (none on file) cannot be settled by the judge
 either, so it parks the same way, never through a no-task worker iteration or the
 final review; the one exception is a hold on a state a deferred VERIFIED already

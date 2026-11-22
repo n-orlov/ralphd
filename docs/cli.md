@@ -2004,7 +2004,8 @@ A **`petition_hold` question** (`inputQuestion.kind: petition_hold`, `trigger:
 petition_hold`; v0.38 A.5) is what a held petitioned task parks the run on when
 the one prompt adjudication of it returned no adjudication or left the hold
 unchanged, or there was no open petition to adjudicate (dependents reached
-through a chain of other dependents count as held). It never expires, and its `inputQuestion.text` names each petitioned
+through a chain of other dependents count as held, and a task that waits on two
+petitioned tasks on different branches is listed as a dependent of both). It never expires, and its `inputQuestion.text` names each petitioned
 task, its petition, its dependents and the two answers: `ralphctl amend <run>
 --waive <task> <reason>` or `ralphctl amend <run> <task> --status
 validated|skipped <reason>`. `amend` writes the ruling file on the host and never applies
