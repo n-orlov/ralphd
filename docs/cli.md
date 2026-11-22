@@ -2025,8 +2025,12 @@ whichever of the five `worker -> review` edges (`verdict_ready`,
 `unsatisfiable_and_nothing_left`) entered it. The final peer verdict gate parks the
 same way (`judge: verdict_gate`) when it would be dispatched on the key its own
 earlier verdict judged; a phase review is never parked.
+The key alone decides: a blocker that went away without changing the key (a
+steering message since consumed, a review-cure or steering origin marker cleared)
+still parks, and the remembered VERIFIED is never taken in place of a review.
 It never expires, and `inputQuestion.heldTasks` and `inputQuestion.text` name the
-non-terminal tasks that held that VERIFIED and what blocks each. Change something
+non-terminal tasks that held that VERIFIED and what blocks each (`heldTasks` is
+empty when no task is non-terminal any more). Change something
 first (an `amend` ruling on a blocking task, or a commit), then run `ralphctl
 answer <run>` with no options: a changed key dispatches the review, an unchanged
 one parks again. On `answer`, `--waive`, `--accept`, `--cure-rounds` (`0` included), `--approaches` and `--secret-handled` are refused (exit `5`, nothing written); `--note-file` and `--name` are accepted and ignored -- the note is NOT recorded as a ruling on this park. A bare `ralphctl unpause` is refused.

@@ -1066,8 +1066,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.38 task cure-01-03: net +2 tests, no module (tests/test_review_state_
     # key.py: the reuse-on-equal-key node became three parking nodes), in both
     # tiers -> fast 9323/578, smoke 7542/451.
-    "fast": {"tests": 9323, "modules": 578},
-    "smoke": {"tests": 7542, "modules": 451},
+    # v0.38 task cure-01-03 retry: +3 tests, no module (tests/test_review_
+    # state_key.py: an origin marker cleared x2, a withdrawn steering file),
+    # in both tiers -> fast 9326/578, smoke 7545/451.
+    "fast": {"tests": 9326, "modules": 578},
+    "smoke": {"tests": 7545, "modules": 451},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

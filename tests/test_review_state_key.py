@@ -8,7 +8,8 @@ the worker ("VERIFIED verdict deferring") stores the key with the verdict.
 A later dispatch on an equal key does not run the review hat: the run parks
 `awaiting_input` with reason `verified_unchanged`, naming the non-terminal
 tasks and what blocks each. A release with nothing changed parks again; so does an equal key that
-nothing holds any more (no exception for a blocker that went away).
+nothing holds any more (no exception for a blocker that went away outside
+the key: a consumed or withdrawn steering message, a cleared origin marker).
 
 Driven through the real `_step_review` / `_step_worker` / `_step_paused`
 with fake hats and a fake clock; the park's wait is a recorder, so nothing
@@ -331,6 +332,85 @@ def test_the_recorded_blockers_are_not_part_of_the_equality_rule(tmp_path):
     sup.answer()
     assert _step_review(sup)[:2] == ("advance", "worker")
     assert runner.calls["review"] == 2, "a changed triple dispatches"
+
+
+def _single_blocker_plan(sup, origin: str) -> None:
+    """Every task terminal but one `origin` task still pending: it alone
+    holds a VERIFIED (the terminal-success blocker its origin names)."""
+    doc = sup.run.read_tasks()
+    doc["tasks"] = [
+        {"id": "101", "title": "done", "status": "completed",
+         "successCriteria": "done"},
+        {"id": "102", "title": "the remedy", "status": "pending",
+         "origin": origin, "successCriteria": "done"},
+    ]
+    sup.run.write_tasks(doc)
+
+
+def _clear_origin(sup, task_id: str) -> None:
+    doc = sup.run.read_tasks()
+    for t in doc["tasks"]:
+        if t["id"] == task_id:
+            t.pop("origin", None)
+    sup.run.write_tasks(doc)
+
+
+def _assert_parked_without_dispatch(sup, runner) -> None:
+    status = sup.run.read_status()
+    assert runner.calls["review"] == 1, "the review hat was not dispatched"
+    assert status["state"] == "awaiting_input"
+    assert status["pauseReason"] == "verified_unchanged"
+    assert status["inputQuestion"]["kind"] == "verified_unchanged"
+    assert "review_verdict_reused" not in (
+        sup.run.root / "events.jsonl").read_text()
+
+
+@pytest.mark.parametrize("origin,guard", [
+    ("review-cure", "review_cure_pending_at_verified"),
+    ("steer", "steering_pending_at_verified"),
+], ids=["review_cure_origin_cleared", "steering_origin_cleared"])
+def test_an_origin_marker_cleared_outside_the_key_still_parks(
+        tmp_path, origin, guard):
+    """The only terminal-success blocker is an origin-marked task; clearing
+    its `origin` (no HEAD move, no status change) removes the blocker but
+    leaves every `(id, status, settled)` triple as it was. The key is equal,
+    so the final review parks `verified_unchanged` with one dispatch."""
+    sup, runner = _supervisor(tmp_path)
+    _single_blocker_plan(sup, origin)
+    assert _step_review(sup)[2] == guard
+    assert sup.run.read_status()["reviewStateKeys"]["1"]["verifiedDeferred"]
+
+    _clear_origin(sup, "102")
+    assert sup._terminal_success_blockers() == []
+
+    out = _step_review(sup)
+
+    assert out == ("advance", "paused", "verified_unchanged")
+    _assert_parked_without_dispatch(sup, runner)
+    held = sup.run.read_status()["inputQuestion"]["heldTasks"]
+    assert [e["taskId"] for e in held] == ["102"]
+
+
+def test_a_withdrawn_steering_file_on_an_equal_key_parks(tmp_path):
+    """Every task terminal; the VERIFIED deferred only on a steering file no
+    iteration processed. The file is then withdrawn from the steering
+    directory (never consumed): the blocker is gone outside the key, so the
+    next attempt parks with no dispatch."""
+    sup, runner = _supervisor(tmp_path)
+    for tid in [HELD] + STEERING:
+        _set_status(sup, tid, "completed")
+    sup.run.add_steering("also check the ordering", name="note")
+    assert _step_review(sup)[2] == "steering_pending_at_verified"
+
+    for path in sup.run.pending_steering():
+        path.unlink()
+    assert sup._terminal_success_blockers() == []
+
+    out = _step_review(sup)
+
+    assert out == ("advance", "paused", "verified_unchanged")
+    _assert_parked_without_dispatch(sup, runner)
+    assert sup.run.read_status()["inputQuestion"]["heldTasks"] == []
 
 
 def _truncated(sup, prompt):
