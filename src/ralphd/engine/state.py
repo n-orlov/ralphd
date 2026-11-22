@@ -2948,6 +2948,38 @@ def task_status_change_refusal(current: str, target_status: str,
     return errors[0] if errors else None
 
 
+def operator_status_ruling_decision(run: "RunDir", task_id: str,
+                                    target_status: str, vigilant: bool,
+                                    justification: str = "") -> dict:
+    """v0.38 C.1: the engine's authoritative answer to "would an operator
+    status ruling moving `task_id` to `target_status` be refused right now?",
+    read from the engine's own record (never the run dir mirror) and asked of
+    the same `task_status_change_refusal` `apply_task_status_change` applies.
+    Writes nothing and emits nothing. `GET /tasks/{id}/status-ruling` serves
+    it so `ralphctl amend --status` can ask a live engine when the record is
+    held root-owned and unreadable from the host.
+
+    Returns `{"taskId", "status", "current", "allowed", "reason"}`; `current`
+    is `None` and `allowed` False (reason `"no matching task"`) for an id the
+    record does not hold. A ruling to the status the task already holds is
+    allowed (the applier's silent no-op)."""
+    rows = run.read_tasks().get("tasks", [])
+    task = next((t for t in rows if isinstance(t, dict)
+                 and str(t.get("id")) == str(task_id)), None)
+    out = {"taskId": task_id, "status": target_status}
+    if task is None:
+        return {**out, "current": None, "allowed": False,
+                "reason": "no matching task"}
+    current = task.get("status", "pending")
+    refusal = task_status_change_refusal(
+        current, target_status, vigilant, source="operator",
+        justification=justification,
+        cure_reopened=str(task_id) in (
+            run.read_status().get("preCureStatuses") or {}))
+    return {**out, "current": current, "allowed": refusal is None,
+            "reason": refusal or ""}
+
+
 def apply_task_status_change(run: "RunDir", task_id: str, target_status: str,
                              vigilant: bool, *, source: str,
                              reason: str = "", file: str | None = None,

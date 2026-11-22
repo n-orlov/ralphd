@@ -56,7 +56,7 @@ code-derived, not hand-maintained: `tests/test_route_inventory.py`'s
 
 **Observation routes** (never gated by `control_token`; an iteration may
 read all of these): `GET /healthz`, `GET /version`, `GET /status`,
-`GET /tasks`, `GET /prd`, `GET /notes`, `GET /iterations`,
+`GET /tasks`, `GET /tasks/{task_id}/status-ruling`, `GET /prd`, `GET /notes`, `GET /iterations`,
 `GET /iterations/{n}`, `GET /iterations/{n}/output`, `GET /logs`,
 `GET /events`, `GET /artifacts` and `GET /artifacts/{path}`, `GET /config`,
 `GET /config/prompts`, `GET /config/skills`, `GET /config/skills/{name}`,
@@ -694,6 +694,18 @@ never disagree about which text is "the PRD".
 
 ### `GET /notes`
 `text/markdown` — current `notes.md` handoff notes.
+
+### `GET /tasks/{task_id}/status-ruling`
+Read-only (an observation route): would an operator status ruling for this
+task be refused right now? Query: `status` (required, an operator-ruleable
+status, else `422`) and `reason` (optional, the justification a `failed ->
+skipped` ruling needs). The engine reads its own authoritative record and asks
+the same `state.task_status_change_refusal` it applies a recorded ruling with,
+so the answer is the engine's own: `{"taskId", "status", "current", "allowed",
+"reason"}`, where `reason` is `""` when allowed and the refusal's text
+otherwise. An id the record does not hold answers `200` with `current: null`.
+It writes nothing and emits nothing. `ralphctl amend --status` calls it when
+the host cannot read `record/` (docs/cli.md).
 
 ### `GET /iterations`
 Array of every iteration's `meta.json` (number, phase, approach, model, timestamps,

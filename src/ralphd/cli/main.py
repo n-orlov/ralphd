@@ -6496,6 +6496,38 @@ def _amend_authoritative_task(run_id: str, task_id: str) -> tuple[str, dict | No
     return "ok", None
 
 
+def _amend_engine_decision(args, reason: str) -> tuple[str | None, str]:
+    """The live engine's own answer to "is this status ruling refused?",
+    via the read-only `GET /tasks/<id>/status-ruling` (the engine reads its
+    own record and asks `state.task_status_change_refusal`). Returns
+    `(current_status, refusal)` with `refusal == ""` when allowed (`current_status` None: the record holds no such task). Any way of
+    not getting that answer (no recorded API, unreachable, an engine without
+    the route, a malformed body) exits non-zero with nothing recorded: a
+    ruling is never accepted on a decision nobody authoritative made."""
+    path = (f"/tasks/{urllib.parse.quote(str(args.task_id), safe='')}"
+            f"/status-ruling?status={urllib.parse.quote(args.status, safe='')}"
+            f"&reason={urllib.parse.quote(reason or '', safe='')}")
+    unavailable = (
+        f"the authoritative task record "
+        f"({task_record_dir(args.run_id) / 'tasks.json'}) cannot be read from "
+        "this host user (a live run holds record/ root-owned until its "
+        "container exits) and the run's engine did not supply a decision "
+        "for this status ruling; nothing was recorded. Retry once the "
+        "engine is reachable, or after the run has exited and released the "
+        "record")
+    try:
+        res = api(args.run_id, "GET", path, timeout=10)
+    except SystemExit as e:
+        die(e.code if isinstance(e.code, int) and e.code else 4, unavailable)
+    if (not isinstance(res, dict) or not isinstance(res.get("allowed"), bool)
+            or not isinstance(res.get("current"), (str, type(None)))):
+        die(4, unavailable)
+    if res["current"] is None:
+        return None, ""   # the record holds no such task (`--force`)
+    return res["current"], "" if res["allowed"] else str(
+        res.get("reason") or "refused by the engine")
+
+
 def _amend_status_door_check(args, reason: str) -> None:
     """v0.38 C.1: refuse an operator status ruling the engine would refuse
     when it applies it, before any ruling file is written. Asks the engine's
@@ -6506,21 +6538,18 @@ def _amend_status_door_check(args, reason: str) -> None:
     treats it as a no-op).
 
     When the record exists but cannot be read (a live container holds it
-    root-owned), there is no authoritative status to check against: the
-    ruling is recorded unchecked and this says so. The mirror is not
-    consulted -- refusing a legal ruling on a stale or agent-edited mirror
-    is worse than deferring to the engine, whose apply-time refusal emits
-    `amendment.refused` and shows in `amend --list` and `status` (C.2)."""
+    root-owned), the decision is the live engine's: it is asked through
+    `GET /tasks/<id>/status-ruling` and its reason is shown on a refusal. If
+    the engine cannot answer, the command fails and records nothing. The run
+    dir's mirror is never consulted -- it is agent-writable and may be stale."""
     state, task = _amend_authoritative_task(args.run_id, args.task_id)
     if state == "unreadable":
-        print(f"ralphctl: the authoritative task record "
-              f"({task_record_dir(args.run_id) / 'tasks.json'}) cannot be "
-              "read from this host user (a live run holds record/ root-owned "
-              "until its container exits), so this status ruling is recorded "
-              "UNCHECKED; the engine checks it when it applies it, and a "
-              "refusal shows as `refused: <reason>` in `ralphctl amend "
-              f"{args.run_id} --list` and in `ralphctl status`",
-              file=sys.stderr)
+        current, refusal = _amend_engine_decision(args, reason)
+        if refusal:
+            die(2, f"status ruling refused: task {args.task_id} is "
+                   f"{current!r} (the engine's record); {current!r} -> "
+                   f"{args.status!r} is not allowed: {refusal}; nothing was "
+                   "recorded")
         return
     if task is None:
         return

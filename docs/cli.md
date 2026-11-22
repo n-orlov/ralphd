@@ -2252,10 +2252,15 @@ run's config dir, the engine's protected copy). The run dir's `tasks.json` is a
 tasks`, the hub and the agents read. The check reads the record, never the
 mirror: the mirror is agent-writable and can lag the record, so it never decides
 a refusal. While a live container holds `record/` unreadable from the host
-(root-owned 0700 until the container exits), there is no authoritative status
-to check against, so the ruling is recorded **unchecked** and `amend` says so
-on stderr; the engine checks it when it applies it, and a refusal then shows
-as described next. A run with no `record/` mount (started before the mount
+(root-owned 0700 until the container exits), the host has no authoritative
+status to check against, so it asks the live engine
+(`GET /tasks/<id>/status-ruling`, read-only): the engine reads its own record,
+applies the same legality check, and an illegal ruling exits `2` with the
+engine's reason and no ruling file, exactly as when the host reads the record.
+If the engine cannot supply that decision (no API recorded, unreachable, an
+older engine without the route, an unusable answer) `amend` fails with a
+non-zero exit (`4` unreachable) and records **nothing**; retry once the engine
+answers or the container has exited and released `record/`. A run with no `record/` mount (started before the mount
 existed) is checked against the record the engine keeps in the run dir's
 `.tasks-protected/`, or against the run dir's `tasks.json` when that is the
 only record the run has.

@@ -831,7 +831,10 @@ def test_amend_never_calls_docker_or_the_http_api(monkeypatch):
     """`amend` is host-only by design -- source-level check that `cmd_amend`
     never references `docker`/`DOCKER`/`sh(`/the `api()` helper anywhere in
     its body, since a subprocess-boundary spy cannot see into the separate
-    `ralphctl` process the black-box tests above spawn."""
+    `ralphctl` process the black-box tests above spawn. (The one engine
+    question `amend --status` may ask, when the host cannot read `record/`,
+    lives in `_amend_engine_decision`, outside this body; the covering nodes
+    are in tests/test_amend_status_at_the_door.py.)"""
     import inspect
 
     from ralphd.cli import main as main_mod

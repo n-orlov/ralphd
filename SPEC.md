@@ -3315,7 +3315,9 @@ authoritative record (`~/.ralphd/configs/<run>/record/tasks.json`; the run dir's
 `tasks.json` is its mirror and never decides a refusal) when it records a
 ruling, and refuses an illegal one with exit 2, the engine's reason and no
 ruling file; while a live run holds the record unreadable from the host, the
-ruling is recorded unchecked and `amend` says so; a ruling the engine
+live engine decides instead (`GET /tasks/{task_id}/status-ruling`, read-only,
+the same legality check against the engine's own record), and when the engine
+cannot supply that decision `amend` fails with nothing recorded; a ruling the engine
 refuses later, because the task moved, emits `amendment.refused` and stays
 visible in `ralphctl amend <run> --list` (`refused: <reason>`) and `ralphctl
 status` until a later ruling for that task is applied -- later in recording
@@ -5664,6 +5666,7 @@ exists asks this route rather than probing.
 | `GET` | `/tasks` | the task list as recorded on disk, plus the `tasksStale`/`tasksSource` read contract (§5.3) |
 | `GET` | `/prd` | the PRD as markdown; `?original=true` for the pre-composite text; `404` when absent |
 | `GET` | `/notes` | the run's accumulated notes as markdown |
+| `GET` | `/tasks/{task_id}/status-ruling` | read-only: would an operator status ruling `?status=S` (with optional `?reason=`) be refused now? `{taskId, status, current, allowed, reason}` from the engine's own record and the same legality check the applier uses; `current` is `null` for an unknown id; `422` for a status an operator may not rule |
 | `GET` | `/iterations` | every iteration's `meta.json`, in order |
 | `GET` | `/iterations/{n}` | one iteration's `meta.json`; `404` when unknown |
 | `GET` | `/iterations/{n}/output` | that iteration's raw NDJSON transcript; `?tail=N`, `?follow=true`; `404` when it has no transcript |

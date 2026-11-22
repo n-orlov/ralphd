@@ -3,7 +3,7 @@
 later (the task moved after recording) stays visible.
 
 C.1 (the door): `amend <run> <task> --status S` loads the authoritative task
-record (`<config dir>/record/tasks.json`; never the run dir's mirror, not even when the record is unreadable) and asks the engine's own legality
+record (`<config dir>/record/tasks.json`; never the run dir's mirror, not even when the record is unreadable: then the live engine is asked, and if it cannot answer nothing is recorded) and asks the engine's own legality
 check (`state.task_status_change_refusal`: the transition table, the operator
 exits of A.2 and the cure-reopened guard of A.3). An illegal ruling exits 2
 with the engine's reason and writes no ruling file; every legal case is
@@ -121,39 +121,211 @@ def _deny_record(cdir: Path, how: str):
     return lambda: None
 
 
+class _RealEngine:
+    """The run's real engine (`create_app` over a real `RunDir`, production
+    code both sides) on a real loopback port: the host's `host.json` points
+    at it, so the CLI asks it exactly as it asks a live container. Its own
+    run dir holds the authoritative record; the host-side `record/` is held
+    unreadable and the registry's mirror is stale."""
+
+    def __init__(self, tmp_path: Path, tasks, *, vigilant=False,
+                 pre_cure=None):
+        import asyncio
+        import threading
+        import time
+
+        import uvicorn
+
+        from ralphd.engine.api import create_app
+        from ralphd.engine.config import JobConfig
+        from ralphd.engine.loop import LoopSupervisor
+        from ralphd.engine.state import RunDir
+        from tests.conftest import free_port
+
+        self.run = RunDir(root=tmp_path / "engine-run")
+        atomic_write_json(self.run.tasks_file, {"version": 1, "tasks": tasks})
+        if pre_cure is not None:
+            self.run.update_status(preCureStatuses=pre_cure)
+        cfg = JobConfig(run_id=RUN, vigilant=vigilant, max_approaches=3,
+                        infra_retry_backoff_s=[0.0],
+                        infra_retry_backoff_max_s=0.0)
+        loop = LoopSupervisor(cfg, self.run, tmp_path / "engine-ws")
+        self.port = free_port()
+        self.server = uvicorn.Server(uvicorn.Config(
+            create_app(cfg, self.run, loop), host="127.0.0.1",
+            port=self.port, log_level="warning"))
+        self._thread = threading.Thread(
+            target=lambda: asyncio.run(self.server.serve()), daemon=True)
+        self._thread.start()
+        deadline = time.time() + 5
+        while not getattr(self.server, "started", False):
+            assert time.time() < deadline, "engine API never came up"
+            time.sleep(0.01)
+
+    def point_host_at_it(self, rdir: Path):
+        (rdir / "host.json").write_text(json.dumps(
+            {"runId": RUN, "port": self.port,
+             "apiUrl": f"http://127.0.0.1:{self.port}"}))
+
+    def stop(self):
+        self.server.should_exit = True
+        self._thread.join(timeout=5)
+
+
+@pytest.fixture
+def live_engine(ctl, tmp_path):
+    """Seed a run whose record is unreadable from the host, whose mirror is
+    stale, and whose live engine holds the real record. Call the returned
+    function with the engine's tasks; yields `(cdir, undo)` via it."""
+    started: list = []
+
+    def make(engine_tasks, mirror_tasks, *, how="denied", vigilant=False,
+             pre_cure=None):
+        cdir, rdir = _seed(ctl, mirror_tasks, vigilant=vigilant)
+        eng = _RealEngine(tmp_path, engine_tasks, vigilant=vigilant,
+                          pre_cure=pre_cure)
+        started.append(eng)
+        eng.point_host_at_it(rdir)
+        undo = _deny_record(cdir, how)
+        started.append(undo)
+        return cdir
+
+    yield make
+    for x in started:
+        (x.stop if hasattr(x, "stop") else x)()
+
+
 @pytest.mark.parametrize("how", ["denied", "damaged"])
-def test_an_unreadable_record_never_lets_the_mirror_refuse_a_legal_ruling(
-        ctl, how):
-    # record: petitioned (petitioned -> skipped is a legal operator exit);
-    # mirror: pending (pending -> skipped would be refused). The mirror is
-    # agent-writable and may be stale, so it must not decide the ruling.
-    cdir, _ = _seed(ctl, [_task("petitioned")], mirror=[_task("pending")])
-    undo = _deny_record(cdir, how)
+def test_a_denied_record_and_a_stale_mirror_still_refuse_an_illegal_ruling_with_the_engines_reason(
+        ctl, live_engine, how):
+    # Engine's record: completed (completed -> pending is illegal). The
+    # mirror is stale (pending): were it believed, the ruling would be
+    # allowed. The host cannot read the record, so the engine decides.
+    cdir = live_engine([_task("completed")], [_task("pending")], how=how)
+    res = ctl.run("amend", RUN, "001", "--status", "pending", "again")
+    assert res.returncode == 2, (res.stdout, res.stderr)
+    assert ILLEGAL_REASON in res.stderr and "'completed'" in res.stderr
+    assert "nothing was recorded" in res.stderr
+    assert _ruling_files(cdir) == []
+
+
+def test_a_denied_record_never_lets_a_stale_mirror_refuse_a_legal_ruling(
+        ctl, live_engine):
+    # Engine: petitioned (-> skipped is a legal operator exit, A.2); the
+    # mirror says pending (pending -> skipped would be refused).
+    cdir = live_engine([_task("petitioned")], [_task("pending")])
+    res = ctl.run("amend", RUN, "001", "--status", "skipped", "moot")
+    assert res.returncode == 0, (res.stdout, res.stderr)
+    assert len(_ruling_files(cdir)) == 1
+
+
+@pytest.mark.parametrize("vigilant", [False, True])
+def test_a_denied_record_records_the_legal_a3_ruling_on_a_cure_reopened_task(
+        ctl, live_engine, vigilant):
+    # The engine holds the pre-cure map, the mirror's status.json does not.
+    cdir = live_engine([_task("pending")], [_task("completed")],
+                       vigilant=vigilant, pre_cure={"001": "validated"})
+    res = ctl.run("amend", RUN, "001", "--status", "validated", "restore it")
+    assert res.returncode == 0, (res.stdout, res.stderr)
+    assert len(_ruling_files(cdir)) == 1
+
+
+def test_a_denied_record_refuses_the_same_ruling_without_the_cure_reopen(
+        ctl, live_engine):
+    cdir = live_engine([_task("pending")], [_task("completed")],
+                       vigilant=True)
+    res = ctl.run("amend", RUN, "001", "--status", "validated", "restore it")
+    assert res.returncode == 2, (res.stdout, res.stderr)
+    assert "cure-reconciliation" in res.stderr
+    assert _ruling_files(cdir) == []
+
+
+def test_a_denied_record_applies_the_vigilant_table_the_engine_runs_under(
+        ctl, live_engine):
+    # `awaiting-validation -> validated` is a vigilant-only edge: the host
+    # has no way to read job.yaml's variant off the engine, the engine's own
+    # config decides.
+    cdir = live_engine([_task("awaiting-validation")], [_task("pending")],
+                       vigilant=False)
+    res = ctl.run("amend", RUN, "001", "--status", "validated", "ok")
+    assert res.returncode == 2, (res.stdout, res.stderr)
+    assert _ruling_files(cdir) == []
+
+
+def test_a_denied_record_without_a_reachable_engine_records_nothing(ctl):
+    # No host.json at all: nobody can supply a decision.
+    cdir, _ = _seed(ctl, [_task("petitioned")])
+    undo = _deny_record(cdir, "denied")
     try:
         res = ctl.run("amend", RUN, "001", "--status", "skipped", "moot")
     finally:
         undo()
-    assert res.returncode == 0, (res.stdout, res.stderr)
-    assert "UNCHECKED" in res.stderr
-    assert len(_ruling_files(cdir)) == 1
+    assert res.returncode != 0, (res.stdout, res.stderr)
+    assert "nothing was recorded" in res.stderr
+    assert _ruling_files(cdir) == []
 
 
-@pytest.mark.parametrize("how", ["denied", "damaged"])
-def test_an_unreadable_record_records_the_ruling_unchecked_and_says_so(
-        ctl, how):
-    # Mirror and record agree on a status the ruling is illegal from: with
-    # the record unreadable there is no authoritative status to refuse on,
-    # so the ruling is recorded and the engine's apply-time check (C.2's
-    # `amendment.refused`) is named as what decides it.
-    cdir, _ = _seed(ctl, [_task("completed")])
-    undo = _deny_record(cdir, how)
+def test_a_denied_record_with_a_dead_engine_api_records_nothing(ctl):
+    from test_cli_ui import StubEngineApi, _write_run_with_api
+    cdir, _ = _seed(ctl, [_task("petitioned")])
+    engine = StubEngineApi()
+    _write_run_with_api(ctl.registry, "tmp-unused", engine, state="running")
+    engine.close()  # the recorded apiUrl now refuses connections
+    (ctl.registry / "runs" / RUN / "host.json").write_text(json.dumps(
+        {"runId": RUN, "apiUrl": f"http://127.0.0.1:{engine.port}"}))
+    undo = _deny_record(cdir, "denied")
     try:
-        res = ctl.run("amend", RUN, "001", "--status", "pending", "again")
+        res = ctl.run("amend", RUN, "001", "--status", "skipped", "moot")
     finally:
         undo()
-    assert res.returncode == 0, (res.stdout, res.stderr)
-    assert "UNCHECKED" in res.stderr and "--list" in res.stderr
-    assert len(_ruling_files(cdir)) == 1
+    assert res.returncode == 4, (res.stdout, res.stderr)
+    assert _ruling_files(cdir) == []
+
+
+def test_a_denied_record_with_an_engine_lacking_the_route_records_nothing(ctl):
+    from test_cli_ui import StubEngineApi, _write_run_with_api
+    cdir, _ = _seed(ctl, [_task("petitioned")])
+    engine = StubEngineApi()   # answers 404 for every route it does not know
+    try:
+        _write_run_with_api(ctl.registry, "tmp-unused", engine, state="running")
+        (ctl.registry / "runs" / RUN / "host.json").write_text(json.dumps(
+            {"runId": RUN, "apiUrl": f"http://127.0.0.1:{engine.port}"}))
+        undo = _deny_record(cdir, "denied")
+        try:
+            res = ctl.run("amend", RUN, "001", "--status", "skipped", "moot")
+        finally:
+            undo()
+    finally:
+        engine.close()
+    assert res.returncode != 0, (res.stdout, res.stderr)
+    assert "nothing was recorded" in res.stderr
+    assert _ruling_files(cdir) == []
+
+
+def test_the_engines_status_ruling_route_decides_and_writes_nothing(tmp_path):
+    eng = _RealEngine(tmp_path, [_task("completed"), _task("failed", "002")])
+    try:
+        before = (eng.run.tasks_file.read_bytes(),
+                  len(list(eng.run.root.rglob("*"))))
+        import urllib.request
+
+        def ask(task, status, reason=""):
+            url = (f"http://127.0.0.1:{eng.port}/tasks/{task}/status-ruling"
+                   f"?status={status}&reason={reason}")
+            with urllib.request.urlopen(url, timeout=5) as r:
+                return json.loads(r.read())
+
+        no = ask("001", "pending")
+        assert (no["allowed"], no["current"], no["reason"]) == (
+            False, "completed", ILLEGAL_REASON)
+        assert ask("001", "completed")["allowed"] is True   # no-op
+        assert ask("002", "skipped")["allowed"] is False    # no justification
+        assert ask("002", "skipped", "moot")["allowed"] is True
+        assert ask("404", "skipped")["current"] is None
+        assert before == (eng.run.tasks_file.read_bytes(),
+                          len(list(eng.run.root.rglob("*"))))
+    finally:
+        eng.stop()
 
 
 def test_without_a_record_mount_the_door_reads_the_run_dirs_protected_record(

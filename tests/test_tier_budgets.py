@@ -1024,8 +1024,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # the_door.py (an unreadable record never lets the mirror refuse, x2
     # ways each for a legal and an illegal ruling; one fallback node became
     # a degrade-layout node), in both tiers -> fast 9150, smoke 7369.
-    "fast": {"tests": 9150, "modules": 572},
-    "smoke": {"tests": 7369, "modules": 445},
+    # v0.38 task cure-01-01-2: net +7 tests in tests/test_amend_status_at_
+    # the_door.py (an unreadable record asks the live engine; no engine
+    # answer records nothing; the engine's status-ruling route; the four
+    # unchecked-recording nodes were rewritten), in both tiers -> fast 9157,
+    # smoke 7376.
+    "fast": {"tests": 9157, "modules": 572},
+    "smoke": {"tests": 7376, "modules": 445},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

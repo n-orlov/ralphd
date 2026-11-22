@@ -44,7 +44,9 @@ from .skills import (
     tar_dir,
     verify_placement_and_report,
 )
+from .transitions import OPERATOR_RULEABLE_TASK_STATUSES
 from .state import (
+    operator_status_ruling_decision,
     settled_petitioned_task_ids,
     unpause_refusal,
     STEERING_GLOB,
@@ -254,6 +256,22 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
             res, settled=settled_petitioned_task_ids(
                 run, res.tasks, config_root=CONFIG_DIR,
                 approach=run.current_approach())).payload
+
+    @app.get("/tasks/{task_id}/status-ruling")
+    async def task_status_ruling(task_id: str, status: str,
+                                 reason: str = ""):
+        # v0.38 C.1: the engine's authoritative answer to "would this
+        # operator status ruling be refused?", for `ralphctl amend --status`
+        # when the record is held root-owned and unreadable from the host.
+        # Read-only: nothing is written or emitted, and the same
+        # `task_status_change_refusal` the applier uses decides it.
+        if status not in OPERATOR_RULEABLE_TASK_STATUSES:
+            raise problem(422, "invalid status",
+                          f"{status!r} is not an operator-ruleable status")
+        # An id the record does not hold answers 200 with `current: null`
+        # (`ralphctl amend --force` records a ruling for such an id).
+        return operator_status_ruling_decision(
+            run, task_id, status, bool(cfg.vigilant), reason)
 
     @app.get("/prd")
     async def prd(original: bool = False):
