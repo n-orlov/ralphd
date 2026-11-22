@@ -143,6 +143,10 @@ def test_petition_held_no_task_bound_dispatches_the_open_phase_review(tmp_path):
              {"id": "003", "title": "t3", "status": "pending", "phase": "one",
               "dependsOn": ["001"]}]
     sup, review = _build(tmp_path, tasks, [_reply(verdict="no_verdict")])
+    # v0.38 A.5: a hold the engine cannot settle parks `petition_hold`; this
+    # edge is now taken for a hold on a state a deferred VERIFIED already
+    # judged (B.2), which the review state key reports as unchanged.
+    sup._review_key_unchanged = lambda approach, key: True
     outcome = asyncio.run(sup._step_worker())
     _assert_redirected(sup, review, outcome, "petition_held_no_task_bound")
 

@@ -1495,7 +1495,7 @@ the run; the run goes on by itself, or ends with a named cause.
 | **Rate-limit ceiling** (a rate-limit wait that would take the run's rate-limit waiting past `rate_limit_max_wait_s`) | The wait does not start; `rate_limit_ceiling_reached` is emitted and the notifier names the window's reset | `failed`, with the rate-limit-ceiling `ending` (§5.2's identifier table); `ralphctl resume <run> --rate-limit-wait +N` raises the ceiling and resumes |
 | **Provider refusal** (a refused iteration, §8.2) | Not retried, the outage budget untouched; the provider-refusal event is emitted with the scrubbed provider message | `failed`, with the refusal `ending` (§5.2's identifier table); the `reason` names `PUT /config/llm` (fix the LLM profile or credentials) and `ralphctl resume` |
 | **A secret in a commit** (the task-boundary or hook commit scan hits) | The assigned task is faulted and the run parks (§4.6) | `awaiting_input`, `inputQuestion.kind: secret` -- a non-findings park (the petition hold and the unchanged-review park, below, are the other two); `ralphctl answer <run> --secret-handled` |
-| **A held petitioned task the prompt adjudication did not settle** (every actionable task waits only on unsettled `petitioned` tasks; the one episode returned no adjudication or left the hold unchanged) | The run parks; it does not route to the final review | `awaiting_input`, `inputQuestion.kind: petition_hold`, never expires; `ralphctl amend <run> --waive <task>` or `ralphctl amend <run> <task> --status validated\|skipped`, then `ralphctl answer <run>` |
+| **A held petitioned task the prompt adjudication did not settle** (every actionable task waits only on unsettled `petitioned` tasks, directly or through a chain of dependents; the one episode returned no adjudication or left the hold unchanged, or there was no open petition to adjudicate) | The run parks; it does not route to the final review | `awaiting_input`, `inputQuestion.kind: petition_hold`, never expires; `ralphctl amend <run> --waive <task>` or `ralphctl amend <run> <task> --status validated\|skipped`, then `ralphctl answer <run>` |
 | **A final review that would judge a state a deferred VERIFIED already judged** (the review state key -- workspace HEAD plus the sorted `(task id, status, settled)` triples -- equals the one stored with the earlier VERIFIED that deferred to the worker) and something still blocks terminal success | The review hat is not dispatched; the run parks | `awaiting_input`, `pauseReason: verified_unchanged`, `inputQuestion.kind: verified_unchanged`, never expires; change something (an `amend` ruling, a commit), then `ralphctl answer <run>`; an answer with nothing changed parks again |
 | **A final peer verdict gate that would judge a state its own earlier usable verdict already judged** (the review state key equals the `gateJudged` key stored with that verdict, and the approach's cure-round allowance is the one recorded with it) | The gate hat is not dispatched; the run parks | `awaiting_input`, `pauseReason: verified_unchanged`, `inputQuestion.judge: verdict_gate`, never expires; change something (an `amend` ruling, a commit), then `ralphctl answer <run>`, which resumes at `verdict_gate`; an answer with nothing changed parks again |
 
@@ -2116,8 +2116,11 @@ The second is the petition hold (v0.38 A.5):
 `LoopSupervisor._park_for_petition_hold` writes `pauseReason: petition_hold`
 and `inputQuestion` with `kind: petition_hold`, `trigger: petition_hold`,
 `expiresAt: null` and `onTimeout: never` when the prompt adjudication episode
-left a held petitioned task unsettled; `ralphctl answer <run>` releases it once
-an `amend` waiver or status ruling is recorded.
+left a held petitioned task unsettled, or found no open petition to adjudicate;
+the hold covers every actionable task that waits on an unsettled `petitioned`
+task directly or through a chain of dependents (`state.task_blocked_by_chain`).
+`ralphctl answer <run>` releases it once an `amend` waiver or status ruling is
+recorded.
 
 The third is the unchanged-review park (v0.38 B.1/B.2). Every final-review
 dispatch, and every retry attempt inside one (an attempt the engine cut short, a

@@ -11196,8 +11196,8 @@ class LoopSupervisor:
                 # still gets its normal chance to report `plan_complete`/
                 # a fresh petition/etc.), only the STAGNATION bookkeeping
                 # is exempted.
-                blocked_incl_petitioned = state.task_blocked_by(
-                    tasks_before.get("tasks", []), include_petitioned=True,
+                blocked_incl_petitioned = state.task_blocked_by_chain(
+                    tasks_before.get("tasks", []),
                     settled=settled_petitioned)
                 actionable_ids = {
                     str(t["id"]) for t in tasks_before.get("tasks", [])
@@ -11247,9 +11247,8 @@ class LoopSupervisor:
                         await self._maybe_run_midrun_adjudication_episode())
                     if episode_ran:
                         after_doc = self.run.read_tasks()
-                        after_blocked = state.task_blocked_by(
+                        after_blocked = state.task_blocked_by_chain(
                             after_doc.get("tasks", []),
-                            include_petitioned=True,
                             settled=self._settled_petitioned_ids(after_doc))
                         after_actionable = {
                             str(t["id"]) for t in after_doc.get("tasks", [])
@@ -11285,6 +11284,19 @@ class LoopSupervisor:
                         # operator and do not route to the final review.
                         self._park_for_petition_hold(
                             after_doc, after_blocked, after_hold)
+                        continue
+                    if self.budget_left() and not self._review_key_unchanged(
+                            approach, self._review_state_key()):
+                        # A.5: nothing could be adjudicated (no petition on
+                        # file for the held task, say), so the hold is
+                        # unsettled and unchanged. Park for the operator
+                        # instead of spending a no-task worker iteration
+                        # or reaching the final review on it.
+                        self._park_for_petition_hold(
+                            tasks_before, blocked_incl_petitioned,
+                            self._unsettled_petitioned_among(
+                                tasks_before, held_task_ids,
+                                settled_petitioned) or held_task_ids)
                         continue
                 # v0.20 task 022 (PRD requirement C.1, #156): the sleep-
                 # and-wake mechanism task 021's own scheduler docstring
@@ -15484,9 +15496,8 @@ class LoopSupervisor:
         blocks each: the dead/petitioned ancestors, else its own status."""
         doc = self.run.read_tasks()
         tasks = doc.get("tasks") or []
-        blocked = state.task_blocked_by(
-            tasks, include_petitioned=True,
-            settled=self._settled_petitioned_ids(doc))
+        blocked = state.task_blocked_by_chain(
+            tasks, settled=self._settled_petitioned_ids(doc))
         held = {str(t.get("id")): t for t in
                 (self._steering_origin_outstanding()
                  + self._review_cure_origin_outstanding())}

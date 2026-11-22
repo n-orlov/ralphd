@@ -7443,6 +7443,51 @@ def task_blocked_by(tasks: list, *,
     return out
 
 
+def task_blocked_by_chain(tasks: list, *, settled=()) -> dict[str, list[str]]:
+    """`task_blocked_by(include_petitioned=True)` extended through dependency
+    CHAINS (v0.38 A.4, #306): a task that depends, however many hops away,
+    on a task the one-hop map holds -- an unsettled `petitioned` ancestor or
+    a dead/doomed one -- is held as well, because the task in between can
+    never complete either.
+
+    A direct entry keeps its own causes. A chain member's causes are the
+    causes of the held tasks it depends on, i.e. the petitioned (or dead)
+    ROOTS, so a reader names the held task rather than an intermediate
+    pending one. A finished task (a sink) and a `failed`/`skipped` task
+    (a source of doom, never a key) are never added. The display surfaces
+    keep the one-hop `task_blocked_by`; the engine's hold detection reads
+    this one.
+    """
+    out = task_blocked_by(tasks, include_petitioned=True, settled=settled)
+    depends_on: dict[str, list[str]] = {}
+    status_by_id: dict[str, str] = {}
+    order: list[str] = []
+    for t in tasks:
+        if not isinstance(t, dict) or t.get("id") in (None, ""):
+            continue
+        tid = str(t["id"])
+        order.append(tid)
+        status_by_id[tid] = t.get("status", "pending")
+        raw = t.get("dependsOn")
+        depends_on[tid] = ([str(d) for d in raw]
+                           if isinstance(raw, list) else [])
+    changed = True
+    while changed:
+        changed = False
+        for tid in order:
+            status = status_by_id[tid]
+            if (tid in out or status in TASK_DEPENDENCY_DEAD_STATUSES
+                    or task_dependency_satisfied(tid, status, settled)):
+                continue
+            roots: set[str] = set()
+            for dep in depends_on.get(tid, []):
+                roots.update(out.get(dep, ()))
+            if roots:
+                out[tid] = sorted(roots)
+                changed = True
+    return out
+
+
 # Task 021: the field name under which the derived blocked-by map is
 # published -- the exact sibling of `TASK_FAILURE_KINDS_FIELD` above, same
 # reasoning: `GET /tasks`, `ralphctl tasks --json` and the hub's run-detail

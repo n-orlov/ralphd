@@ -566,9 +566,14 @@ petition_hold`, never expires) and does not route to the final review. The
 question names each petitioned task, its petition, its dependents and the two
 operator answers, `ralphctl amend <run> --waive <task>` and `ralphctl amend <run>
 <task> --status validated|skipped`; once the ruling is recorded, `ralphctl answer
-<run>` releases the park and the worker re-reads the plan. A hold with no open
-petition to adjudicate keeps the earlier bound: three no-task passes, then review
-(`petition_held_no_task_bound`).
+<run>` releases the park and the worker re-reads the plan. The hold reaches
+through dependency chains: a task that waits on a task that waits on a
+`petitioned` one is held too (the engine reads the hold through
+`state.task_blocked_by_chain`; the display surfaces keep the one-hop map). A hold
+with no open petition to adjudicate (none on file) cannot be settled by the judge
+either, so it parks the same way, never through a no-task worker iteration or the
+final review; the one exception is a hold on a state a deferred VERIFIED already
+judged, which goes to `review` and parks `verified_unchanged` (B.2).
 
 The same state is never judged twice. Each final-review dispatch, and each retry
 attempt inside one, records a review state key in the approach's state (`status.json` `reviewStateKeys`): the workspace

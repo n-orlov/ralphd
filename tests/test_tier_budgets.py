@@ -1050,8 +1050,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.38 task cure-01-01-3 retry: +10 tests in that same module (the
     # configured-notifier POST counts and the doc overclaim guards), in both
     # tiers -> fast 9285/575, smoke 7504/448.
-    "fast": {"tests": 9285, "modules": 575},
-    "smoke": {"tests": 7504, "modules": 448},
+    # v0.38 task cure-01-01-4: +7 tests / +1 module (tests/test_petition_
+    # hold_chain_and_unfiled.py: chain holds, a hold beside a doomed task, an
+    # unfiled petition), in both tiers -> fast 9292/576, smoke 7511/449.
+    "fast": {"tests": 9292, "modules": 576},
+    "smoke": {"tests": 7511, "modules": 449},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

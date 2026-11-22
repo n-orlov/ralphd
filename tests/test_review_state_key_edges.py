@@ -143,8 +143,17 @@ def test_an_unchanged_review_state_key_parks_on_every_worker_to_review_edge(
 
     # first visit: the worker takes the edge, the review judges the state
     # and, with something still blocking terminal success, defers
-    first = _bounded(sup._step_worker())
-    assert first == ("advance", "review", edge)
+    if edge == "petition_held_no_task_bound":
+        # v0.38 A.5 rewrote this edge's first visit: a hold the engine cannot
+        # settle parks `petition_hold` before any review, so this edge is
+        # only taken for a hold on a state a deferred VERIFIED already
+        # judged. The first judgement is therefore dispatched directly; the
+        # second visit below is the edge itself (covered, for the first
+        # visit's park, by tests/test_petition_hold_chain_and_unfiled.py).
+        pass
+    else:
+        first = _bounded(sup._step_worker())
+        assert first == ("advance", "review", edge)
     deferred = _bounded(sup._step_review())
     assert deferred[:2] == ("advance", "worker"), deferred
     assert runner.calls["review"] == 1
