@@ -282,3 +282,75 @@ def test_an_equal_key_with_nothing_holding_the_verified_reuses_it(tmp_path):
     assert out == ("done", "succeeded")
     assert runner.calls["review"] == 1, "the review hat was not dispatched"
     assert '"review_verdict_reused"' in (sup.run.root / "events.jsonl").read_text()
+
+
+def _truncated(sup, prompt):
+    """A reply that ended `stopReason: length` with no text: re-asked."""
+    r = IterationResult(exit_code=0)
+    r.final_text = ""
+    r.output_truncated = True
+    r.duration_s = 1.0
+    r.usage = {"input": 1, "output": 1, "totalTokens": 2}
+    return r
+
+
+def _interrupted(sup, prompt):
+    """An attempt the engine cut short: the review self-loops in place."""
+    r = IterationResult(exit_code=-2, interrupted=True)
+    r.final_text = ""
+    r.duration_s = 1.0
+    return r
+
+
+def _first_attempt_then_commit(shape):
+    def attempt(s, prompt):
+        result = shape(s, prompt)
+        s._head = "d" * 40          # a commit lands before the retry
+        return result
+    return attempt
+
+
+@pytest.mark.parametrize("shape", [_truncated, _interrupted],
+                         ids=["truncated_reply", "interrupted_attempt"])
+def test_a_retried_review_binds_its_verified_to_the_retry_s_head(
+        tmp_path, shape):
+    """The key is recorded per ATTEMPT: when the first attempt yields no
+    verdict and the retry returns VERIFIED on a newer HEAD, the deferral
+    names the retry's HEAD. With nothing changed after it, the next entry
+    into review parks `verified_unchanged` instead of judging that HEAD
+    again."""
+    sup, runner = _supervisor(tmp_path)
+    first_head = sup._head
+    runner.handlers["review"] = [_first_attempt_then_commit(shape),
+                                 _verified, _verified]
+
+    assert _step_review(sup)[2] == "steering_pending_at_verified"
+    assert runner.calls["review"] == 2, "the first attempt was retried"
+    entry = sup.run.read_status()["reviewStateKeys"]["1"]
+    assert entry["verifiedDeferred"]["key"]["head"] == "d" * 40 != first_head
+    assert entry["verifiedDeferred"]["key"] == entry["dispatched"]
+
+    out = _step_review(sup)
+
+    assert out == ("advance", "paused", "verified_unchanged")
+    assert runner.calls["review"] == 2, "the judged HEAD is not re-judged"
+
+
+@pytest.mark.parametrize("shape", [_truncated, _interrupted],
+                         ids=["truncated_reply", "interrupted_attempt"])
+def test_the_first_attempt_s_unjudged_head_is_a_changed_key(tmp_path, shape):
+    """The converse: the HEAD only the unanswered first attempt saw was never
+    judged, so returning to it dispatches the review normally."""
+    sup, runner = _supervisor(tmp_path)
+    first_head = sup._head
+    runner.handlers["review"] = [_first_attempt_then_commit(shape),
+                                 _verified, _verified]
+    assert _step_review(sup)[2] == "steering_pending_at_verified"
+    assert runner.calls["review"] == 2
+
+    sup._head = first_head
+    out = _step_review(sup)
+
+    assert runner.calls["review"] == 3, "the unjudged HEAD is judged"
+    assert out[:2] == ("advance", "worker")
+    assert sup.run.read_status().get("pauseReason") != "verified_unchanged"

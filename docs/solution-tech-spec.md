@@ -570,12 +570,12 @@ operator answers, `ralphctl amend <run> --waive <task>` and `ralphctl amend <run
 petition to adjudicate keeps the earlier bound: three no-task passes, then review
 (`petition_held_no_task_bound`).
 
-The same state is never judged twice. Each final-review dispatch records a review
-state key in the approach's state (`status.json` `reviewStateKeys`): the workspace
+The same state is never judged twice. Each final-review dispatch, and each retry
+attempt inside one, records a review state key in the approach's state (`status.json` `reviewStateKeys`): the workspace
 HEAD sha plus the sorted `(task id, status, settled)` triples over every task of the
 plan. A VERIFIED verdict that defers to the worker ("VERIFIED verdict deferring")
-stores the key that dispatch was made on with the verdict (never a key re-read when
-the verdict arrives). Before any final-review dispatch on that approach, from any
+stores, with the verdict, the key the attempt that returned it was dispatched on
+(never the first attempt's, and never a key re-read when the verdict arrives). Before any final-review dispatch on that approach, from any
 edge into `review`, the engine compares the current key with the stored one, the key
 alone (a steering message consumed without moving HEAD or a task is no change); if
 they are equal it does not dispatch. The petition-held route spends no no-task

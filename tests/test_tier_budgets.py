@@ -1004,8 +1004,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.38 task 003 retry: +2 tests in tests/test_review_state_key.py (the
     # deferral stores the dispatch key; an equal key with nothing holding
     # the VERIFIED reuses it), in both tiers -> fast 9102, smoke 7321.
-    "fast": {"tests": 9102, "modules": 570},
-    "smoke": {"tests": 7321, "modules": 443},
+    # v0.38 task 003 second retry: +4 tests in tests/test_review_state_key.py
+    # (a retried review binds its VERIFIED to the retry's HEAD; the first
+    # attempt's unjudged HEAD is a changed key, two reply shapes each), in
+    # both tiers -> fast 9106, smoke 7325.
+    "fast": {"tests": 9106, "modules": 570},
+    "smoke": {"tests": 7325, "modules": 443},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

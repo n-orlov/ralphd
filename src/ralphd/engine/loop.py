@@ -14168,6 +14168,12 @@ class LoopSupervisor:
             # one thinking step lower, exactly as the verdict_gate's does.
             extra = (extra + "\n\n" if extra else "") + retry_wording
         self._judge_retry_step_down = step_down
+        if self._phase_review_scope is None:
+            # v0.38 B.1: every final-review attempt records the key it is
+            # dispatched on, so the verdict this attempt returns is bound to
+            # the state this attempt saw.
+            self._record_review_dispatch_key(
+                self._approach, self._review_state_key())
         try:
             return await self.run_iteration(
                 "review", extra=extra,
@@ -14515,7 +14521,11 @@ class LoopSupervisor:
                 return self._reuse_verified_on_unchanged_key(
                     approach, review_key)
             return self._park_for_verified_unchanged(approach, review_key)
-        self._record_review_dispatch_key(approach, review_key)
+        # The dispatch key itself is recorded per ATTEMPT, by
+        # `_run_one_review_dispatch`: a retry (an interrupted attempt, a
+        # truncated or empty reply re-asked) judges the HEAD and task
+        # statuses as they stand when IT is dispatched, and a deferred
+        # VERIFIED must name that state, never the first attempt's.
         result = await self._run_review_iteration(approach)
         while result is not None and self._review_no_verdict:
             # #300: review produced no verdict after every retry. Not a
@@ -15387,9 +15397,10 @@ class LoopSupervisor:
         return isinstance(deferred, dict) and deferred.get("key") == key
 
     def _record_review_dispatch_key(self, approach: int, key: dict) -> None:
-        """Record the key a final-review dispatch is made on. A new dispatch
-        supersedes the remembered deferral: only the verdict this dispatch
-        returns can set one again."""
+        """Record the key a final-review attempt is dispatched on (called per
+        attempt, retries included, by `_run_one_review_dispatch`). A new
+        attempt supersedes the remembered deferral: only the verdict this
+        attempt returns can set one again."""
         self._write_review_key_entry(approach, {"dispatched": key})
 
     def _record_deferred_verified_key(
