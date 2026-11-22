@@ -233,6 +233,104 @@ def test_status_names_the_refusal_until_a_later_ruling_for_the_task_is_applied(
         "refusedRulings"] == []
 
 
+def _engine_with_pending_task(ctl, monkeypatch, *, pre_cure=None):
+    cdir, rdir = _seed(ctl, [_task("pending")], pre_cure=pre_cure)
+    monkeypatch.setattr(loop_mod, "CONFIG_DIR", cdir)
+    status = {"preCureStatuses": pre_cure} if pre_cure else None
+    sup = make_supervisor(ctl.tmp, run_id=RUN, run_root=rdir, tasks=[
+        _task("pending")], vigilant=False, status=status,
+        notifier_url="http://notifier.example/notify")
+    return sup, cdir, rdir
+
+
+def _status_clear(ctl, fname):
+    res = ctl.run("status", RUN)
+    assert res.returncode == 0, res.stderr
+    assert fname not in res.stdout, res.stdout
+    assert json.loads(ctl.run("--json", "status", RUN).stdout)[
+        "refusedRulings"] == []
+
+
+def test_status_stays_clear_when_the_engine_retries_a_superseded_ruling(
+        ctl, monkeypatch):
+    """The later ruling ends the warning for good: the engine re-attempts the
+    older ruling at every boundary, and refusing it again from the task's new
+    status does not bring the warning back."""
+    sup, cdir, rdir = _engine_with_pending_task(ctl, monkeypatch)
+    old = write_amendment(cdir, "001", "call it done", status="validated")
+    sup._apply_operator_status_rulings()
+    assert [r["file"] for r in outstanding_refused_rulings(rdir)] == [old]
+    write_amendment(cdir, "001", "hand it back", status="in-progress")
+    sup._apply_operator_status_rulings()
+    assert sup.run.read_tasks()["tasks"][0]["status"] == "in-progress"
+    # the next boundary retries `old` from in-progress, still illegal
+    sup._apply_operator_status_rulings()
+    assert sup.run.read_tasks()["tasks"][0]["status"] == "in-progress"
+    assert outstanding_refused_rulings(rdir) == []
+    assert len(_events(rdir, AMENDMENT_REFUSED_EVENT)) == 1
+    _status_clear(ctl, old)
+
+
+def test_a_refusal_logged_again_after_a_later_ruling_applied_stays_cleared(ctl):
+    """The reader alone: a refusal of an older ruling file written after a
+    later ruling for that task applied is still superseded."""
+    _cdir, rdir = _seed(ctl, [_task("in-progress")])
+    rows = [
+        {"type": AMENDMENT_REFUSED_EVENT, "file": "001-001.md",
+         "taskId": "001", "previous": "pending", "status": "validated",
+         "reason": ILLEGAL_REASON},
+        {"type": "amendment_status_applied", "file": "002-001.md",
+         "taskId": "001", "previous": "pending", "status": "in-progress",
+         "source": "operator"},
+        {"type": AMENDMENT_REFUSED_EVENT, "file": "001-001.md",
+         "taskId": "001", "previous": "in-progress", "status": "validated",
+         "reason": ILLEGAL_REASON},
+    ]
+    (rdir / "events.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in rows))
+    assert outstanding_refused_rulings(rdir) == []
+    _status_clear(ctl, "001-001.md")
+
+
+def test_an_earlier_ruling_applied_after_a_later_refusal_does_not_clear_it(ctl):
+    """An earlier ruling re-applied after a later one was refused does not
+    clear the later one: it is not a later ruling."""
+    _cdir, rdir = _seed(ctl, [_task("in-progress")])
+    rows = [
+        {"type": AMENDMENT_REFUSED_EVENT, "file": "002-001.md",
+         "taskId": "001", "previous": "pending", "status": "validated",
+         "reason": ILLEGAL_REASON},
+        {"type": "amendment_status_applied", "file": "001-001.md",
+         "taskId": "001", "previous": "pending", "status": "in-progress",
+         "source": "operator"},
+    ]
+    (rdir / "events.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in rows))
+    assert [r["file"] for r in outstanding_refused_rulings(rdir)] == [
+        "002-001.md"]
+
+
+def test_a_later_cure_reopen_ruling_clears_the_refusal(ctl, monkeypatch):
+    """A later ruling that restores a cure-reopened task (A.3) takes effect as
+    `task.un_reopened` (source operator, naming its ruling file) and ends the
+    warning about the older refused ruling."""
+    sup, cdir, rdir = _engine_with_pending_task(
+        ctl, monkeypatch, pre_cure={"001": "validated"})
+    old = write_amendment(cdir, "001", "send it to verify",
+                          status="awaiting-validation")
+    sup._apply_operator_status_rulings()
+    assert [r["file"] for r in outstanding_refused_rulings(rdir)] == [old]
+    later = write_amendment(cdir, "001", "restore it", status="validated")
+    sup._apply_operator_status_rulings()
+    sup._apply_operator_status_rulings()
+    assert sup.run.read_tasks()["tasks"][0]["status"] == "validated"
+    restored = _events(rdir, "task.un_reopened")
+    assert [(e["source"], e["file"]) for e in restored] == [
+        ("operator", later)]
+    assert outstanding_refused_rulings(rdir) == []
+    _status_clear(ctl, old)
+
+
 def test_control_status_prints_no_refusal_line_for_a_run_without_one(ctl):
     _seed(ctl, [_task("petitioned")])
     res = ctl.run("status", RUN)

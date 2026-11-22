@@ -2844,16 +2844,28 @@ UN_REOPEN_EVENT = "task.un_reopened"
 AMENDMENT_REFUSED_EVENT = "amendment.refused"
 
 
+# The events that record an operator status ruling taking effect: the generic
+# audit event, and `task.un_reopened` for the one ruling that restores a
+# cure-reopened task's pre-reopen status (PRD A.3). Both carry `file`.
+RULING_APPLIED_EVENTS = ("amendment_status_applied", UN_REOPEN_EVENT)
+
+
+def _operator_ruling_applied(ev: dict) -> bool:
+    return (ev.get("type") in RULING_APPLIED_EVENTS
+            and ev.get("source") == "operator")
+
+
 def refused_amendment_rulings(run_root: Path) -> dict[str, dict]:
     """The status rulings the engine currently refuses, keyed by ruling file
     name, read from `events.jsonl` (no live engine needed): a file's latest
-    `amendment.refused` event, unless an `amendment_status_applied` event for
-    that same file came after it (the refusal later became legal and the
-    ruling took effect). Each value is the refusal event.
+    `amendment.refused` event, unless that same file took effect after it
+    (`amendment_status_applied` or `task.un_reopened` naming the file: the
+    refusal later became legal and the ruling took effect). Each value is
+    the refusal event.
     """
     refused: dict[str, dict] = {}
     for ev in read_events(run_root, types=(
-            AMENDMENT_REFUSED_EVENT, "amendment_status_applied")):
+            AMENDMENT_REFUSED_EVENT, *RULING_APPLIED_EVENTS)):
         fname = ev.get("file")
         if not fname:
             continue
@@ -2864,23 +2876,41 @@ def refused_amendment_rulings(run_root: Path) -> dict[str, dict]:
     return refused
 
 
+def ruling_superseded(events: list[dict], fname: str, task_id) -> bool:
+    """True when an operator ruling for `task_id` recorded AFTER `fname`
+    (its ruling file sorts later, the order `amendment_entries` applies
+    them in) has taken effect -- `amendment_status_applied` or
+    `task.un_reopened` with `source: "operator"`. v0.38 C.2: such a later
+    ruling ends `ralphctl status`'s warning about `fname` for good, even
+    when the engine retries `fname` at a later boundary and refuses it
+    again."""
+    return any(_operator_ruling_applied(ev) and ev.get("taskId") == task_id
+               and (ev.get("file") or "") > fname for ev in events)
+
+
 def outstanding_refused_rulings(run_root: Path) -> list[dict]:
-    """`refused_amendment_rulings` minus every refusal whose task has had a
-    LATER operator ruling applied (v0.38 C.2: `ralphctl status` names a
-    refused ruling "until a later ruling for that task is applied"). Oldest
-    refusal first."""
+    """`refused_amendment_rulings` minus every refusal superseded by a later
+    operator ruling for the same task that took effect (v0.38 C.2:
+    `ralphctl status` names a refused ruling "until a later ruling for that
+    task is applied"). "Later" is the ruling's own order (its file name,
+    `ruling_superseded`); an applied operator event with no `file` (written
+    before rulings carried one) counts as later when it comes after the
+    refusal in the event stream. Oldest refusal first."""
+    events = read_events(run_root, types=(
+        AMENDMENT_REFUSED_EVENT, *RULING_APPLIED_EVENTS))
     live: dict[str, dict] = {}
-    for ev in read_events(run_root, types=(
-            AMENDMENT_REFUSED_EVENT, "amendment_status_applied")):
+    for ev in events:
         if ev.get("type") == AMENDMENT_REFUSED_EVENT:
             if ev.get("file"):
                 live.pop(ev["file"], None)
                 live[ev["file"]] = ev
-        elif ev.get("source") == "operator":
+        elif _operator_ruling_applied(ev):
             for f in [f for f, r in live.items()
-                      if r.get("taskId") == ev.get("taskId")]:
+                      if r.get("taskId") == ev.get("taskId")
+                      and (not ev.get("file") or ev.get("file") == f)]:
                 live.pop(f)
-    return list(live.values())
+    return [r for f, r in live.items()
+            if not ruling_superseded(events, f, r.get("taskId"))]
 
 
 def task_status_change_refusal(current: str, target_status: str,
@@ -3012,8 +3042,9 @@ def apply_task_status_change(run: "RunDir", task_id: str, target_status: str,
         task["notes"] = effective_justification
     run.write_tasks(data)
     if transitions.is_un_reopen_transition(current, target_status):
+        extra = {"file": file} if file else {}
         run.emit(UN_REOPEN_EVENT, taskId=task_id, previous=current,
-                 status=target_status, source=source, reason=reason)
+                 status=target_status, source=source, reason=reason, **extra)
     else:
         run.emit("amendment_status_applied", taskId=task_id, field="status",
                 previous=current, status=target_status, source=source,

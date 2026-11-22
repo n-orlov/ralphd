@@ -19021,6 +19021,14 @@ class LoopSupervisor:
             if key in self._status_ruling_refusals_reported:
                 continue
             self._status_ruling_refusals_reported.add(key)
+            # v0.38 C.2: a later operator ruling for this task already took
+            # effect, so this older one is superseded; retrying it (the task
+            # moved) is not a fresh refusal for the operator to act on.
+            if state.ruling_superseded(
+                    state.read_events(self.run.root,
+                                      types=state.RULING_APPLIED_EVENTS),
+                    r.get("file") or "", r.get("taskId")):
+                continue
             self.run.emit("log", message=(
                 f"operator status ruling {r.get('file')} REFUSED for task "
                 f"{r.get('taskId')}: {r.get('reason')} "

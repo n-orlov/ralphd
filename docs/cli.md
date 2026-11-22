@@ -2261,8 +2261,14 @@ shows that ruling with `refused: <reason>` ahead of its text in the `RULING`
 column (and `"refused": "<reason>"` in `--json`, `null` otherwise), and
 `ralphctl status` prints one `warning:` line per such ruling (and
 `refusedRulings` in `--json`) until a later ruling for that task is applied.
-A refused ruling whose move later becomes legal is applied and stops showing
-as refused.
+"Later" is the order rulings are recorded in (the ruling file's sequence
+number): a later ruling that takes effect, whether as `amendment_status_applied`
+or, for a cure-reopened task, as `task.un_reopened` (both carry the ruling
+`file`), ends the warning for good. The engine still re-attempts the older
+ruling at every boundary, but refusing it again from the task's new status is
+not reported and does not bring the warning back; an older ruling applied
+after a later one was refused does not end the later one's warning. A refused
+ruling whose move later becomes legal is applied and stops showing as refused.
 
 `ralphctl amend <run-id> --list`
 shows a recorded status ruling as `status  -> <status> (<reason>)` in the

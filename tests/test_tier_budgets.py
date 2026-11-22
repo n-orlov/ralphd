@@ -1016,8 +1016,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # in both tiers -> fast 9118, smoke 7337.
     # v0.38 task 005: +24 tests / +1 module (tests/test_amend_status_at_
     # the_door.py), in both tiers -> fast 9142/572, smoke 7361/445.
-    "fast": {"tests": 9142, "modules": 572},
-    "smoke": {"tests": 7361, "modules": 445},
+    # v0.38 task 005 retry: +4 tests in tests/test_amend_status_at_the_door.py
+    # (a later ruling ends the status warning for good, by ruling order, and
+    # a later cure-reopen ruling counts), in both tiers -> fast 9146, smoke
+    # 7365.
+    "fast": {"tests": 9146, "modules": 572},
+    "smoke": {"tests": 7365, "modules": 445},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
