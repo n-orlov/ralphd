@@ -787,8 +787,15 @@ def test_steering_form_submit_creates_steering_file(tmp_path, pw, live):
 
         pw.screenshot(SCREENSHOTS_DIR / "03-steering-sent.png")
     finally:
-        run.wait_terminal(timeout=60)
+        # v0.38 B.2 (#320): the review's VERIFIED defers on the pending
+        # message, the steer settles it without moving HEAD or the task, and
+        # the review is entered again on the unchanged review state key: the
+        # run parks `verified_unchanged` instead of reaching `succeeded`.
+        st = run.wait_state(("awaiting_input", "succeeded", "failed",
+                             "aborted"), timeout=60)
         server.stop()
+    assert st.get("state") == "awaiting_input", st
+    assert st.get("pauseReason") == "verified_unchanged", st
 
     steering_files = list((run.run_dir / "steering").glob("*.md"))
     assert steering_files, "steering form submit via the browser never wrote a file"
