@@ -65,7 +65,7 @@ def test_template_creds_directory_copies_vars_files(ctl, tmp_path):
     assert (staged / "ci.vars").read_text() == f"CI_URL={URL}\n"
 
 
-@pytest.mark.parametrize("job_yaml", [None, "max_iterations: 7\n"],
+@pytest.mark.parametrize("job_yaml", [None, "iterations: 7\n"],
                          ids=["no-job-yaml", "job-yaml-without-creds-key"])
 def test_template_default_creds_directory_copies_vars_files(ctl, tmp_path, job_yaml):
     """SPEC 6.x: a template with no job.yaml (or one naming no `creds:`

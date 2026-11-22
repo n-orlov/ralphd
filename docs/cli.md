@@ -395,7 +395,7 @@ you should know):
   `ralphctl stop`/`rm` reap everything with the run label,
   best-effort, and (v0.38) the engine itself removes the containers carrying
   both `ralphd.run=<run>` and `ralphd.role=sibling` once the run reaches a
-  terminal state (`succeeded`, `failed`, `aborted`, `exhausted`, `timed_out`),
+  terminal state (`succeeded`, `failed`, `aborted`, `exhausted`),
   when the job has docker access, emitting `siblings.reaped` with the count and
   any per-container error. `ralphctl doctor` lists stray labeled containers whose run no
   longer exists.
