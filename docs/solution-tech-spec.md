@@ -623,6 +623,16 @@ table. A hat's report of the same move is refused. An operator `--status` ruling
 a cure pass re-opened (`preCureStatuses`) and emits `task.un_reopened` with
 `source: "operator"`. The guard still refuses that edge from every hat.
 
+`ralphctl amend <run> <task> --status <s>` checks the ruling when it records it,
+against the task's record, through the one check the engine itself applies
+(`state.task_status_change_refusal`): an illegal move exits non-zero and records
+nothing (`--force` records it unchecked). When the engine later refuses a ruling
+that was legal when recorded because the task moved, it emits
+`amendment.refused`, and `ralphctl amend --list` and `ralphctl status` show the
+refusal. A record that cannot be read is never replaced by the run directory's
+mirror: the CLI asks the live engine (`GET /tasks/{id}/status-ruling`) and
+records nothing without its authoritative answer.
+
 Before dispatch, the harness claims the selected task as `in-progress` and
 records that transition. It also fixes the task's effective tier for this claim.
 Each worker invocation gets one assignment. While the agent runs, the transcript
@@ -1528,7 +1538,7 @@ make all workspace and event updates one transaction.
 |---|---|
 | Engine read API | Health/version, status, tasks, PRD/notes, iterations/output, logs, events, artifacts (paged listing and capped text view) and effective configuration ([`api.py`](../src/ralphd/engine/api.py)). |
 | Engine control API | Steering, rulings (`POST /rule`), interrupt, task undefer, pause/resume, retry, abort, shutdown and budget patching. |
-| Runtime config API | Prompt overrides, skill/credential CRUD, and LLM configuration updates. |
+| Runtime config API | Prompt overrides, skill/credential CRUD (a credential file's `.vars` entries are set and removed through `PUT`/`DELETE /config/creds/{name}` and `ralphctl creds`), and LLM configuration updates. |
 | CLI | Launch/resume/stop/remove/repair; runs list, status, watch, logs, iteration, fault, cost, tasks, docs, artifacts and router views; steer, rule, amend, interrupt, pause/unpause, retry, undefer, budget and abort; configuration, LLM profiles and `llm test`, skills/creds/prompts, suggestions and doctor checks. |
 | Web hub | Sortable runs list (including cost), run detail with started/resumed/wall/active durations, provisioning table of hat models and tiers, payer and cost tables, tasks, iteration timeline with harness/thinking/router links, a Current iteration panel beside the live log, documents, a paged artifacts browser, steering (with apply-now through `POST /interrupt`), a parked-question panel that files a ruling or unpauses, retry, undefer and eligible run deletion. It is not a full CLI replacement: abort, pause, budget, amend and resume remain CLI-only ([`ui_server.py`](../src/ralphd/cli/ui_server.py), [`app.js`](../src/ralphd/cli/web/app.js)). |
 
@@ -1663,7 +1673,13 @@ already-decided work verdict. Signal teardown marks reflection not attempted rat
 than starting more model calls while the container is stopping.
 
 After the tail, the engine emits the terminal `state` event and then publishes the
-final lifecycle state. An optional `on_complete_cmd` hook runs at the agent UID
+final lifecycle state. When the run ends
+in a terminal state or the `exhausted` hold and the job has
+docker access, the engine also removes the containers labelled both
+`ralphd.run=<run>` and `ralphd.role=sibling` (best effort, never changing the
+outcome) and emits `siblings.reaped`; `ralphctl status` of a run that is not
+running warns about any labelled container still running
+([`siblings.py`](../src/ralphd/siblings.py)). An optional `on_complete_cmd` hook runs at the agent UID
 with `RALPHD_RUN_ID`, `RALPHD_STATE` and `RALPHD_VERDICT` in its environment; hook
 failure is recorded without replacing the job outcome
 ([`engine/main.py`](../src/ralphd/engine/main.py)). `on_complete: exit` (the

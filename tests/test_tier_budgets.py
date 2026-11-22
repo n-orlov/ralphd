@@ -1040,8 +1040,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # and the applier refuse, never an unknown id; an id only the mirror
     # names needs --force; the route's 503 on a non-UTF-8 record and its
     # cache-free read), in both tiers -> fast 9203, smoke 7422.
-    "fast": {"tests": 9203, "modules": 572},
-    "smoke": {"tests": 7422, "modules": 445},
+    # v0.38 task 010: +10 tests / +2 modules (tests/test_no_petition_run_
+    # unchanged.py, tests/test_compat_037_run_dirs.py), in both tiers ->
+    # fast 9213/574, smoke 7432/447.
+    "fast": {"tests": 9213, "modules": 574},
+    "smoke": {"tests": 7432, "modules": 447},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

@@ -1,0 +1,41 @@
+{
+  "goal": "",
+  "repositories": [],
+  "scope": {},
+  "tasks": [
+    {
+      "estimatedIterations": 1,
+      "id": "001",
+      "priority": 1,
+      "status": "completed",
+      "successCriteria": "criterion of 001",
+      "tier": "normal",
+      "title": "task 001"
+    },
+    {
+      "dependsOn": [
+        "001"
+      ],
+      "estimatedIterations": 1,
+      "id": "002",
+      "priority": 1,
+      "status": "in-progress",
+      "successCriteria": "criterion of 002",
+      "tier": "normal",
+      "title": "task 002"
+    },
+    {
+      "dependsOn": [
+        "002"
+      ],
+      "estimatedIterations": 1,
+      "id": "003",
+      "priority": 1,
+      "status": "pending",
+      "successCriteria": "criterion of 003",
+      "tier": "normal",
+      "title": "task 003"
+    }
+  ],
+  "version": 1
+}
