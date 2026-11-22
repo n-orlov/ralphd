@@ -2959,14 +2959,30 @@ def operator_status_ruling_decision(run: "RunDir", task_id: str,
     it so `ralphctl amend --status` can ask a live engine when the record is
     held root-owned and unreadable from the host.
 
-    Returns `{"taskId", "status", "current", "allowed", "reason"}`; `current`
-    is `None` and `allowed` False (reason `"no matching task"`) for an id the
-    record does not hold. A ruling to the status the task already holds is
-    allowed (the applier's silent no-op)."""
-    rows = run.read_tasks().get("tasks", [])
-    task = next((t for t in rows if isinstance(t, dict)
-                 and str(t.get("id")) == str(task_id)), None)
+    Returns `{"taskId", "status", "authoritative", "current", "allowed",
+    "reason"}`. `authoritative` is True only when the record was read
+    current off disk (`TasksRead.source == "file"`, holding a task list) or
+    genuinely does not exist yet (`"absent"`: no plan). A record that would
+    not parse or could not be read -- whether the reader fell back to a
+    last-good payload (`"last-good"`, possibly stale) or had nothing at all
+    (`"unreadable"`) -- answers `authoritative: False`, `current: None`,
+    `allowed: False` and a reason naming the read: no decision, never a
+    decision from stale or missing data. For an authoritative read,
+    `current` is `None` and `allowed` False (reason `"no matching task"`)
+    for an id the record does not hold. A ruling to the status the task
+    already holds is allowed (the applier's silent no-op)."""
+    res = run.read_tasks_result()
     out = {"taskId": task_id, "status": target_status}
+    rows = res.doc.get("tasks") if isinstance(res.doc, dict) else None
+    if not (res.source == "absent"
+            or (res.source == "file" and isinstance(rows, list))):
+        detail = res.error or "the record holds no task list"
+        return {**out, "authoritative": False, "current": None,
+                "allowed": False,
+                "reason": f"task record unreadable ({res.source}: {detail})"}
+    task = next((t for t in rows or [] if isinstance(t, dict)
+                 and str(t.get("id")) == str(task_id)), None)
+    out["authoritative"] = True
     if task is None:
         return {**out, "current": None, "allowed": False,
                 "reason": "no matching task"}

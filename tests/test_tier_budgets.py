@@ -1029,8 +1029,14 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # answer records nothing; the engine's status-ruling route; the four
     # unchecked-recording nodes were rewritten), in both tiers -> fast 9157,
     # smoke 7376.
-    "fast": {"tests": 9157, "modules": 572},
-    "smoke": {"tests": 7376, "modules": 445},
+    # v0.38 task cure-01-01-2 retry: +15 tests in tests/test_amend_status_
+    # at_the_door.py (an engine that cannot read its own record current --
+    # unparseable, wrong shape, no task list, EACCES, with or without a
+    # last-good cache -- supplies no decision; an answer not marked
+    # authoritative records nothing; the route's 503), in both tiers ->
+    # fast 9172, smoke 7391.
+    "fast": {"tests": 9172, "modules": 572},
+    "smoke": {"tests": 7391, "modules": 445},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

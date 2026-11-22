@@ -269,9 +269,15 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
             raise problem(422, "invalid status",
                           f"{status!r} is not an operator-ruleable status")
         # An id the record does not hold answers 200 with `current: null`
-        # (`ralphctl amend --force` records a ruling for such an id).
-        return operator_status_ruling_decision(
+        # (`ralphctl amend --force` records a ruling for such an id). A
+        # record the engine cannot read current (unparseable, unreadable,
+        # or only a last-good cache) is no decision at all: 503, never a
+        # 200 built from stale or missing data.
+        decision = operator_status_ruling_decision(
             run, task_id, status, bool(cfg.vigilant), reason)
+        if not decision["authoritative"]:
+            raise problem(503, "task record unreadable", decision["reason"])
+        return decision
 
     @app.get("/prd")
     async def prd(original: bool = False):

@@ -2258,7 +2258,8 @@ status to check against, so it asks the live engine
 applies the same legality check, and an illegal ruling exits `2` with the
 engine's reason and no ruling file, exactly as when the host reads the record.
 If the engine cannot supply that decision (no API recorded, unreachable, an
-older engine without the route, an unusable answer) `amend` fails with a
+older engine without the route, an engine that cannot read its own record
+current and answers `503`, or an answer not marked `authoritative`) `amend` fails with a
 non-zero exit (`4` unreachable) and records **nothing**; retry once the engine
 answers or the container has exited and released `record/`. A run with no `record/` mount (started before the mount
 existed) is checked against the record the engine keeps in the run dir's

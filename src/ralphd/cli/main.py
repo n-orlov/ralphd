@@ -6519,7 +6519,11 @@ def _amend_engine_decision(args, reason: str) -> tuple[str | None, str]:
         res = api(args.run_id, "GET", path, timeout=10)
     except SystemExit as e:
         die(e.code if isinstance(e.code, int) and e.code else 4, unavailable)
-    if (not isinstance(res, dict) or not isinstance(res.get("allowed"), bool)
+    # Only an answer the engine itself marks authoritative (read current
+    # off its own record) decides; anything else -- a body without the
+    # flag, or one built from a stale or unreadable record -- is no answer.
+    if (not isinstance(res, dict) or res.get("authoritative") is not True
+            or not isinstance(res.get("allowed"), bool)
             or not isinstance(res.get("current"), (str, type(None)))):
         die(4, unavailable)
     if res["current"] is None:

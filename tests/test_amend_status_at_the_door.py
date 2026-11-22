@@ -188,6 +188,7 @@ def live_engine(ctl, tmp_path):
         eng.point_host_at_it(rdir)
         undo = _deny_record(cdir, how)
         started.append(undo)
+        make.engine = eng
         return cdir
 
     yield make
@@ -302,6 +303,159 @@ def test_a_denied_record_with_an_engine_lacking_the_route_records_nothing(ctl):
     assert _ruling_files(cdir) == []
 
 
+def _break_engine_record(eng: "_RealEngine", how: str, *, cached: bool):
+    """Damage the live engine's OWN authoritative record (the host-side
+    `record/` is already unreadable). `cached=True` lets the engine read the
+    good record first, so its reader holds a last-good payload it would fall
+    back on; `cached=False` clears that payload, so the reader has nothing."""
+    from ralphd.engine import state as state_mod
+    if cached:
+        assert eng.run.read_tasks_result().source == "file"
+    else:
+        with state_mod._tasks_last_good_lock:
+            state_mod._tasks_last_good.pop(
+                os.path.abspath(eng.run.tasks_file), None)
+        (eng.run.root / state_mod.TASKS_LAST_GOOD_NAME).unlink(missing_ok=True)
+    rec = eng.run.tasks_file
+    if how == "garbage":
+        rec.write_text("{not json")
+    elif how == "wrong-shape":     # valid JSON, not a record object
+        rec.write_text(json.dumps([_task("pending")]))
+    elif how == "no-task-list":    # an object that holds no task list
+        rec.write_text(json.dumps({"version": 1, "tasks": "001"}))
+    elif how == "denied":          # the engine's own read fails with EACCES
+        if os.geteuid() == 0:
+            pytest.skip("root reads through mode 000")
+        rec.chmod(0)
+        return lambda: rec.chmod(0o600)
+    return lambda: None
+
+
+@pytest.mark.parametrize("how,cached", [
+    # The finding's own two cases:
+    ("garbage", False),            # unreadable, no cache: was 200 current:null
+    ("garbage", True),             # last-good cache: was 200 from stale data
+    # Same rule, cases the finding did not list:
+    ("wrong-shape", True),
+    ("no-task-list", False),
+    ("denied", False),
+])
+@pytest.mark.parametrize("target,reason", [("skipped", "moot"),
+                                           ("pending", "again")])
+def test_an_engine_that_cannot_read_its_own_record_current_supplies_no_decision(
+        ctl, live_engine, how, cached, target, reason):
+    # Engine's record says petitioned (-> skipped legal, -> pending legal
+    # too: both are operator exits) -- but the engine can no longer read it
+    # current. Neither a stale cache nor an empty read may decide: the CLI
+    # fails and records nothing, for a ruling that would be legal and for
+    # one that would not alike.
+    cdir = live_engine([_task("petitioned")], [_task("petitioned")])
+    undo = _break_engine_record(live_engine.engine, how, cached=cached)
+    try:
+        res = ctl.run("amend", RUN, "001", "--status", target, reason)
+    finally:
+        undo()
+    assert res.returncode != 0, (res.stdout, res.stderr)
+    assert "nothing was recorded" in res.stderr
+    assert "task record unreadable" in res.stderr
+    assert _ruling_files(cdir) == []
+
+
+def test_an_unknown_id_on_an_unreadable_engine_record_is_not_forced_through(
+        ctl, live_engine):
+    # `--force` records a ruling for an id the record does not hold -- but
+    # only when the engine KNOWS the record does not hold it. An unreadable
+    # record yields no such knowledge.
+    cdir = live_engine([_task("petitioned")], [_task("petitioned")])
+    undo = _break_engine_record(live_engine.engine, "garbage", cached=False)
+    try:
+        res = ctl.run("amend", RUN, "017", "--status", "skipped", "moot",
+                      "--force")
+    finally:
+        undo()
+    assert res.returncode != 0, (res.stdout, res.stderr)
+    assert _ruling_files(cdir) == []
+
+
+def _serve_json_once(body: dict):
+    """A stand-in engine that answers every GET with `body` (200)."""
+    import http.server
+    import threading
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            data = json.dumps(body).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+@pytest.mark.parametrize("body", [
+    # An answer that does not say it was read current off the record.
+    {"taskId": "001", "status": "skipped", "current": "petitioned",
+     "allowed": True, "reason": ""},
+    {"taskId": "001", "status": "skipped", "authoritative": False,
+     "current": None, "allowed": False, "reason": "no matching task"},
+    {"taskId": "001", "status": "skipped", "authoritative": "yes",
+     "current": "petitioned", "allowed": True, "reason": ""},
+])
+def test_an_engine_answer_not_marked_authoritative_records_nothing(ctl, body):
+    cdir, rdir = _seed(ctl, [_task("petitioned")])
+    srv = _serve_json_once(body)
+    try:
+        (rdir / "host.json").write_text(json.dumps(
+            {"runId": RUN, "apiUrl": f"http://127.0.0.1:{srv.server_port}"}))
+        undo = _deny_record(cdir, "denied")
+        try:
+            res = ctl.run("amend", RUN, "001", "--status", "skipped", "moot")
+        finally:
+            undo()
+    finally:
+        srv.shutdown()
+    assert res.returncode != 0, (res.stdout, res.stderr)
+    assert "nothing was recorded" in res.stderr
+    assert _ruling_files(cdir) == []
+
+
+def test_the_engines_status_ruling_route_answers_503_on_an_unreadable_record(
+        tmp_path):
+    import urllib.error
+    import urllib.request
+    eng = _RealEngine(tmp_path, [_task("petitioned")])
+    try:
+        url = (f"http://127.0.0.1:{eng.port}/tasks/001/status-ruling"
+               "?status=skipped")
+        with urllib.request.urlopen(url, timeout=5) as r:
+            assert json.loads(r.read())["authoritative"] is True
+        for cached in (True, False):
+            undo = _break_engine_record(eng, "garbage", cached=cached)
+            with pytest.raises(urllib.error.HTTPError) as err:
+                urllib.request.urlopen(url, timeout=5)
+            undo()
+            assert err.value.code == 503
+            body = json.loads(err.value.read())
+            assert "task record unreadable" in json.dumps(body)
+            atomic_write_json(eng.run.tasks_file,
+                              {"version": 1, "tasks": [_task("petitioned")]})
+        # A record that does not exist (no plan yet) is a fact, not
+        # ignorance: authoritative, the id simply absent.
+        eng.run.tasks_file.unlink()
+        with urllib.request.urlopen(url, timeout=5) as r:
+            got = json.loads(r.read())
+        assert (got["authoritative"], got["current"]) == (True, None)
+    finally:
+        eng.stop()
+
+
 def test_the_engines_status_ruling_route_decides_and_writes_nothing(tmp_path):
     eng = _RealEngine(tmp_path, [_task("completed"), _task("failed", "002")])
     try:
@@ -316,8 +470,8 @@ def test_the_engines_status_ruling_route_decides_and_writes_nothing(tmp_path):
                 return json.loads(r.read())
 
         no = ask("001", "pending")
-        assert (no["allowed"], no["current"], no["reason"]) == (
-            False, "completed", ILLEGAL_REASON)
+        assert (no["authoritative"], no["allowed"], no["current"],
+                no["reason"]) == (True, False, "completed", ILLEGAL_REASON)
         assert ask("001", "completed")["allowed"] is True   # no-op
         assert ask("002", "skipped")["allowed"] is False    # no justification
         assert ask("002", "skipped", "moot")["allowed"] is True
