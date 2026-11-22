@@ -1070,6 +1070,17 @@ line it writes.
   also uses; a CLI below the minimum ends the
   iteration in-band as `codex_version_too_old` and a missing one as
   `codex_cli_not_found`, both classified `refused`.
+- Both harnesses' `cli_version` tells three probe outcomes apart: a version read
+  (compared to the minimum; below it is `*_version_too_old`), no version in the
+  output (the CLI ran and printed none: `*_version_too_old`, "could not read the
+  version"; a missing file is `*_cli_not_found`; both `refused`), and a probe that
+  could not finish (it timed out after `PROBE_TIMEOUT_S`, 30 s, or raised `OSError`
+  while the file exists). The third returns a `ralphd.cli.versions.ProbeFailed` and
+  `version_gate` turns it into `claude_code_version_probe_failed` /
+  `codex_version_probe_failed`, whose message says what happened ("timed out after
+  30 s", or the OSError text) and never "too old". It matches the `cli-probe` infra
+  signature family, so it is a transient infra fault under the outage ladder, never
+  `refused`.
 
 On timeout or cancellation the group gets SIGINT, then SIGKILL after
 `SHUTDOWN_GRACE_S` (30 s). The startup watchdog detects missing traffic, and a

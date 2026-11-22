@@ -181,6 +181,11 @@ INFRA_SIGNATURES: tuple[tuple[str, str], ...] = (
     ("bedrock-stream", r"ModelStreamErrorException"),
     ("capacity", r"quota"),
     ("capacity", r"capacity"),
+    # The harness's own `<cli> -v` / `--version` pre-flight probe could not
+    # finish (timed out, or the file exists and could not be run): no request
+    # was sent and the CLI is not known to be too old, so it is waited out.
+    ("cli-probe", r"claude_code_version_probe_failed"),
+    ("cli-probe", r"codex_version_probe_failed"),
     # NOT in this table, deliberately (task 003, #11): a bare "aborted".
     # pi records that exact string as the in-band errorMessage whenever the
     # agent process takes a SIGINT -- which the *operator* can cause
@@ -204,6 +209,8 @@ INFRA_FAMILY_DESCRIPTIONS = {
     "backpressure": "the provider pushed back (429/529, throttling, overloaded)",
     "bedrock-stream": "Bedrock faulted mid-stream",
     "capacity": "capacity or quota was exhausted upstream",
+    "cli-probe": ("the harness's CLI version probe timed out or could not be "
+                  "run, so the CLI's version is unknown"),
 }
 
 # Per-row regexes, in table order: the ONE matcher. There is deliberately no

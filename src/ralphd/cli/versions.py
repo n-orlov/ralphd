@@ -32,3 +32,11 @@ def compare_versions(a: object, b: object) -> int | None:
     pa += (0,) * (width - len(pa))
     pb += (0,) * (width - len(pb))
     return (pa > pb) - (pa < pb)
+
+
+class ProbeFailed(str):
+    """A `<cli> --version` probe that could not finish: it timed out, or the
+    file exists and could not be run. A `str` holding what happened ("timed
+    out after 30 s", or the OSError text), so it is never mistaken for a
+    version read (`None` is "ran, printed no version"; a `str` that is not a
+    `ProbeFailed` is a version)."""

@@ -967,8 +967,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.38 task 001: +42 tests / +1 module (tests/test_petitioned_settled.py),
     # in both tiers -> fast 9002/564, smoke 7223/437 (the prior ceiling plus
     # the added tests).
-    "fast": {"tests": 9002, "modules": 564},
-    "smoke": {"tests": 7223, "modules": 437},
+    # v0.38 task 006: +18 tests / +1 module in fast (tests/test_cli_version_
+    # probe_outcomes.py, 16, and the two `cli-probe` INFRA_SIGNATURES rows'
+    # parametrized nodes in tests/test_cli_fault_explanation.py), +16 tests /
+    # +1 module in smoke -> fast 9020/565, smoke 7239/438 (the prior ceiling
+    # plus the added tests).
+    "fast": {"tests": 9020, "modules": 565},
+    "smoke": {"tests": 7239, "modules": 438},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

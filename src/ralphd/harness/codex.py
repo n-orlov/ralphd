@@ -23,7 +23,7 @@ from typing import Any
 from .codex_normalise import (
     CODEX_RAW_ENVELOPE_TYPE, CODEX_STDERR_ENVELOPE_TYPE, CodexNormaliser,
 )
-from ..cli.versions import compare_versions
+from ..cli.versions import ProbeFailed, compare_versions
 from ..engine.config import CODEX_MIN_VERSION
 from ..engine.redact import MIN_SECRET_LEN, mask_values
 from .skills_index import skills_index
@@ -87,6 +87,11 @@ PROVIDER_ID = "aigw"
 GATEWAY_NOT_CONFIGURED = "codex_gateway_not_configured"
 VERSION_TOO_OLD = "codex_version_too_old"
 CLI_NOT_FOUND = "codex_cli_not_found"
+# The `<cli> --version` probe could not finish (timeout, or the file exists
+# and could not be run): transient, never "too old".
+PROBE_FAILED = "codex_version_probe_failed"
+# Seconds the `<cli> --version` probe may take.
+PROBE_TIMEOUT_S = 30
 _VERSION_RE = re.compile(r"\d+(?:\.\d+)*")
 
 # Codex's own retry loops are kept small so the engine's fault ladder owns
@@ -213,13 +218,22 @@ def resolve_cli_path() -> str:
 
 
 def cli_version(cli: str) -> str | None:
-    """`<cli> --version`'s dotted version (`codex-cli 0.156.1` -> `0.156.1`),
-    or None when the CLI cannot be run or prints no version."""
+    """`<cli> --version`'s dotted version (`codex-cli 0.156.1` -> `0.156.1`):
+    a version read (a `str`); `None` when the CLI ran (or is not there at
+    all) and printed no version; a `ProbeFailed` (a `str` naming what
+    happened) when the probe could not finish -- it timed out, or the file
+    exists and could not be run."""
     try:
         out = subprocess.run([cli, "--version"], capture_output=True, text=True,
-                             timeout=30, check=False)
-    except (OSError, subprocess.SubprocessError):
-        return None
+                             timeout=PROBE_TIMEOUT_S, check=False)
+    except subprocess.TimeoutExpired:
+        return ProbeFailed(f"{cli} --version timed out after {PROBE_TIMEOUT_S:g} s")
+    except OSError as e:
+        if not (os.path.isfile(cli) or shutil.which(cli)):
+            return None
+        return ProbeFailed(f"{cli} --version could not be run: {e}")
+    except subprocess.SubprocessError as e:
+        return ProbeFailed(f"{cli} --version could not be run: {e}")
     m = _VERSION_RE.search(out.stdout or "")
     return m.group(0) if m else None
 
@@ -227,7 +241,14 @@ def cli_version(cli: str) -> str | None:
 def version_gate(cli: str, version: str | None) -> dict | None:
     """None when `version` meets `CODEX_MIN_VERSION`, else the in-band error.
     The comparison is `ralphd.cli.versions.compare_versions`, the helper the
-    claude-code gate shares; a version it cannot parse is refused."""
+    claude-code gate shares. Three probe outcomes: a `ProbeFailed` is the
+    transient `PROBE_FAILED` (never "too old"); `None` is `CLI_NOT_FOUND`
+    for a missing file, else `VERSION_TOO_OLD` (no version in the output);
+    a version below the minimum, or one it cannot parse, is
+    `VERSION_TOO_OLD`."""
+    if isinstance(version, ProbeFailed):
+        return {"type": PROBE_FAILED,
+                "message": f"could not finish the Codex version probe: {version}"}
     if version is None:
         if not (os.path.isfile(cli) or shutil.which(cli)):
             return {"type": CLI_NOT_FOUND,
@@ -535,7 +556,8 @@ def probe() -> dict:
     cli = resolve_cli_path()
     version = cli_version(cli)
     gate = version_gate(cli, version)
-    doc = {"cli": version, "cliPath": cli, "ok": gate is None}
+    doc = {"cli": None if isinstance(version, ProbeFailed) else version,
+           "cliPath": cli, "ok": gate is None}
     if gate is not None:
         doc["error"] = gate["message"]
     return doc
