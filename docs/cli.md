@@ -1992,8 +1992,8 @@ fix it -- waive that finding, or take `K = 0` (or `--approaches +N` when none is
 left).
 
 A **`secret` question** (`inputQuestion.kind: secret`, `trigger: commit_secret`)
-is what a secret found in a commit parks the run on -- a non-findings park
-(the petition hold below is the other). It never expires (`expiresAt` is `null` whatever `input_timeout_min` is)
+is what a secret found in a commit parks the run on -- one of three non-findings parks
+(the petition hold and the unchanged-review park below are the other two). It never expires (`expiresAt` is `null` whatever `input_timeout_min` is)
 and has one answer:
 
 | Option | Meaning |
