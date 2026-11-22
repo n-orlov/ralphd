@@ -1079,8 +1079,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # parks with the iteration budget spent x2 or the deadline passed, an
     # approved key after the deadline; a changed key takes the budget tail;
     # an abort still ends the run), in both tiers -> fast 9351, smoke 7570.
-    "fast": {"tests": 9351, "modules": 579},
-    "smoke": {"tests": 7570, "modules": 452},
+    # v0.38 task cure-01-05 red-test cure: +1 test net, no module (tests/
+    # test_budget_cure_passes.py: the top-up-then-unpause node rewritten to
+    # park verified_unchanged, plus the answer path taking the cure pass), in
+    # both tiers -> fast 9352, smoke 7571.
+    "fast": {"tests": 9352, "modules": 579},
+    "smoke": {"tests": 7571, "modules": 452},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

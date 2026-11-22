@@ -129,14 +129,24 @@ def _fixture(root: Path, *, cure_pass_ceiling: int) -> LoopSupervisor:
     return sup
 
 
-def test_park_then_budget_cure_passes_then_unpause_takes_the_cure_pass(
-        tmp_path):
-    root = tmp_path / "run"
-    sup = _fixture(root, cure_pass_ceiling=0)
+def _counting_gate_rejects(reason: str, calls: list):
+    inner = _gate_rejects(reason)
 
+    async def handler(self, phase, *a, **kw):
+        calls.append(phase)
+        return await inner(self, phase, *a, **kw)
+    return handler
+
+
+def _park_then_top_up(tmp_path, calls: list) -> LoopSupervisor:
+    """The gate rejects with the approach's cure rounds spent (ceiling 0) and
+    parks; `ralphctl budget <run> --cure-passes +1` (PATCH /config/budget
+    {"curePassCeiling": "+1"}, the same route every budget knob uses) then
+    tops the allowance up while it is parked."""
+    sup = _fixture(tmp_path / "run", cure_pass_ceiling=0)
     orig = LoopSupervisor.run_iteration
-    LoopSupervisor.run_iteration = _gate_rejects(
-        "the one blocking finding is curable")
+    LoopSupervisor.run_iteration = _counting_gate_rejects(
+        "the one blocking finding is curable", calls)
     try:
         outcome = _bounded(sup._step_verdict_gate())
     finally:
@@ -148,9 +158,6 @@ def test_park_then_budget_cure_passes_then_unpause_takes_the_cure_pass(
     assert sup.run.read_status().get("state") == "awaiting_input"
     assert sup.run.read_status().get("gateCurePasses") is None
 
-    # `ralphctl budget <run> --cure-passes +1` -> PATCH /config/budget
-    # {"curePassCeiling": "+1"} against the LIVE app, same route every
-    # other budget knob uses.
     async def _patch():
         async with _client(sup) as client:
             return await client.patch("/config/budget",
@@ -160,27 +167,58 @@ def test_park_then_budget_cure_passes_then_unpause_takes_the_cure_pass(
     assert resp.json() == {"curePassCeiling": 1, "previousCurePassCeiling": 0}
     assert sup.cfg.cure_pass_ceiling == 0, "the base is not rewritten"
     assert sup.run.read_status().get("cureRoundTopUps") == {"1": 1}
+    assert calls == ["verdict_gate"]
+    return sup
 
-    # `ralphctl unpause <run>` -> POST /resume.
+
+def test_park_then_budget_cure_passes_then_answer_takes_the_cure_pass(
+        tmp_path):
+    """The lever the escalation names still works, without asking the gate
+    the same question twice (v0.38 B.3): after the top-up, `ralphctl answer
+    <run>` (its default outcome, a cure round) takes the cure-pass edge over
+    the rejection the gate already returned."""
+    calls: list = []
+    sup = _park_then_top_up(tmp_path, calls)
+
+    sup.answer()
+    outcome2 = _bounded(sup._step_paused())
+
+    assert outcome2 == ("advance", "cure",
+                        "verdict_gate_rejected_curable_pass_available")
+    assert calls == ["verdict_gate"], "the gate hat was dispatched again"
+    status = sup.run.read_status()
+    assert status.get("gateCurePasses") == {"1": 1}
+    assert status.get("state") != "paused"
+
+
+def test_park_then_budget_cure_passes_then_unpause_parks_verified_unchanged(
+        tmp_path):
+    """Rewrites the 0.37 node that re-dispatched the gate after a top-up and
+    an unpause (v0.38 B.3, #320): a cure-round top-up is a budget change, not
+    a change of the judged state, so re-entering the gate on the same HEAD
+    and task triples parks `verified_unchanged` with no second dispatch."""
+    calls: list = []
+    sup = _park_then_top_up(tmp_path, calls)
+
+    # `ralphctl unpause <run>` -> POST /resume releases the park as is.
     sup.resume()
     assert sup.run.read_status().get("state") == "running"
 
-    # the SAME rejection, re-asked: with the ceiling raised the gate now
-    # takes the cure-pass edge instead of parking a second time.
     orig = LoopSupervisor.run_iteration
-    LoopSupervisor.run_iteration = _gate_rejects(
-        "the one blocking finding is curable")
+    LoopSupervisor.run_iteration = _counting_gate_rejects(
+        "the one blocking finding is curable", calls)
     try:
         outcome2 = _bounded(sup._step_verdict_gate())
     finally:
         LoopSupervisor.run_iteration = orig
 
-    assert outcome2 == ("advance", "cure",
-                        "verdict_gate_rejected_curable_pass_available")
+    assert outcome2 == ("advance", "paused", "verified_unchanged")
+    assert calls == ["verdict_gate"], "the gate hat was dispatched again"
     status = sup.run.read_status()
-    assert status.get("gateRejectionEnding") == "rejected_cure_taken"
-    assert status.get("gateCurePasses") == {"1": 1}
-    assert status.get("state") != "paused"
+    assert status["state"] == "awaiting_input"
+    assert status["pauseReason"] == "verified_unchanged"
+    assert status["inputQuestion"]["judge"] == "verdict_gate"
+    assert status.get("gateCurePasses") is None
 
 
 def test_cure_pass_ceiling_below_cure_passes_used_is_refused_with_409(
