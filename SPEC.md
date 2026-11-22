@@ -1486,7 +1486,8 @@ the run; the run goes on by itself, or ends with a named cause.
 | **Judge no-verdict** (the peer verdict gate or review produced no verdict), **an unreadable review verdict**, **an unusable review findings channel** -- each still standing after the first attempt and every `judge_retry_max` retry (`<hat>.retry`, `reason` the fault) | An infra fault under the unchanged outage budget (§8.4): the failed attempt is refunded, the engine waits out the escalating backoff (`health: degraded`, `infraWait`), and asks the same judge again over the SAME approach (`review -> review` on `review_judge_fault_retry`; the gate is re-dispatched as an ordinary first attempt). Nothing is archived or rejected and no `operator_escalation` is written; `review.contract_fault` / `<hat>.no_verdict` record the fault | `running` while the budget lasts; once it is spent (or no iteration budget or wall clock is left) `failed`, `verdict: unreviewed`, `reason` naming the judge and the outage, the recorded review verdict intact; resumable with `ralphctl resume` |
 | **Rate-limit ceiling** (a rate-limit wait that would take the run's rate-limit waiting past `rate_limit_max_wait_s`) | The wait does not start; `rate_limit_ceiling_reached` is emitted and the notifier names the window's reset | `failed`, with the rate-limit-ceiling `ending` (§5.2's identifier table); `ralphctl resume <run> --rate-limit-wait +N` raises the ceiling and resumes |
 | **Provider refusal** (a refused iteration, §8.2) | Not retried, the outage budget untouched; the provider-refusal event is emitted with the scrubbed provider message | `failed`, with the refusal `ending` (§5.2's identifier table); the `reason` names `PUT /config/llm` (fix the LLM profile or credentials) and `ralphctl resume` |
-| **A secret in a commit** (the task-boundary or hook commit scan hits) | The assigned task is faulted and the run parks (§4.6) | `awaiting_input`, `inputQuestion.kind: secret` -- the only non-findings park; `ralphctl answer <run> --secret-handled` |
+| **A secret in a commit** (the task-boundary or hook commit scan hits) | The assigned task is faulted and the run parks (§4.6) | `awaiting_input`, `inputQuestion.kind: secret` -- a non-findings park (the other is the petition hold, below); `ralphctl answer <run> --secret-handled` |
+| **A held petitioned task the prompt adjudication did not settle** (every actionable task waits only on unsettled `petitioned` tasks; the one episode returned no adjudication or left the hold unchanged) | The run parks; it does not route to the final review | `awaiting_input`, `inputQuestion.kind: petition_hold`, never expires; `ralphctl amend <run> --waive <task>` or `ralphctl amend <run> <task> --status validated\|skipped`, then `ralphctl answer <run>` |
 
 None of the rows above the judge-fault row pauses the run, notifies, or writes an
 `operator_escalation`; none of the judge, rate-limit or refusal rows pauses it
@@ -1802,6 +1803,7 @@ operator had answered, accepting every finding and waiving none, and emits
 | `cure_rounds_spent` or `incurable`, an approach left (a reviewer escalation over a `curable: false` finding takes this row too: cure rounds cannot fix it) | archive the approach and replan the next one over the same tree (`next_approach`) |
 | `cure_rounds_spent` or `incurable`, no approach left | `exhausted` with `exhaustedBudget: approaches` (`exhausted_approaches`), resumable with `ralphctl resume --approaches +N` |
 | `secret` | never expires: `expiresAt` is `null` whatever the setting |
+| `petition_hold` | never expires: `expiresAt` is `null` whatever the setting |
 
 `inputQuestion.onTimeout` names the outcome the park will take. With
 `--no-operator-input-needed-pause` (job.yaml `operator_input_needed_pause:
@@ -3145,6 +3147,38 @@ check) and `_terminal_success_blockers` all read it through
 `LoopSupervisor._settled_petitioned_ids`. An unsettled petitioned dependency
 still blocks its dependents, and `skipped` keeps its meaning ("dead"): it still
 satisfies nothing, waiver or not.
+
+**A held petitioned task is adjudicated at once, and parks the run when the
+judge cannot settle it (v0.38 A.4/A.5, #306, #320).** When every actionable
+remaining task waits only on unsettled `petitioned` tasks, `_step_worker` runs
+`_maybe_run_midrun_adjudication_episode` on the FIRST hold, before it spends any
+no-task worker iteration. The episode's adjudications apply as before: CONFIRMED
+settles the task, and REFUTED moves it to `failed` with its remedy. When the
+episode moved the plan (the hold released, or its held set changed) the loop
+re-selects in the same pass, so a CONFIRMED outcome starts the first dependent
+without a no-task worker iteration in between. When the judge had its shot (the
+episode ran, or this process already gave the same open petitions theirs) and the
+hold is unchanged -- no adjudication, or one that did not touch the held tasks --
+the run parks: `status.json` `state: "awaiting_input"`, `pauseReason:
+"petition_hold"`, `inputQuestion.kind: "petition_hold"` (`trigger:
+"petition_hold"`, `judge: null`, `expiresAt: null`, `onTimeout: "never"`). The
+park does not route to the final review, and emits no `operator_escalation`
+event with an `approach` field. `inputQuestion.heldTasks` has one entry per
+petitioned task (`taskId`, `title`, `petition` -- `obligation`, `type`,
+`evidence`, or `null` -- and `dependents`), and `inputQuestion.text` names each
+task, its petition, its dependents and the two operator answers:
+`ralphctl amend <run> --waive <task> <reason>` and `ralphctl amend <run> <task>
+--status validated|skipped <reason>`. `amend` is host-side and never reaches the
+engine, so the answer is two steps: record the ruling, then `ralphctl answer
+<run>` with no options, which releases the park (`input.answered`, `outcome:
+"petition_hold_released"`) so the loop re-reads the plan and applies the ruling at
+its next boundary. Any option on that `answer` is refused, a bare `ralphctl
+unpause` is refused with the same two answers named, and a hold the ruling did
+not move parks again without a second adjudication. A restarted engine over the
+park resumes at `worker` (`paused -> worker`, guard `paused_resumed_petition_hold`).
+A hold with no open petition to adjudicate at all (a `petitioned` task whose
+petition is not on file) keeps the earlier bound: three no-task worker iterations,
+then `petition_held_no_task_bound`.
 
 The `taskBlockedBy` overlay reads the same rule on every surface, so a settled
 task is never shown as a blocker its dependent has already been scheduled past.

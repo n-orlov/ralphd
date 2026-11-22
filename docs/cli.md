@@ -1992,13 +1992,24 @@ fix it -- waive that finding, or take `K = 0` (or `--approaches +N` when none is
 left).
 
 A **`secret` question** (`inputQuestion.kind: secret`, `trigger: commit_secret`)
-is what a secret found in a commit parks the run on -- the only non-findings
-park. It never expires (`expiresAt` is `null` whatever `input_timeout_min` is)
+is what a secret found in a commit parks the run on -- a non-findings park
+(the petition hold below is the other). It never expires (`expiresAt` is `null` whatever `input_timeout_min` is)
 and has one answer:
 
 | Option | Meaning |
 |--------|---------|
 | `--secret-handled` | the secret is out of the history. Refused (exit `5`, naming the commit, part and variable, never the value) while the commit scan of the offending range -- the question's `baseSha` up to the workspace's current HEAD -- still hits; once the range scans clean the park is released and the run continues at the worker. Combined with any other option it is refused |
+
+A **`petition_hold` question** (`inputQuestion.kind: petition_hold`, `trigger:
+petition_hold`; v0.38 A.5) is what a held petitioned task parks the run on when
+the one prompt adjudication of it returned no adjudication or left the hold
+unchanged. It never expires, and its `inputQuestion.text` names each petitioned
+task, its petition, its dependents and the two answers: `ralphctl amend <run>
+--waive <task> <reason>` or `ralphctl amend <run> <task> --status
+validated|skipped <reason>`. `amend` is host-side and never reaches the engine, so
+record it first and then run `ralphctl answer <run>` with no options: the park is
+released and the worker re-reads the plan (a hold the ruling did not move parks
+again). Any option on that `answer`, and a bare `ralphctl unpause`, is refused.
 
 Posts through the run's live API (`POST /answer`, docs/api.md), the same route
 the hub panel's `POST /api/runs/<id>/answer` proxies to; all three reach the one

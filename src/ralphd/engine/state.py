@@ -733,6 +733,13 @@ def unpause_refusal(run_id: str, status: dict) -> str | None:
                 "this run is awaiting input on a `secret` question (a secret "
                 f"in a commit): run `ralphctl answer {run_id} --secret-handled` "
                 "once the commit scan of the offending range is clean")
+        if question.get("kind") == PETITION_HOLD_KIND:
+            return (
+                "this run is awaiting input on a held petitioned task: apply "
+                f"an operator ruling first (`ralphctl amend {run_id} <task> "
+                "--waive <reason>` or `ralphctl amend "
+                f"{run_id} <task> --status validated|skipped <reason>`), then "
+                f"run `ralphctl answer {run_id}` so the run re-reads the plan")
         return (
             "an `awaiting_input` run is answered, not unpaused: run "
             f"`ralphctl answer {run_id}` (add `--cure-rounds 0` to carry on "
@@ -770,9 +777,9 @@ LEGACY_TIMED_OUT_STATE = "timed_out"
 # `paused` for a park; `paused` is the operator's alone. Non-terminal for the
 # same liveness reason `paused` is: a live engine owns the position.
 AWAITING_INPUT_STATE = "awaiting_input"
-INPUT_QUESTION_KINDS = ("findings", "secret")
+INPUT_QUESTION_KINDS = ("findings", "secret", "petition_hold")
 INPUT_TRIGGERS = ("incurable", "reviewer_escalation", "cure_rounds_spent",
-                  "commit_secret")
+                  "commit_secret", "petition_hold")
 INPUT_JUDGES = ("review", "verdict_gate")
 # What the engine does when `expiresAt` passes with no answer (PRD E.3).
 INPUT_ON_TIMEOUT_CURE_NOW = "cure_now"
@@ -781,6 +788,12 @@ INPUT_ON_TIMEOUT_EXHAUSTED = "exhausted_approaches"
 # A `secret` question never expires (E.3): nothing happens on its own.
 INPUT_ON_TIMEOUT_NEVER = "never"
 SECRET_INPUT_TRIGGER = "commit_secret"
+# v0.38 A.5: the park a held petitioned task lands in when the one prompt
+# adjudication could not settle it. Like a `secret` question it never expires:
+# only the operator's `amend` rulings (then `ralphctl answer`) leave it.
+PETITION_HOLD_KIND = "petition_hold"
+PETITION_HOLD_INPUT_TRIGGER = "petition_hold"
+NEVER_EXPIRING_INPUT_KINDS = ("secret", PETITION_HOLD_KIND)
 # The default input timeout in minutes (`input_timeout_min`, E.1); `0` = never.
 DEFAULT_INPUT_TIMEOUT_MIN = 60
 NONTERMINAL_STATES = ("starting", "running", PAUSED_STATE,
@@ -1131,7 +1144,7 @@ def input_expires_at(question: dict, timeout_min: float | None) -> str | None:
     """`question`'s `expiresAt` for an input timeout of `timeout_min`
     minutes: `parkedAt` plus the timeout, absolute; `None` for `0`/negative
     and always for a `secret` question, which never expires (PRD E.3)."""
-    if question.get("kind") == "secret":
+    if question.get("kind") in NEVER_EXPIRING_INPUT_KINDS:
         return None
     minutes = DEFAULT_INPUT_TIMEOUT_MIN if timeout_min is None else timeout_min
     parked = question.get("parkedAt")
@@ -1144,7 +1157,8 @@ def input_expiry_epoch(question: dict | None) -> float | None:
     """The absolute UTC epoch a parked `inputQuestion` expires at, read from
     its persisted `expiresAt`; `None` when it never expires (or the value is
     unreadable, which must never be mistaken for "already expired")."""
-    if not isinstance(question, dict) or question.get("kind") == "secret":
+    if not isinstance(question, dict) or (
+            question.get("kind") in NEVER_EXPIRING_INPUT_KINDS):
         return None
     raw = question.get("expiresAt")
     if not raw:
@@ -1171,7 +1185,7 @@ def build_input_question(
     key."""
     minutes = DEFAULT_INPUT_TIMEOUT_MIN if timeout_min is None else timeout_min
     expires_at = None
-    if kind != "secret" and minutes and minutes > 0:
+    if kind not in NEVER_EXPIRING_INPUT_KINDS and minutes and minutes > 0:
         expires_at = utc_from_epoch(parked_at_epoch + minutes * 60)
     question = {
         "kind": kind,
@@ -1184,7 +1198,8 @@ def build_input_question(
         "maxApproaches": max_approaches,
         "parkedAt": utc_from_epoch(parked_at_epoch),
         "expiresAt": expires_at,
-        "onTimeout": (INPUT_ON_TIMEOUT_NEVER if kind == "secret"
+        "onTimeout": (INPUT_ON_TIMEOUT_NEVER
+                      if kind in NEVER_EXPIRING_INPUT_KINDS
                       else input_on_timeout(
                           trigger, cure_rounds_allowed - cure_rounds_used,
                           approach, max_approaches,

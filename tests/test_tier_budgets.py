@@ -994,8 +994,10 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.38 cure-01-01 retry: +2 tests in tests/test_midrun_refuted_continues.py
     # (mid-run form remedy; CONFIRMED and REFUTED in one reply), in both
     # tiers -> fast 9086, smoke 7305.
-    "fast": {"tests": 9086, "modules": 568},
-    "smoke": {"tests": 7305, "modules": 441},
+    # v0.38 task 002: +6 tests / +1 module (tests/test_petition_hold_prompt_
+    # adjudication.py), in both tiers -> fast 9092/569, smoke 7311/442.
+    "fast": {"tests": 9092, "modules": 569},
+    "smoke": {"tests": 7311, "modules": 442},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

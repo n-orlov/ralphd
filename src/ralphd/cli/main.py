@@ -6366,6 +6366,11 @@ def cmd_answer(args):
         out(args, res, "answered: secret handled (the commit scan of the "
             "offending range is clean; the worker carries on)")
         return
+    if res.get("kind") == "petition_hold":
+        out(args, res, "answered: the petition-hold park is released (the "
+            "run re-reads the plan; a hold your `amend` ruling did not move "
+            "parks again)")
+        return
     out(args, res, f"answered: {res.get('outcome')} (waived "
         f"{res.get('waived') or 'none'}, accepted "
         f"{res.get('accepted') or 'none'}, cure rounds "

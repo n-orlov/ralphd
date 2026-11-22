@@ -1005,6 +1005,16 @@ park is released, `input.answered` is emitted with `kind: "secret"` and the
 worker continues. The response is `{"outcome": "secret_handled", "kind":
 "secret", "approach", "baseSha"}`.
 
+A `petition_hold` question (`inputQuestion.kind: "petition_hold"`, v0.38 A.5: the
+one prompt adjudication of a held petitioned task found no adjudication or left
+the hold unchanged) takes an empty body: `409` when any key is sent, otherwise the
+park is released (`input.answered`, `outcome: "petition_hold_released"`,
+`kind: "petition_hold"`, `approach`, `heldTaskIds`) and the worker re-reads the
+plan. The operator's answer is the host-side `ralphctl amend` ruling recorded
+beforehand (`inputQuestion.text` names both forms); `inputQuestion.heldTasks`
+lists `taskId`, `title`, `petition` and `dependents` per held task, and the
+question never expires (`expiresAt: null`, `onTimeout: "never"`).
+
 - `waive` / `accept` name findings of `inputQuestion.findings` by id. Each
   waived finding is written to the waiver store (`<run-root>/waivers/NNN.json`:
   `clause`, finding text, judge, timestamp, the note), bound to its PRD

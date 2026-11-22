@@ -522,6 +522,10 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # phase's gate raised leaves `paused` for `worker` when it cures in
         # that phase or opens the gate (K = 0 goes to `replan` below).
         T("worker", "paused_resumed_phase_gate"),
+        # v0.38 A.5: a restarted engine over a `petition_hold` park carries on
+        # at `worker`, which re-reads the plan after the operator's `amend`
+        # ruling (no verdict is pending behind that park).
+        T("worker", "paused_resumed_petition_hold"),
         # v0.36 requirement C.3: an ANSWER to the findings park
         # (`LoopSupervisor.answer`) leaves `paused` by the outcome it chose,
         # from the judge's own position over the SAME unarchived approach: a

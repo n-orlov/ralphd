@@ -1584,6 +1584,11 @@ class LoopSupervisor:
             return self._answer_secret(question, secret_handled, waive=waive,
                                        accept=accept, cure_rounds=cure_rounds,
                                        approaches=approaches)
+        if isinstance(question, dict) and question.get("kind") == (
+                state.PETITION_HOLD_KIND):
+            return self._answer_petition_hold(
+                question, secret_handled, waive=waive, accept=accept,
+                cure_rounds=cure_rounds, approaches=approaches)
         if secret_handled:
             raise answering.AnswerRefused(
                 "--secret-handled answers a `secret` question, and this run's "
@@ -1623,6 +1628,30 @@ class LoopSupervisor:
         if isinstance(question, dict) and question.get("planPhase"):
             record["planPhase"] = question["planPhase"]
         self.run.update_status(inputAnswer=record)
+        self.run.emit("input.answered", **record)
+        self.resume()
+        return record
+
+    def _answer_petition_hold(self, question: dict, secret_handled: bool,
+                              **others) -> dict:
+        """v0.38 A.5: the park's answer is the operator's `ralphctl amend`
+        ruling (waiver or status), recorded host-side and applied by the
+        worker loop; `ralphctl answer <run>` with no option only releases
+        the park so the loop re-reads the plan. A hold the ruling did not
+        move is re-parked at once."""
+        if secret_handled or any(
+                v not in (None, [], ()) for v in others.values()):
+            raise answering.AnswerRefused(
+                "this run is parked on a held petitioned task; answer it "
+                f"with `ralphctl amend {self.cfg.run_id} <task> --waive "
+                f"<reason>` or `ralphctl amend {self.cfg.run_id} <task> "
+                "--status validated|skipped <reason>`, then "
+                f"`ralphctl answer {self.cfg.run_id}` with no options")
+        record = {"outcome": "petition_hold_released",
+                  "kind": state.PETITION_HOLD_KIND,
+                  "approach": question.get("approach"),
+                  "heldTaskIds": [e.get("taskId") for e in
+                                  question.get("heldTasks") or []]}
         self.run.emit("input.answered", **record)
         self.resume()
         return record
@@ -8474,6 +8503,115 @@ class LoopSupervisor:
                                        cause=self.COMMIT_SECRET_SCAN_EVENT)
                 return
 
+    def _petition_hold_entries(
+        self, tasks_doc: dict, blocked: dict, held_task_ids: list[str],
+    ) -> list[dict]:
+        """One entry per held (petitioned) task: its id, title, the petition
+        on file for it (obligation, type, evidence -- `None` when none is
+        filed) and the ids of the tasks that wait on it."""
+        by_id = {str(t.get("id")): t for t in tasks_doc.get("tasks") or []
+                 if isinstance(t, dict)}
+        entries = []
+        for tid in held_task_ids:
+            task = by_id.get(tid) or {"id": tid}
+            obligation = petitions.task_petition_obligation(task)
+            filed = petitions.filed_petition_for_obligation(
+                self.workspace, obligation, self.run)
+            entries.append({
+                "taskId": tid,
+                "title": str(task.get("title") or ""),
+                "petition": ({
+                    "obligation": filed.get("obligation"),
+                    "type": filed.get("type"),
+                    "evidence": filed.get("evidence"),
+                } if filed else None),
+                "dependents": sorted(
+                    d for d, causes in blocked.items() if tid in causes),
+            })
+        return entries
+
+    def _petition_hold_question_text(self, entries: list[dict]) -> str:
+        """The operator-facing text of a petition-hold park: each petitioned
+        task, its petition, its dependents and the two answers."""
+        run_id = self.cfg.run_id
+        lines = [
+            "The entire actionable remainder of this plan is held on "
+            "petitioned task(s), and the one prompt adjudication did not "
+            "settle them (no adjudication, or the hold is unchanged).",
+        ]
+        for e in entries:
+            pet = e["petition"] or {}
+            lines.append("")
+            lines.append(f"Petitioned task {e['taskId']}"
+                         + (f" ({e['title']})" if e["title"] else ""))
+            lines.append(
+                "  petition: " + (
+                    f"{pet.get('obligation')} [{pet.get('type')}]: "
+                    f"{pet.get('evidence')}" if pet
+                    else "(no petition text on file)"))
+            lines.append("  dependents: "
+                         + (", ".join(e["dependents"]) or "(none)"))
+        first = entries[0]["taskId"] if entries else "<task>"
+        lines += [
+            "",
+            "Answer with one of:",
+            f"  ralphctl amend {run_id} --waive {first} <reason>"
+            f"  (waive the petitioned task; its dependents are unblocked)",
+            f"  ralphctl amend {run_id} {first} --status validated|skipped "
+            "<reason>  (rule the task's status)",
+            f"then run `ralphctl answer {run_id}` so the run re-reads the "
+            "plan. A ruling recorded with `ralphctl rule` does not answer "
+            "this park.",
+        ]
+        return "\n".join(lines)
+
+    def _park_for_petition_hold(
+        self, tasks_doc: dict, blocked: dict, held_task_ids: list[str],
+    ) -> None:
+        """v0.38 A.5: the prompt adjudication of a held petitioned task
+        could not settle it, so the run parks `awaiting_input` with a
+        `petition_hold` question instead of routing to the final review on
+        that state. The question never expires; `ralphctl amend` (a waiver
+        or a status ruling) then `ralphctl answer <run>` leaves it, and the
+        worker re-reads the plan from the top of its loop. Like the secret
+        park it emits no `operator_escalation` event with an `approach`
+        field: no review verdict stands behind it."""
+        self._pause.clear()
+        self.run.emit("log", message="paused at next iteration boundary")
+        status = self.run.read_status()
+        current = status.get("state")
+        if current == "finishing" or current in TERMINAL_STATES:
+            return
+        entries = self._petition_hold_entries(
+            tasks_doc, blocked, held_task_ids)
+        approach = self._approach or 1
+        question = state.build_input_question(
+            judge=None, trigger=state.PETITION_HOLD_INPUT_TRIGGER,
+            blocking=[],
+            cure_rounds_used=self._cure_passes_for_approach(approach),
+            cure_rounds_allowed=self._cure_rounds_allowed(approach),
+            approach=approach, max_approaches=self.cfg.max_approaches,
+            parked_at_epoch=self._now_epoch(),
+            timeout_min=getattr(self.cfg, "input_timeout_min", None),
+            kind=state.PETITION_HOLD_KIND)
+        text = self._petition_hold_question_text(entries)
+        question.update({"heldTasks": entries, "text": text})
+        self.run.update_status(
+            state=AWAITING_INPUT_STATE,
+            pauseReason=state.PETITION_HOLD_INPUT_TRIGGER,
+            pauseDetail=None, inputQuestion=question)
+        self._emit_run_paused(state.PETITION_HOLD_INPUT_TRIGGER)
+        self.run.emit("input.parked", **{k: v for k, v in question.items()
+                                         if k != "parkedAt"})
+        self.run.emit("log", message=(
+            f"run state recorded `{AWAITING_INPUT_STATE}` on status.json "
+            f"(petition hold on {', '.join(held_task_ids)}); apply "
+            f"`ralphctl amend {self.cfg.run_id} ...` then `ralphctl answer "
+            f"{self.cfg.run_id}`"))
+        if self.notifier is not None:
+            self._notify_input_event(
+                f"run {self.cfg.run_id} is parked in awaiting_input\n{text}")
+
     def _park_for_commit_secret(self, base_sha: str | None,
                                 head_sha: str | None) -> None:
         """v0.36 F.6/C.5 (it replaces the 0.35 `operator_input_needed`
@@ -11048,7 +11186,37 @@ class LoopSupervisor:
                             escalation=hold_text)
                         if self.notifier is not None:
                             self._notify(hold_text)
-                    await self._maybe_run_midrun_adjudication_episode()
+                    # v0.38 A.4: the episode runs on the FIRST hold, before
+                    # any no-task worker iteration is spent.
+                    episode_ran = (
+                        await self._maybe_run_midrun_adjudication_episode())
+                    if episode_ran:
+                        after_doc = self.run.read_tasks()
+                        after_blocked = state.task_blocked_by(
+                            after_doc.get("tasks", []),
+                            include_petitioned=True,
+                            settled=self._settled_petitioned_ids(after_doc))
+                        after_actionable = {
+                            str(t["id"]) for t in after_doc.get("tasks", [])
+                            if isinstance(t, dict)
+                            and t.get("id") not in (None, "")
+                            and task_is_actionable(t)}
+                        after_held = sorted({
+                            tid for ids in after_blocked.values()
+                            for tid in ids})
+                        still_held = bool(after_actionable) and (
+                            after_actionable <= set(after_blocked))
+                        if not still_held or after_held != held_task_ids:
+                            # A.4: the adjudication moved the plan (CONFIRMED
+                            # settled a task, REFUTED failed it, or part of
+                            # the hold went): re-select in THIS pass, never
+                            # through a no-task worker dispatch.
+                            continue
+                        # A.5: the judge could not settle it; ask the
+                        # operator and do not route to the final review.
+                        self._park_for_petition_hold(
+                            after_doc, after_blocked, held_task_ids)
+                        continue
                 # v0.20 task 022 (PRD requirement C.1, #156): the sleep-
                 # and-wake mechanism task 021's own scheduler docstring
                 # promised, "layered on top of this function's `None`
@@ -15492,6 +15660,12 @@ class LoopSupervisor:
             # released with no answer: the phase is due again.
             self._advance("paused", "worker", "paused_resumed_phase_gate")
             return ("advance", "worker", "paused_resumed_phase_gate")
+        if reason == state.PETITION_HOLD_INPUT_TRIGGER:
+            # v0.38 A.5: a restarted engine over a petition-hold park carries
+            # on at the worker, which re-reads the plan and either selects a
+            # newly unblocked task or parks again.
+            self._advance("paused", "worker", "paused_resumed_petition_hold")
+            return ("advance", "worker", "paused_resumed_petition_hold")
         if reason == state.SECRET_INPUT_TRIGGER:
             # v0.36 C.5: a `secret` park (a restarted engine over one) is
             # answered by `--secret-handled` and continues at the worker.
@@ -18864,7 +19038,7 @@ class LoopSupervisor:
                 lines.append(render(e) + render_superseded_caveat(e, reason))
         return "".join(lines)
 
-    async def _maybe_run_midrun_adjudication_episode(self) -> None:
+    async def _maybe_run_midrun_adjudication_episode(self) -> bool:
         """Task 005 PART 2 (requirement A.2, #114): before the engine ever
         calls `_verify_task` again for any task, run exactly ONE bounded,
         OFF-BUDGET adjudication iteration on the review-hat's OWN model
@@ -18922,6 +19096,13 @@ class LoopSupervisor:
         never competes with (or is billed against)
         either the run's iteration budget or a task's own
         `validationAttempts` count.
+
+        Returns True when the judge had its shot at an open petition -- the
+        episode ran now, or an earlier pass of this process already gave the
+        same obligations theirs -- and False when there was nothing to
+        adjudicate (no open petition, or no budget left to run it). The
+        petition-held branch of `_step_worker` reads it (v0.38 A.4/A.5): a
+        hold that outlives a True episode parks the run.
         """
         if not self.budget_left():
             # Task cure-01-01-2 (v0.24 requirement A.1/B.3, DoD 1-3,
@@ -18943,18 +19124,18 @@ class LoopSupervisor:
             # end-of-body `if not self.budget_left():` check is what still
             # lands the run in the shared `exhausted`/null-verdict freeze
             # path this same pass.
-            return
+            return False
         open_petitions = petitions.open_unconfirmed_petitions(
             self.workspace, self.run,
             contract_text=self._contract_text(),
             tasks=self.run.read_tasks().get("tasks") or [])
         if not open_petitions:
-            return
+            return False
         obligations_now = {
             petitions._normalize_obligation(p["obligation"])
             for p in open_petitions}
         if obligations_now <= self._petition_adjudication_seen:
-            return
+            return True
         await self._gate()
         self.run.emit("phase", phase="review", approach=self._approach,
                       midRunAdjudication=True)
@@ -18964,9 +19145,10 @@ class LoopSupervisor:
         self._refund_iteration("adjudication")
         self._petition_adjudication_seen |= obligations_now
         if result is None:
-            return
+            return True
         result = await self._review_contract_ladder(result, mid_run=True)
         self._review_verdict(result, mid_run=True)
+        return True
 
     def _midrun_adjudication_extra(self, open_petitions: list[dict]) -> str:
         """The scoped prompt context for the mid-run adjudication episode

@@ -297,8 +297,9 @@ non-terminal states, each with one owner:
 
 No other engine path parks a run, and every stop is written to `status.json`
 before the engine waits on it. `awaiting_input` carries `inputQuestion`: its
-`kind` (`findings` or `secret`), `trigger` (`incurable`, `reviewer_escalation`,
-`cure_rounds_spent`), the blocking findings, this approach's cure rounds used and
+`kind` (`findings`, `secret` or `petition_hold`), `trigger` (`incurable`,
+`reviewer_escalation`, `cure_rounds_spent`, `commit_secret`, `petition_hold`), the
+blocking findings, this approach's cure rounds used and
 allowed, `expiresAt` and `onTimeout`. The commit-secret park (`kind: secret`) has
 one answer, `ralphctl answer <run> --secret-handled`, once the commit scan of the
 offending range is clean, and never expires. A provider refusal ends the run
@@ -552,8 +553,19 @@ replan of the same approach, whose planning prompt names the offending edges
 `failed` with `ending: unschedulable_task_graph`; `ralphctl resume` continues it
 once the graph is repaired. Neither parks the run.
 
-A remainder held on a `petitioned` ancestor goes to review after three no-task
-passes (`petition_held_no_task_bound`).
+A remainder held on a `petitioned` ancestor is adjudicated at once: on the first
+hold the engine runs the mid-run adjudication episode before it spends any no-task
+worker iteration. CONFIRMED settles the task and REFUTED fails it with its remedy;
+if the plan moved, the loop re-selects in the same pass, so a CONFIRMED outcome
+starts the first dependent immediately. If the judge returns no adjudication, or
+the hold is unchanged, the run parks in `awaiting_input` (`inputQuestion.kind:
+petition_hold`, never expires) and does not route to the final review. The
+question names each petitioned task, its petition, its dependents and the two
+operator answers, `ralphctl amend <run> --waive <task>` and `ralphctl amend <run>
+<task> --status validated|skipped`; once the ruling is recorded, `ralphctl answer
+<run>` releases the park and the worker re-reads the plan. A hold with no open
+petition to adjudicate keeps the earlier bound: three no-task passes, then review
+(`petition_held_no_task_bound`).
 
 A `petitioned` task is **settled** when an applied operator waiver covers it (a
 task-level `ralphctl amend <run> <task> --waive`, or a run-level clause waiver
@@ -1157,7 +1169,7 @@ job configuration, or supported runtime overrides. Source:
 |---|---|---|
 | Iteration budget | 25 | Charged work allowance; raw iteration numbering is retained for history. Exhaustion holds the run in the resumable `exhausted` state rather than ending it. |
 | Approaches | 3 | Maximum plan/review approaches. A planning attempt that yields no usable plan retries on the same approach number; two consecutive attempts failing the same ingestion lint end the run. |
-| Input timeout | 60 minutes | How long a findings park in `awaiting_input` waits for an answer before the engine takes the park's timeout outcome. `0` means never; the `secret` park never expires. |
+| Input timeout | 60 minutes | How long a findings park in `awaiting_input` waits for an answer before the engine takes the park's timeout outcome. `0` means never; the `secret` and `petition_hold` parks never expire. |
 | Job timeout | 8 hours | Useful-work deadline; accounted infra, rate-limit and pause waits extend it. Reaching it holds the run in `exhausted`. |
 | Iteration timeout | 45 minutes | Individual invocation cap, read once per dispatch. The deadline is a boundary checked before dispatch, not a clamp on a started iteration. Reflection runs under `min(iteration timeout, 600 s)`. |
 | Startup traffic window | 150 seconds | Watchdog input, with CPU-progress discrimination. |

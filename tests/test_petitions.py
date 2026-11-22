@@ -407,7 +407,14 @@ def test_episode_answering_adjudicated_settles_with_no_agent_fault(tmp_path):
 # current `tasks.json` and no requirement of the contract as history, and
 # history is never surfaced to review at all -- so an obligation invented
 # out of thin air would make this scenario un-adjudicable rather than held.
-HELD_OBLIGATION = "Task A: the criterion names its own not-yet-existing sha"
+#
+# v0.38 (A.4/A.5): the obligation is exactly `petitions.task_petition_
+# obligation` of task `A` ("Task <id>: <title>"), so a CONFIRMED adjudication
+# of it SETTLES the held task. Before, this text named task `A` without
+# matching its title, so the adjudication settled nothing and the pass fell
+# through to a no-task worker dispatch -- a fruitless episode now parks the
+# run instead (`tests/test_petition_hold_prompt_adjudication.py`).
+HELD_OBLIGATION = "Task A: the petitioned task"
 
 
 def _confirming_review(sup, prompt=""):
@@ -471,6 +478,11 @@ def test_a_held_pass_runs_the_episode_and_still_dispatches_the_worker(tmp_path):
     # a held plan still gets its normal chance to reply.
     assert agent.calls.get("worker") == 1
 
+    # v0.38 A.4: the CONFIRMED outcome settled `A`, so the one worker
+    # dispatch of this pass worked its dependent `B` (claimed in-progress by
+    # the harness) rather than idling on a no-task iteration; the same-pass
+    # unblocking is pinned in tests/test_petition_hold_prompt_adjudication.py
+    # (test_a_confirmed_outcome_unblocks_the_dependents_in_the_same_pass).
     # Off-budget: the episode never competed with the run's own iteration
     # budget (iterations=1 covered exactly the one worker dispatch).
     # Task 015 (requirement E.1, #169) renamed this refund bucket from the
@@ -481,10 +493,10 @@ def test_a_held_pass_runs_the_episode_and_still_dispatches_the_worker(tmp_path):
               - sup._steer_refunded - sup._adjudication_refunded)
     assert charged == 1
 
-    # tasks.json is untouched by the hold itself -- A is still `petitioned`
-    # (closing it on a CONFIRMED adjudication is a later task's scope).
+    # A settled by CONFIRMED keeps the status `petitioned` (no status lie);
+    # its dependent is the task the worker was dispatched on.
     tasks = {t["id"]: t["status"] for t in sup.run.read_tasks()["tasks"]}
-    assert tasks == {"A": "petitioned", "B": "pending"}
+    assert tasks == {"A": "petitioned", "B": "in-progress"}
 
 
 def test_repeated_held_passes_never_trip_the_stagnation_counter(tmp_path):
@@ -505,7 +517,9 @@ def test_repeated_held_passes_never_trip_the_stagnation_counter(tmp_path):
     longer hold off."""
     sup, run, workspace = _episode_worker_supervisor(
         tmp_path, iterations=3, max_approaches=2)
-    _episode_petitions_file(workspace, HELD_OBLIGATION)
+    # No petition is on file: the episode has nothing to adjudicate, so the
+    # hold is the bare no-task-iteration shape (v0.38 A.5: with an open
+    # petition a fruitless episode parks the run instead).
     atomic_write_json(sup.run.tasks_file,
                       {"version": 1, "tasks": _held_plan()})
 
@@ -529,11 +543,10 @@ def test_repeated_held_passes_never_trip_the_stagnation_counter(tmp_path):
     assert agent.calls.get("worker") == 3
     assert outcome == ("tail",)
 
-    # The bounded episode ran exactly ONCE for this obligation -- calling
-    # it again on every later held pass is a no-op, never a repeat LLM
-    # call (`self._petition_adjudication_seen` dedup, unchanged by this
-    # task).
-    assert agent.calls.get("review") == 1
+    # No open petition, so no episode ran at all; the once-per-obligation
+    # dedupe is pinned in tests/test_petition_hold_prompt_adjudication.py
+    # (test_the_park_is_released_by_an_answer_and_the_loop_reparks_an_unmoved_hold).
+    assert agent.calls.get("review") is None
 
     # A held run never gets silently failed/replanned: `self._approach`
     # is exactly where it started (a `stagnation_exhausted` outcome would
