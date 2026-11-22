@@ -2011,6 +2011,17 @@ record it first and then run `ralphctl answer <run>` with no options: the park i
 released and the worker re-reads the plan (a hold the ruling did not move parks
 again). Any option on that `answer`, and a bare `ralphctl unpause`, is refused.
 
+A **`verified_unchanged` question** (`inputQuestion.kind: verified_unchanged`,
+`trigger: verified_unchanged`; v0.38 B.2) is what the final review parks the run
+on when it would be dispatched on the review state key (workspace HEAD plus the
+sorted `(task id, status, settled)` triples) a deferred VERIFIED already judged.
+It never expires, and `inputQuestion.heldTasks` and `inputQuestion.text` name the
+non-terminal tasks that held that VERIFIED and what blocks each. Change something
+first (an `amend` ruling on a blocking task, or a commit), then run `ralphctl
+answer <run>` with no options: a changed key dispatches the review, an unchanged
+one parks again. Any option on that `answer`, and a bare `ralphctl unpause`, is
+refused.
+
 Posts through the run's live API (`POST /answer`, docs/api.md), the same route
 the hub panel's `POST /api/runs/<id>/answer` proxies to; all three reach the one
 writer `LoopSupervisor.answer`, which emits `input.answered`. Exit `0` accepted

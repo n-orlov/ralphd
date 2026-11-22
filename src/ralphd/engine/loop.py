@@ -1585,6 +1585,11 @@ class LoopSupervisor:
                                        accept=accept, cure_rounds=cure_rounds,
                                        approaches=approaches)
         if isinstance(question, dict) and question.get("kind") == (
+                state.VERIFIED_UNCHANGED_KIND):
+            return self._answer_verified_unchanged(
+                question, secret_handled, waive=waive, accept=accept,
+                cure_rounds=cure_rounds, approaches=approaches)
+        if isinstance(question, dict) and question.get("kind") == (
                 state.PETITION_HOLD_KIND):
             return self._answer_petition_hold(
                 question, secret_handled, waive=waive, accept=accept,
@@ -1652,6 +1657,26 @@ class LoopSupervisor:
                   "approach": question.get("approach"),
                   "heldTaskIds": [e.get("taskId") for e in
                                   question.get("heldTasks") or []]}
+        self.run.emit("input.answered", **record)
+        self.resume()
+        return record
+
+    def _answer_verified_unchanged(self, question: dict,
+                                   secret_handled: bool, **others) -> dict:
+        """v0.38 B.2: `ralphctl answer <run>` with no option releases the
+        `verified_unchanged` park. The run re-enters `review`, which
+        compares the review state key again: a changed state dispatches the
+        review, an unchanged one parks again."""
+        if secret_handled or any(
+                v not in (None, [], ()) for v in others.values()):
+            raise answering.AnswerRefused(
+                "this run is parked because the final review already "
+                "returned VERIFIED on this exact state; change something "
+                f"(`ralphctl amend {self.cfg.run_id} ...` or a commit), "
+                f"then `ralphctl answer {self.cfg.run_id}` with no options")
+        record = {"outcome": "verified_unchanged_released",
+                  "kind": state.VERIFIED_UNCHANGED_KIND,
+                  "approach": question.get("approach")}
         self.run.emit("input.answered", **record)
         self.resume()
         return record
@@ -14451,6 +14476,13 @@ class LoopSupervisor:
         # phase it takes effect for, which is also what lets a test pin the
         # boundary off `events.jsonl` rather than off the load site.
         self._apply_operator_status_rulings()
+        # v0.38 B.2: the final review is never dispatched twice on the state
+        # a deferred VERIFIED already judged. Every `* -> review` edge ends
+        # here, so one comparison covers them all.
+        review_key = self._review_state_key()
+        if self._review_key_unchanged(approach, review_key):
+            return self._park_for_verified_unchanged(approach, review_key)
+        self._record_review_dispatch_key(approach, review_key)
         result = await self._run_review_iteration(approach)
         while result is not None and self._review_no_verdict:
             # #300: review produced no verdict after every retry. Not a
@@ -15284,6 +15316,148 @@ class LoopSupervisor:
         self._clear_review_channel_files()
         return taken
 
+    # v0.38 B.1: where the review state keys live on `status.json`, per
+    # approach: `{"<approach>": {"dispatched": key, "verifiedDeferred":
+    # {"key": key, "verdict": "VERIFIED", "blockers": [...]}}}`.
+    REVIEW_STATE_KEYS_STATUS_KEY = "reviewStateKeys"
+
+    def _review_state_key(self) -> dict:
+        """The review state key of the plan as it stands: the workspace HEAD
+        sha plus the sorted `(task id, status, settled)` triples over every
+        task (`state.review_state_key`)."""
+        doc = self.run.read_tasks()
+        return state.review_state_key(
+            self._workspace_head_sha(), doc.get("tasks") or [],
+            self._settled_petitioned_ids(doc))
+
+    def _review_key_entry(self, approach: int) -> dict:
+        keys = self.run.read_status().get(self.REVIEW_STATE_KEYS_STATUS_KEY)
+        entry = (keys or {}).get(str(approach)) if isinstance(keys, dict) \
+            else None
+        return entry if isinstance(entry, dict) else {}
+
+    def _write_review_key_entry(self, approach: int, entry: dict) -> None:
+        keys = self.run.read_status().get(self.REVIEW_STATE_KEYS_STATUS_KEY)
+        keys = dict(keys) if isinstance(keys, dict) else {}
+        keys[str(approach)] = entry
+        self.run.update_status(**{self.REVIEW_STATE_KEYS_STATUS_KEY: keys})
+
+    def _review_key_unchanged(self, approach: int, key: dict) -> bool:
+        """True iff a deferred VERIFIED of this approach is remembered and
+        its key equals `key`: the review would judge the same state twice."""
+        deferred = self._review_key_entry(approach).get("verifiedDeferred")
+        # The blockers recorded with the verdict are compared as well: a
+        # steering message the `steer` hat settled changes neither HEAD nor
+        # a task triple, yet it is exactly what held the VERIFIED, so a
+        # review asked once it is settled judges a different state.
+        return (isinstance(deferred, dict) and deferred.get("key") == key
+                and deferred.get("blockers") == self._terminal_success_blockers())
+
+    def _record_review_dispatch_key(self, approach: int, key: dict) -> None:
+        """Record the key a final-review dispatch is made on. A new dispatch
+        supersedes the remembered deferral: only the verdict this dispatch
+        returns can set one again."""
+        self._write_review_key_entry(approach, {"dispatched": key})
+
+    def _record_deferred_verified_key(
+        self, approach: int, blockers: list[str],
+    ) -> None:
+        """A VERIFIED verdict is deferring to the worker: remember the key
+        of the state it was returned for (read now, after any adjudication
+        the review applied) with the verdict and what held it."""
+        entry = dict(self._review_key_entry(approach))
+        entry["verifiedDeferred"] = {
+            "key": self._review_state_key(), "verdict": "VERIFIED",
+            "blockers": list(blockers)}
+        self._write_review_key_entry(approach, entry)
+
+    def _verified_unchanged_entries(self) -> list[dict]:
+        """The non-terminal tasks that held the earlier VERIFIED, and what
+        blocks each: the dead/petitioned ancestors, else its own status."""
+        doc = self.run.read_tasks()
+        tasks = doc.get("tasks") or []
+        blocked = state.task_blocked_by(
+            tasks, include_petitioned=True,
+            settled=self._settled_petitioned_ids(doc))
+        held = {str(t.get("id")): t for t in
+                (self._steering_origin_outstanding()
+                 + self._review_cure_origin_outstanding())}
+        # Every other non-terminal task is named too: it is part of the
+        # state the verdict was returned for.
+        for t in tasks:
+            if (isinstance(t, dict) and t.get("id") not in (None, "")
+                    and not state.task_is_terminal(t)):
+                held.setdefault(str(t["id"]), t)
+        return [{
+            "taskId": tid, "title": str(t.get("title") or ""),
+            "status": t.get("status"),
+            "blockedBy": sorted(blocked.get(tid, [])),
+        } for tid, t in sorted(held.items())]
+
+    def _verified_unchanged_question_text(self, entries: list[dict]) -> str:
+        run_id = self.cfg.run_id
+        lines = [
+            "The final review already returned VERIFIED on this exact state "
+            "(same workspace HEAD, same task statuses) and the engine "
+            "deferred to the worker because these tasks are not terminal. "
+            "Asking the review again would judge the same state twice, so "
+            "the run holds here."]
+        for e in entries:
+            blockers = (", ".join(e["blockedBy"]) if e["blockedBy"]
+                        else "nothing (the task is simply not done)")
+            lines.append(f"  task {e['taskId']} [{e['status']}]"
+                         + (f" ({e['title']})" if e["title"] else "")
+                         + f": blocked by {blockers}")
+        lines += [
+            "",
+            "Change something, then answer: rule a blocking task "
+            f"(`ralphctl amend {run_id} --waive <task> <reason>` or "
+            f"`ralphctl amend {run_id} <task> --status validated|skipped "
+            f"<reason>`) or commit to the workspace, then run "
+            f"`ralphctl answer {run_id}`. An answer with nothing changed "
+            "parks again.",
+        ]
+        return "\n".join(lines)
+
+    def _park_for_verified_unchanged(self, approach: int, key: dict) -> tuple:
+        """v0.38 B.2: do not dispatch the final review on a key a deferred
+        VERIFIED already judged. Park `awaiting_input`
+        (`pauseReason: verified_unchanged`), naming the non-terminal tasks
+        and their blockers, from `review`; a release re-enters `review`,
+        which compares the key again (an unchanged one re-parks)."""
+        self._pause.clear()
+        self.run.emit("log", message="paused at next iteration boundary")
+        entries = self._verified_unchanged_entries()
+        question = state.build_input_question(
+            judge="review", trigger=state.VERIFIED_UNCHANGED_INPUT_TRIGGER,
+            blocking=[],
+            cure_rounds_used=self._cure_passes_for_approach(approach),
+            cure_rounds_allowed=self._cure_rounds_allowed(approach),
+            approach=approach, max_approaches=self.cfg.max_approaches,
+            parked_at_epoch=self._now_epoch(),
+            timeout_min=getattr(self.cfg, "input_timeout_min", None),
+            kind=state.VERIFIED_UNCHANGED_KIND)
+        text = self._verified_unchanged_question_text(entries)
+        question.update({"heldTasks": entries, "reviewStateKey": key,
+                         "text": text})
+        self.run.update_status(
+            state=AWAITING_INPUT_STATE,
+            pauseReason=state.VERIFIED_UNCHANGED_INPUT_TRIGGER,
+            pauseDetail=None, inputQuestion=question)
+        self._emit_run_paused(state.VERIFIED_UNCHANGED_INPUT_TRIGGER)
+        self.run.emit("input.parked", **{k: v for k, v in question.items()
+                                         if k != "parkedAt"})
+        self.run.emit("log", level="warning", message=(
+            f"run state recorded `{AWAITING_INPUT_STATE}` "
+            f"(verified_unchanged, approach {approach}): the final review "
+            "already returned VERIFIED on this HEAD and these task "
+            "statuses; not dispatching it again"))
+        if self.notifier is not None:
+            self._notify_input_event(
+                f"run {self.cfg.run_id} is parked in awaiting_input\n{text}")
+        self._advance("review", "paused", "verified_unchanged")
+        return ("advance", "paused", "verified_unchanged")
+
     def _review_verified_edge(self, approach: int) -> tuple:
         """review's `verified` edge (also taken when the ladder treats a
         rejection whose blocking findings are all waived as verified): the
@@ -15336,6 +15510,7 @@ class LoopSupervisor:
             # steering's name (PRD requirement D: reusing that name for
             # a different blocker would lie in the event log).
             guard = self._pending_at_verified_guard()
+            self._record_deferred_verified_key(approach, blockers)
             self.run.emit(
                 "log", level="warning",
                 message=("VERIFIED verdict deferring: "

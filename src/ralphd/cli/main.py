@@ -6366,6 +6366,11 @@ def cmd_answer(args):
         out(args, res, "answered: secret handled (the commit scan of the "
             "offending range is clean; the worker carries on)")
         return
+    if res.get("kind") == "verified_unchanged":
+        out(args, res, "answered: the verified_unchanged park is released "
+            "(the run compares the review state key again: a changed state "
+            "dispatches the final review, an unchanged one parks again)")
+        return
     if res.get("kind") == "petition_hold":
         out(args, res, "answered: the petition-hold park is released (the "
             "run re-reads the plan; a hold your `amend` ruling did not move "

@@ -184,6 +184,7 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `review` | review | both | `finishing` | `review_findings_unusable` |
 | `review` | review | both | `review` | `review_judge_fault_retry` |
 | `review` | review | both | `paused` | `operator_input_needed` |
+| `review` | review | both | `paused` | `verified_unchanged` |
 | `review` | review | both | `finishing` | `rejected_no_approach_left` |
 | `review` | review | both | `review` | `review_interrupted` |
 | `review` | review | both | `finishing` | `review_unjudged_at_budget_end` |
@@ -275,6 +276,7 @@ stateDiagram-v2
     review --> finishing : review_findings_unusable
     review --> review : review_judge_fault_retry
     review --> paused : operator_input_needed
+    review --> paused : verified_unchanged
     review --> finishing : rejected_no_approach_left
     review --> review : review_interrupted
     review --> finishing : review_unjudged_at_budget_end

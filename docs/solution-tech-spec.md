@@ -291,14 +291,15 @@ non-terminal states, each with one owner:
 | `state` | Entered by | Left by |
 |---|---|---|
 | `paused` | the operator only (`ralphctl pause`, the hub, `POST /pause`); `status.json` records `pausedBy: "operator"` and the optional `pauseNote` | `ralphctl unpause` |
-| `awaiting_input` | the engine, only to ask the operator about findings (`inputQuestion`), about a secret found in a commit, or about a held petitioned task the prompt adjudication did not settle (`kind: petition_hold`, below) | an answer (`ralphctl answer`, `POST /answer`, the hub panel) or the input timeout |
+| `awaiting_input` | the engine, only to ask the operator about findings (`inputQuestion`), about a secret found in a commit, or about a held petitioned task the prompt adjudication did not settle (`kind: petition_hold`, below), or because the final review would judge a state a deferred VERIFIED already judged (`kind: verified_unchanged`, below) | an answer (`ralphctl answer`, `POST /answer`, the hub panel) or the input timeout |
 | `exhausted` | the engine, when the iteration, time or approach budget is spent (`exhaustedBudget`) | `ralphctl resume` with a top-up of that budget |
 | `running` with `health: degraded` | the engine, during an infrastructure outage | recovery, or `failed` once the outage budget is spent |
 
 No other engine path parks a run, and every stop is written to `status.json`
 before the engine waits on it. `awaiting_input` carries `inputQuestion`: its
-`kind` (`findings`, `secret` or `petition_hold`), `trigger` (`incurable`,
-`reviewer_escalation`, `cure_rounds_spent`, `commit_secret`, `petition_hold`), the
+`kind` (`findings`, `secret`, `petition_hold` or `verified_unchanged`), `trigger`
+(`incurable`, `reviewer_escalation`, `cure_rounds_spent`, `commit_secret`,
+`petition_hold`, `verified_unchanged`), the
 blocking findings, this approach's cure rounds used and
 allowed, `expiresAt` and `onTimeout`. The commit-secret park (`kind: secret`) has
 one answer, `ralphctl answer <run> --secret-handled`, once the commit scan of the
@@ -568,6 +569,21 @@ operator answers, `ralphctl amend <run> --waive <task>` and `ralphctl amend <run
 <run>` releases the park and the worker re-reads the plan. A hold with no open
 petition to adjudicate keeps the earlier bound: three no-task passes, then review
 (`petition_held_no_task_bound`).
+
+The same state is never judged twice. Each final-review dispatch records a review
+state key in the approach's state (`status.json` `reviewStateKeys`): the workspace
+HEAD sha plus the sorted `(task id, status, settled)` triples over every task of the
+plan. A VERIFIED verdict that defers to the worker ("VERIFIED verdict deferring")
+stores the key with the verdict. Before any final-review dispatch on that approach,
+from any edge into `review`, the engine compares the current key with the stored
+one, and the blockers stored with it (a steering message settled since counts as a
+change); if they are equal it does not dispatch. It parks in `awaiting_input`
+(`pauseReason: verified_unchanged`, `inputQuestion.kind: verified_unchanged`, never
+expires) naming the non-terminal tasks that held the earlier VERIFIED and what
+blocks each. A changed HEAD or a changed task status dispatches the review as
+before. `ralphctl answer <run>` releases the park and the run re-enters `review`,
+so a release with nothing changed parks again with no review dispatch. The phase
+review is not keyed.
 
 A `petitioned` task is **settled** when an applied operator waiver covers it (a
 task-level `ralphctl amend <run> <task> --waive`, or a run-level clause waiver

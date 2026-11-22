@@ -733,6 +733,15 @@ def unpause_refusal(run_id: str, status: dict) -> str | None:
                 "this run is awaiting input on a `secret` question (a secret "
                 f"in a commit): run `ralphctl answer {run_id} --secret-handled` "
                 "once the commit scan of the offending range is clean")
+        if question.get("kind") == VERIFIED_UNCHANGED_KIND:
+            return (
+                "this run is awaiting input because the final review already "
+                "returned VERIFIED on this exact state (same HEAD, same task "
+                "statuses) and the engine deferred to the worker: change "
+                f"something first (`ralphctl amend {run_id} ...` on a "
+                "blocking task, or a commit), then run "
+                f"`ralphctl answer {run_id}`; an answer with nothing changed "
+                "parks again")
         if question.get("kind") == PETITION_HOLD_KIND:
             return (
                 "this run is awaiting input on a held petitioned task: apply "
@@ -777,9 +786,10 @@ LEGACY_TIMED_OUT_STATE = "timed_out"
 # `paused` for a park; `paused` is the operator's alone. Non-terminal for the
 # same liveness reason `paused` is: a live engine owns the position.
 AWAITING_INPUT_STATE = "awaiting_input"
-INPUT_QUESTION_KINDS = ("findings", "secret", "petition_hold")
+INPUT_QUESTION_KINDS = ("findings", "secret", "petition_hold",
+                        "verified_unchanged")
 INPUT_TRIGGERS = ("incurable", "reviewer_escalation", "cure_rounds_spent",
-                  "commit_secret", "petition_hold")
+                  "commit_secret", "petition_hold", "verified_unchanged")
 INPUT_JUDGES = ("review", "verdict_gate")
 # What the engine does when `expiresAt` passes with no answer (PRD E.3).
 INPUT_ON_TIMEOUT_CURE_NOW = "cure_now"
@@ -793,7 +803,15 @@ SECRET_INPUT_TRIGGER = "commit_secret"
 # only the operator's `amend` rulings (then `ralphctl answer`) leave it.
 PETITION_HOLD_KIND = "petition_hold"
 PETITION_HOLD_INPUT_TRIGGER = "petition_hold"
-NEVER_EXPIRING_INPUT_KINDS = ("secret", PETITION_HOLD_KIND)
+# v0.38 B.2: the park a final-review dispatch lands in when the review state
+# key (workspace HEAD plus the sorted `(task id, status, settled)` triples) is
+# the one a deferred VERIFIED already judged. It never expires either: only a
+# change of state (an operator ruling, a commit, a task status) leaves it, and
+# `ralphctl answer` with no change re-parks.
+VERIFIED_UNCHANGED_KIND = "verified_unchanged"
+VERIFIED_UNCHANGED_INPUT_TRIGGER = "verified_unchanged"
+NEVER_EXPIRING_INPUT_KINDS = ("secret", PETITION_HOLD_KIND,
+                              VERIFIED_UNCHANGED_KIND)
 # The default input timeout in minutes (`input_timeout_min`, E.1); `0` = never.
 DEFAULT_INPUT_TIMEOUT_MIN = 60
 NONTERMINAL_STATES = ("starting", "running", PAUSED_STATE,
@@ -1209,6 +1227,22 @@ def build_input_question(
     if plan_phase is not None:
         question["planPhase"] = plan_phase
     return question
+
+
+def review_state_key(head: str | None, tasks: list, settled=()) -> dict:
+    """v0.38 B.1: the key a final-review dispatch is recorded under. The
+    workspace HEAD sha plus the sorted `(task id, status, settled)` triples
+    over every task of the plan; `settled` is True for a `petitioned` task
+    the settled rule covers (a waiver or a CONFIRMED adjudication) and False
+    for every other task. JSON-shaped (lists, not tuples) so a key read back
+    from `status.json` compares equal to a freshly computed one."""
+    settled_ids = {str(i) for i in settled}
+    triples = sorted(
+        [str(t.get("id")), str(t.get("status")),
+         bool(t.get("status") == TASK_STATUS_PETITIONED
+              and str(t.get("id")) in settled_ids)]
+        for t in tasks if isinstance(t, dict))
+    return {"head": head, "tasks": triples}
 
 
 def parked_question(run_root: Path, status: dict) -> dict | None:

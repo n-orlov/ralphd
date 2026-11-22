@@ -1015,6 +1015,16 @@ beforehand (`inputQuestion.text` names both forms); `inputQuestion.heldTasks`
 lists `taskId`, `title`, `petition` and `dependents` per held task, and the
 question never expires (`expiresAt: null`, `onTimeout: "never"`).
 
+A `verified_unchanged` question (`inputQuestion.kind: "verified_unchanged"`, v0.38
+B.2: the final review would be dispatched on the review state key a deferred
+VERIFIED already judged) takes an empty body too: `409` when any key is sent,
+otherwise the park is released (`input.answered`, `outcome:
+"verified_unchanged_released"`, `kind: "verified_unchanged"`, `approach`) and the
+run re-enters `review`, which compares the key again, so a release with nothing
+changed parks again without a review dispatch. `inputQuestion.heldTasks` lists
+`taskId`, `title`, `status` and `blockedBy` per non-terminal task; the question
+never expires (`expiresAt: null`, `onTimeout: "never"`).
+
 - `waive` / `accept` name findings of `inputQuestion.findings` by id. Each
   waived finding is written to the waiver store (`<run-root>/waivers/NNN.json`:
   `clause`, finding text, judge, timestamp, the note), bound to its PRD

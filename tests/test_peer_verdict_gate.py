@@ -117,6 +117,9 @@ def test_gate_off_by_default_table_is_byte_identical_to_today(vigilant):
         # gate-off is byte-identical to TODAY's table (now including this
         # edge), not to a pre-task-014 snapshot of it.
         tr.T("paused", "operator_input_needed"),
+        # v0.38 B.2: the unchanged-review-key park, declared in both table
+        # variants; covered by tests/test_review_state_key.py.
+        tr.T("paused", "verified_unchanged"),
         tr.T("finishing", "rejected_no_approach_left"),
         tr.T("review", "review_interrupted"),
         tr.T("finishing", "review_unjudged_at_budget_end"),

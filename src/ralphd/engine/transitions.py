@@ -413,6 +413,10 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # left unarchived, so `resume` re-enters `review` over the SAME
         # approach.
         T("paused", "operator_input_needed"),
+        # v0.38 B.2: the final review is not dispatched twice on one
+        # unchanged review state key; the run parks `awaiting_input`
+        # (`verified_unchanged`) from `review` and re-enters it on release.
+        T("paused", "verified_unchanged"),
         # rejected, and this was the last approach / budget is gone.
         T("finishing", "rejected_no_approach_left"),
         # requirement A, #72: the review iteration itself got cut short
@@ -764,6 +768,10 @@ PEER_VERDICT_GATE_DELTA: dict[str, tuple[Transition, ...]] = {
         # branch too, entirely before the (VERIFIED-only) peer verdict
         # gate is ever consulted.
         T("paused", "operator_input_needed"),
+        # v0.38 B.2: the final review is not dispatched twice on one
+        # unchanged review state key; the run parks `awaiting_input`
+        # (`verified_unchanged`) from `review` and re-enters it on release.
+        T("paused", "verified_unchanged"),
         T("finishing", "rejected_no_approach_left"),
         T("review", "review_interrupted"),
         T("finishing", "review_unjudged_at_budget_end"),
