@@ -1020,8 +1020,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # (a later ruling ends the status warning for good, by ruling order, and
     # a later cure-reopen ruling counts), in both tiers -> fast 9146, smoke
     # 7365.
-    "fast": {"tests": 9146, "modules": 572},
-    "smoke": {"tests": 7365, "modules": 445},
+    # v0.38 task 005 second retry: +4 tests in tests/test_amend_status_at_
+    # the_door.py (an unreadable record never lets the mirror refuse, x2
+    # ways each for a legal and an illegal ruling; one fallback node became
+    # a degrade-layout node), in both tiers -> fast 9150, smoke 7369.
+    "fast": {"tests": 9150, "modules": 572},
+    "smoke": {"tests": 7369, "modules": 445},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

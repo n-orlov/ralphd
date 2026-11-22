@@ -3312,8 +3312,10 @@ on a re-opened task is applied (and emits `task.un_reopened`, `source:
 for an operator ruling on a task no cure re-opened. `ralphctl amend --status`
 asks the same check (`state.task_status_change_refusal`) against the
 authoritative record (`~/.ralphd/configs/<run>/record/tasks.json`; the run dir's
-`tasks.json` is its mirror) when it records a ruling, and refuses an illegal one
-with exit 2, the engine's reason and no ruling file; a ruling the engine
+`tasks.json` is its mirror and never decides a refusal) when it records a
+ruling, and refuses an illegal one with exit 2, the engine's reason and no
+ruling file; while a live run holds the record unreadable from the host, the
+ruling is recorded unchecked and `amend` says so; a ruling the engine
 refuses later, because the task moved, emits `amendment.refused` and stays
 visible in `ralphctl amend <run> --list` (`refused: <reason>`) and `ralphctl
 status` until a later ruling for that task is applied -- later in recording

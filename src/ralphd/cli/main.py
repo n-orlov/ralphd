@@ -6440,30 +6440,60 @@ def _amend_echo_target_or_die(args) -> None:
            f"(tasks.json); pass --force to record the ruling anyway")
 
 
-def _amend_authoritative_task(run_id: str, task_id: str) -> tuple[dict | None, str]:
-    """The task row an operator status ruling is checked against, and where
-    it came from. The authoritative record is `record/tasks.json` under the
-    run's config dir (`task_record_dir`); the run dir's `tasks.json` is a
-    mirror of it. A live container can hold the record directory root-owned
-    and unreadable from the host, so when the record cannot be read the
-    mirror answers instead (named in the second return value). `(None, "")`
-    when neither names the task (no plan yet, or `--force` on an unknown id).
+def _amend_authoritative_task(run_id: str, task_id: str) -> tuple[str, dict | None]:
+    """The authoritative task row an operator status ruling is checked
+    against. The record is `record/tasks.json` under the run's config dir
+    (`task_record_dir`); the run dir's `tasks.json` is only a mirror of it,
+    agent-writable and possibly stale, so it never decides a refusal.
+
+    Returns `("ok", row)` when the record was read (`row` is None when the
+    record does not name the task: `--force` on an unknown id), `("absent",
+    None)` when no record exists yet (no plan), and `("unreadable", None)`
+    when one exists but cannot be read or parsed -- the live case: a running
+    engine holds `record/` root-owned 0700 (#202), unreadable to the host
+    user until the container exits and releases it. An `os.stat` denied
+    with EACCES (the file behind that 0700 directory) lands there too: it is
+    called directly because `Path.exists()` swallows that error on 3.14.
+    Only when no record mount exists is the record looked for where the
+    engine then keeps it (`privsep.protected_tasks_dir`'s degrade).
     """
-    rec = task_record_dir(run_id) / "tasks.json"
-    source = "record/tasks.json"
+    if task_record_dir(run_id).is_dir():
+        # The mount exists, so the engine keeps the record there and nowhere
+        # else (`privsep.protected_tasks_dir`).
+        candidates = [task_record_dir(run_id) / "tasks.json"]
+    else:
+        candidates = [
+            # No record mount (a run started before #202's mount, or the
+            # unprivileged degrade): the engine keeps it in the run dir.
+            privsep.legacy_protected_tasks_dir(run_root(run_id))
+            / privsep.TASK_RECORD_FILENAME,
+            # No protected record at all: the pre-#60 layout, whose run-dir
+            # `tasks.json` is itself the record.
+            run_root(run_id) / "tasks.json",
+        ]
+    rec = None
+    for c in candidates:
+        try:
+            os.stat(c)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except OSError:   # EACCES: present behind a root-owned 0700 dir
+            return "unreadable", None
+        rec = c
+        break
+    if rec is None:
+        return "absent", None
     try:
         doc = json.loads(rec.read_text())
-        rows = doc.get("tasks") if isinstance(doc, dict) else None
     except (OSError, ValueError):
-        rows = None
+        return "unreadable", None
+    rows = doc.get("tasks") if isinstance(doc, dict) else None
     if not isinstance(rows, list):
-        res = read_tasks_doc(run_root(run_id), persist=False)
-        rows = res.tasks if res.present else []
-        source = "tasks.json mirror (record/tasks.json unreadable)"
+        return "unreadable", None
     for t in rows:
         if isinstance(t, dict) and str(t.get("id")) == str(task_id):
-            return t, source
-    return None, ""
+            return "ok", t
+    return "ok", None
 
 
 def _amend_status_door_check(args, reason: str) -> None:
@@ -6473,8 +6503,25 @@ def _amend_status_door_check(args, reason: str) -> None:
     operator-ruling exits and the cure-reopened guard) against the
     authoritative task record, so the refusal carries the engine's reason.
     A ruling to the status the task already holds is not refused (the engine
-    treats it as a no-op)."""
-    task, source = _amend_authoritative_task(args.run_id, args.task_id)
+    treats it as a no-op).
+
+    When the record exists but cannot be read (a live container holds it
+    root-owned), there is no authoritative status to check against: the
+    ruling is recorded unchecked and this says so. The mirror is not
+    consulted -- refusing a legal ruling on a stale or agent-edited mirror
+    is worse than deferring to the engine, whose apply-time refusal emits
+    `amendment.refused` and shows in `amend --list` and `status` (C.2)."""
+    state, task = _amend_authoritative_task(args.run_id, args.task_id)
+    if state == "unreadable":
+        print(f"ralphctl: the authoritative task record "
+              f"({task_record_dir(args.run_id) / 'tasks.json'}) cannot be "
+              "read from this host user (a live run holds record/ root-owned "
+              "until its container exits), so this status ruling is recorded "
+              "UNCHECKED; the engine checks it when it applies it, and a "
+              "refusal shows as `refused: <reason>` in `ralphctl amend "
+              f"{args.run_id} --list` and in `ralphctl status`",
+              file=sys.stderr)
+        return
     if task is None:
         return
     cfg_path = config_root(args.run_id) / "job.yaml"
@@ -6487,8 +6534,8 @@ def _amend_status_door_check(args, reason: str) -> None:
         justification=reason, cure_reopened=cure_reopened)
     if refusal:
         die(2, f"status ruling refused: task {args.task_id} is {current!r} "
-               f"in {source}; {current!r} -> {args.status!r} is not allowed: "
-               f"{refusal}; nothing was recorded")
+               f"in record/tasks.json; {current!r} -> {args.status!r} is not "
+               f"allowed: {refusal}; nothing was recorded")
 
 
 def _amend_resolve_approach(args) -> int | None:

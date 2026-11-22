@@ -2249,9 +2249,16 @@ one.
 `~/.ralphd/configs/<run>/record/tasks.json` (the `record/` directory of the
 run's config dir, the engine's protected copy). The run dir's `tasks.json` is a
 **mirror** of that record, kept in sync on every write and what `ralphctl
-tasks`, the hub and the agents read. The check reads the record; while a live
-container holds `record/` unreadable from the host (root-owned 0700), it reads
-the mirror and says so in the refusal.
+tasks`, the hub and the agents read. The check reads the record, never the
+mirror: the mirror is agent-writable and can lag the record, so it never decides
+a refusal. While a live container holds `record/` unreadable from the host
+(root-owned 0700 until the container exits), there is no authoritative status
+to check against, so the ruling is recorded **unchecked** and `amend` says so
+on stderr; the engine checks it when it applies it, and a refusal then shows
+as described next. A run with no `record/` mount (started before the mount
+existed) is checked against the record the engine keeps in the run dir's
+`.tasks-protected/`, or against the run dir's `tasks.json` when that is the
+only record the run has.
 
 **A refusal the engine makes later (v0.38 C.2).** If the task's status moved
 after the ruling was recorded, the engine refuses the ruling when it applies

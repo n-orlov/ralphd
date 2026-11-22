@@ -3,7 +3,7 @@
 later (the task moved after recording) stays visible.
 
 C.1 (the door): `amend <run> <task> --status S` loads the authoritative task
-record (`<config dir>/record/tasks.json`) and asks the engine's own legality
+record (`<config dir>/record/tasks.json`; never the run dir's mirror, not even when the record is unreadable) and asks the engine's own legality
 check (`state.task_status_change_refusal`: the transition table, the operator
 exits of A.2 and the cure-reopened guard of A.3). An illegal ruling exits 2
 with the engine's reason and writes no ruling file; every legal case is
@@ -19,6 +19,7 @@ until a later ruling for that task is applied.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -106,12 +107,68 @@ def test_the_door_reads_the_authoritative_record_not_the_run_dir_mirror(ctl):
     assert _ruling_files(cdir) == []
 
 
-def test_the_door_falls_back_to_the_mirror_when_the_record_is_unreadable(ctl):
-    cdir, rdir = _seed(ctl, [_task("completed")])
-    (cdir / "record" / "tasks.json").write_text("{not json")
+def _deny_record(cdir: Path, how: str):
+    """Make the authoritative record unreadable to this (host) user the way
+    a live run does (`record/` root-owned 0700: here, mode 000 on our own
+    directory), or by damaging it. Returns the undo."""
+    rec_dir = cdir / "record"
+    if how == "denied":
+        if os.geteuid() == 0:
+            pytest.skip("root reads through mode 000")
+        rec_dir.chmod(0)
+        return lambda: rec_dir.chmod(0o700)
+    (rec_dir / "tasks.json").write_text("{not json")
+    return lambda: None
+
+
+@pytest.mark.parametrize("how", ["denied", "damaged"])
+def test_an_unreadable_record_never_lets_the_mirror_refuse_a_legal_ruling(
+        ctl, how):
+    # record: petitioned (petitioned -> skipped is a legal operator exit);
+    # mirror: pending (pending -> skipped would be refused). The mirror is
+    # agent-writable and may be stale, so it must not decide the ruling.
+    cdir, _ = _seed(ctl, [_task("petitioned")], mirror=[_task("pending")])
+    undo = _deny_record(cdir, how)
+    try:
+        res = ctl.run("amend", RUN, "001", "--status", "skipped", "moot")
+    finally:
+        undo()
+    assert res.returncode == 0, (res.stdout, res.stderr)
+    assert "UNCHECKED" in res.stderr
+    assert len(_ruling_files(cdir)) == 1
+
+
+@pytest.mark.parametrize("how", ["denied", "damaged"])
+def test_an_unreadable_record_records_the_ruling_unchecked_and_says_so(
+        ctl, how):
+    # Mirror and record agree on a status the ruling is illegal from: with
+    # the record unreadable there is no authoritative status to refuse on,
+    # so the ruling is recorded and the engine's apply-time check (C.2's
+    # `amendment.refused`) is named as what decides it.
+    cdir, _ = _seed(ctl, [_task("completed")])
+    undo = _deny_record(cdir, how)
+    try:
+        res = ctl.run("amend", RUN, "001", "--status", "pending", "again")
+    finally:
+        undo()
+    assert res.returncode == 0, (res.stdout, res.stderr)
+    assert "UNCHECKED" in res.stderr and "--list" in res.stderr
+    assert len(_ruling_files(cdir)) == 1
+
+
+def test_without_a_record_mount_the_door_reads_the_run_dirs_protected_record(
+        ctl):
+    # No `record/` mount: the engine keeps the record in the run dir's
+    # `.tasks-protected/` (privsep's degrade), which beats the mirror.
+    cdir, rdir = _seed(ctl, [_task("completed")], mirror=[_task("failed")])
+    (cdir / "record" / "tasks.json").unlink()
+    (cdir / "record").rmdir()
+    (rdir / ".tasks-protected").mkdir()
+    atomic_write_json(rdir / ".tasks-protected" / "tasks.json",
+                      {"version": 1, "tasks": [_task("completed")]})
     res = ctl.run("amend", RUN, "001", "--status", "pending", "again")
-    assert res.returncode == 2
-    assert "mirror" in res.stderr
+    assert res.returncode == 2, (res.stdout, res.stderr)
+    assert "'completed'" in res.stderr
     assert _ruling_files(cdir) == []
 
 
