@@ -310,7 +310,7 @@ and you rule it CONFIRMED, the engine settles that task: it stays
 `petitioned` (its status is never rewritten for you), your adjudication is
 recorded on the task's own `notes` field, and every `dependsOn` that names
 it is satisfied from then on, so its dependents become schedulable and it
-no longer blocks plan completion. If the dependents also need work that
+does not block plan completion. If the dependents also need work that
 some other task carries, name that task with a THIRD optional field on the
 same entry: `replacement_task_id` (the exact id). The engine adds it to
 each dependent's `dependsOn` beside the settled edge. Omit it, or name a
