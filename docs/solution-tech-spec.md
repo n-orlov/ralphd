@@ -589,9 +589,9 @@ stores, with the verdict, the key the attempt that returned it was dispatched on
 edge into `review`, the engine compares the current key with the stored one, the key
 alone (a steering message consumed without moving HEAD or a task is no change); if
 they are equal it does not dispatch. The petition-held route spends no no-task
-worker iteration on an equal key and goes straight to `review`. When nothing blocks
-terminal success any more, the remembered VERIFIED stands (`review_verdict_reused`)
-and review's verified edge is taken. Otherwise it parks in `awaiting_input`
+worker iteration on an equal key and goes straight to `review`. There is no
+exception when nothing blocks terminal success any more: the remembered VERIFIED is
+never taken in place of a dispatch, and the run parks in `awaiting_input`
 (`pauseReason: verified_unchanged`, `inputQuestion.kind: verified_unchanged`, never
 expires) naming the non-terminal tasks that held the earlier VERIFIED and what
 blocks each. A changed HEAD or a changed task status dispatches the review as

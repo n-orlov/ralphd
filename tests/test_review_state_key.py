@@ -7,7 +7,8 @@ Each final-review dispatch records, in the approach's state (`status.json`
 the worker ("VERIFIED verdict deferring") stores the key with the verdict.
 A later dispatch on an equal key does not run the review hat: the run parks
 `awaiting_input` with reason `verified_unchanged`, naming the non-terminal
-tasks and what blocks each. A release with nothing changed parks again.
+tasks and what blocks each. A release with nothing changed parks again; so does an equal key that
+nothing holds any more (no exception for a blocker that went away).
 
 Driven through the real `_step_review` / `_step_worker` / `_step_paused`
 with fake hats and a fake clock; the park's wait is a recorder, so nothing
@@ -266,23 +267,70 @@ def test_a_consumed_noop_steering_message_on_an_equal_key_parks(tmp_path):
     assert status["pauseReason"] == "verified_unchanged"
 
 
-def test_an_equal_key_with_nothing_holding_the_verified_reuses_it(tmp_path):
-    """Every task terminal, the VERIFIED deferred only on a steering message
-    the `steer` hat then consumed without moving HEAD or a task: the equal
-    key does not dispatch the review again; the remembered VERIFIED takes
-    review's verified edge (a park would name nothing an answer changes)."""
-    sup, runner = _supervisor(tmp_path)
+def _all_terminal_with_consumed_steering(sup):
     for tid in [HELD] + STEERING:
         _set_status(sup, tid, "completed")
     sup.run.add_steering("also check the ordering", name="note")
     assert _step_review(sup)[2] == "steering_pending_at_verified"
-
     sup.run.consume_steering(sup.run.pending_steering(), 1)
+
+
+def test_an_equal_key_with_nothing_holding_the_verified_still_parks(tmp_path):
+    """Every task terminal, the VERIFIED deferred only on a steering message
+    the `steer` hat then consumed without moving HEAD or a task: the blocker
+    went away outside the key, which is no exception. The key is equal, so
+    the review is not dispatched and the run parks `verified_unchanged`
+    (B.2 / DoD 2); it does not take the remembered verdict."""
+    sup, runner = _supervisor(tmp_path)
+    _all_terminal_with_consumed_steering(sup)
+
     out = _step_review(sup)
 
-    assert out == ("done", "succeeded")
+    assert out == ("advance", "paused", "verified_unchanged")
     assert runner.calls["review"] == 1, "the review hat was not dispatched"
-    assert '"review_verdict_reused"' in (sup.run.root / "events.jsonl").read_text()
+    status = sup.run.read_status()
+    assert status["state"] == "awaiting_input"
+    assert status["pauseReason"] == "verified_unchanged"
+    assert status["inputQuestion"]["kind"] == "verified_unchanged"
+    assert status["inputQuestion"]["heldTasks"] == []
+    assert "no task is non-terminal now" in status["inputQuestion"]["text"]
+    assert "review_verdict_reused" not in (
+        sup.run.root / "events.jsonl").read_text()
+
+
+def test_a_release_with_nothing_changed_and_no_blocker_parks_again(tmp_path):
+    """Same rule, a second route: the operator answers the park of an equal
+    key that nothing holds any more; the run re-enters review and parks
+    again, never succeeding on the remembered VERIFIED."""
+    sup, runner = _supervisor(tmp_path)
+    _all_terminal_with_consumed_steering(sup)
+    assert _step_review(sup)[2] == "verified_unchanged"
+    sup.answer()
+
+    out = _step_review(sup)
+
+    assert out == ("advance", "paused", "verified_unchanged")
+    assert runner.calls["review"] == 1
+    assert sup.run.read_status()["state"] == "awaiting_input"
+
+
+def test_the_recorded_blockers_are_not_part_of_the_equality_rule(tmp_path):
+    """Same rule, a third route: the blockers stored beside the remembered
+    key are context only. Whatever they say now (here: none), an equal key
+    parks and a changed key dispatches."""
+    sup, runner = _supervisor(tmp_path)
+    assert _step_review(sup)[2] == "steering_pending_at_verified"
+    entry = sup.run.read_status()["reviewStateKeys"]["1"]
+    entry["verifiedDeferred"]["blockers"] = []
+    sup.run.update_status(reviewStateKeys={"1": entry})
+
+    assert _step_review(sup) == ("advance", "paused", "verified_unchanged")
+    assert runner.calls["review"] == 1
+
+    _set_status(sup, STEERING[0], "completed")
+    sup.answer()
+    assert _step_review(sup)[:2] == ("advance", "worker")
+    assert runner.calls["review"] == 2, "a changed triple dispatches"
 
 
 def _truncated(sup, prompt):

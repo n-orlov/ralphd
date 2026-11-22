@@ -14542,15 +14542,10 @@ class LoopSupervisor:
         # here, so one comparison covers them all.
         review_key = self._review_state_key()
         if self._review_key_unchanged(approach, review_key):
-            if not self._terminal_success_blockers():
-                # Nothing holds the remembered VERIFIED any more (the only
-                # blocker was a steering message the `steer` hat consumed
-                # without moving HEAD or a task): the verdict already
-                # returned for this exact state stands. Not dispatched, and
-                # not a park either -- a park with no blocker would name
-                # nothing an answer could change.
-                return self._reuse_verified_on_unchanged_key(
-                    approach, review_key)
+            # The key alone decides (B.2): a blocker that went away outside
+            # the key (a steering message the `steer` hat consumed, say) is
+            # not a change of the judged state, so there is no exception --
+            # the run parks and the operator answers.
             return self._park_for_verified_unchanged(approach, review_key)
         # The dispatch key itself is recorded per ATTEMPT, by
         # `_run_one_review_dispatch`: a retry (an interrupted attempt, a
@@ -15479,24 +15474,6 @@ class LoopSupervisor:
             "blockers": list(blockers)}
         self._write_review_key_entry(approach, entry)
 
-    def _reuse_verified_on_unchanged_key(self, approach: int,
-                                         key: dict) -> tuple:
-        """v0.38 B.2: the key equals a deferred VERIFIED's and no terminal-
-        success blocker remains. The review hat is not dispatched; the
-        remembered VERIFIED takes review's own verified edge through the
-        same ladder a fresh one climbs (a spent budget holds `exhausted`)."""
-        self.run.emit("review_verdict_reused", approach=approach,
-                      verdict="VERIFIED", reviewStateKey=key)
-        self.run.emit("log", level="info", message=(
-            "the final review already returned VERIFIED on this HEAD and "
-            "these task statuses, and nothing holds it any more -- taking "
-            "that verdict instead of dispatching the review again "
-            "(v0.38 B.2, #320)"))
-        outcome = self._run_rejection_ladder(
-            "review", approach, None, verified=True)
-        return (self._review_verified_edge(approach) if outcome is None
-                else outcome)
-
     def _verified_unchanged_entries(self) -> list[dict]:
         """The non-terminal tasks that held the earlier VERIFIED, and what
         blocks each: the dead/petitioned ancestors, else its own status."""
@@ -15556,6 +15533,11 @@ class LoopSupervisor:
             lines.append(f"  task {e['taskId']} [{e['status']}]"
                          + (f" ({e['title']})" if e["title"] else "")
                          + f": blocked by {blockers}")
+        if not entries:
+            lines.append(
+                "  no task is non-terminal now: what held the verdict "
+                "(a steering message, say) is gone, but nothing about the "
+                "judged state changed.")
         lines += [
             "",
             "Change something, then answer: rule a blocking task "
