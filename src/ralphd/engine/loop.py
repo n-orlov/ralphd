@@ -15476,12 +15476,18 @@ class LoopSupervisor:
 
     def _verified_unchanged_entries(self) -> list[dict]:
         """The non-terminal tasks that held the earlier VERIFIED, and what
-        blocks each: the dead/petitioned ancestors, else its own status."""
+        blocks each: its own `dependsOn` entries that are not satisfied
+        (`state.task_dependency_satisfied`, with the settled-petition rule)
+        -- a dead or unsettled petitioned prerequisite, an unfinished live
+        one (pending, in-progress, validation-failed, awaiting-validation)
+        or an id the plan does not hold. A satisfied dependency is never a
+        blocker. A task with none left is simply not done."""
         doc = self.run.read_tasks()
         tasks = doc.get("tasks") or []
-        blocked = state.task_blocked_by_chain(
-            tasks, settled=self._settled_petitioned_ids(doc),
-            phases=doc.get("phases"))
+        settled = self._settled_petitioned_ids(doc)
+        status_by_id = {str(t["id"]): t.get("status", "pending")
+                        for t in tasks if isinstance(t, dict)
+                        and t.get("id") not in (None, "")}
         held = {str(t.get("id")): t for t in
                 (self._steering_origin_outstanding()
                  + self._review_cure_origin_outstanding())}
@@ -15491,10 +15497,18 @@ class LoopSupervisor:
             if (isinstance(t, dict) and t.get("id") not in (None, "")
                     and not state.task_is_terminal(t)):
                 held.setdefault(str(t["id"]), t)
+
+        def unsatisfied(t: dict) -> list[str]:
+            raw = t.get("dependsOn")
+            deps = [str(d) for d in raw] if isinstance(raw, list) else []
+            return sorted({d for d in deps
+                           if not state.task_dependency_satisfied(
+                               d, status_by_id.get(d), settled)})
+
         return [{
             "taskId": tid, "title": str(t.get("title") or ""),
             "status": t.get("status"),
-            "blockedBy": sorted(blocked.get(tid, [])),
+            "blockedBy": unsatisfied(t),
         } for tid, t in sorted(held.items())]
 
     def _verified_unchanged_question_text(

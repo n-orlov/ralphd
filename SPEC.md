@@ -2153,7 +2153,13 @@ verified_unchanged`, `trigger: verified_unchanged`, `judge: review`, `expiresAt:
 null` and `onTimeout: never`, and takes `review -> paused` (guard
 `verified_unchanged`). `inputQuestion.heldTasks` names each non-terminal task
 (`taskId`, `title`, `status`, `blockedBy`) and `inputQuestion.text` says what
-blocks each. A changed HEAD, or a changed status of any task (including one an
+blocks each. `blockedBy` is the task's own `dependsOn` entries that are not
+satisfied: an unfinished live prerequisite (`pending`, `in-progress`,
+`validation-failed`, `awaiting-validation`), a `failed`/`skipped` one, an
+unsettled `petitioned` one, or an id the plan does not hold; a satisfied
+dependency (`completed`, `validated`, `superseded`, a settled petitioned task)
+is never listed, and the text prints exactly the same ids (`blocked by nothing`
+when the list is empty). A changed HEAD, or a changed status of any task (including one an
 operator ruling applies at the top of `review`), dispatches the review normally.
 `ralphctl answer <run>` with no option releases the park (`input.answered`,
 `outcome: "verified_unchanged_released"`); the run re-enters `review`, which
