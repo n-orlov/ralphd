@@ -3318,8 +3318,11 @@ ruling file; while a live run holds the record unreadable from the host, the
 live engine decides instead (`GET /tasks/{task_id}/status-ruling`, read-only,
 the same legality check against the engine's own record, answering `503`
 rather than deciding when that record cannot be read current, even with a
-last-good copy at hand), and when the engine cannot supply an authoritative
-decision `amend` fails with nothing recorded; a ruling the engine
+last-good copy at hand, and writing nothing, not even that copy), and when the
+engine cannot supply an authoritative decision `amend` fails with nothing
+recorded; a task whose record `status` is not a status string (`null`, a
+number) is refused as `illegal transition`, at the door and by the applier
+alike, and an id the record does not hold is refused unless `--force`; a ruling the engine
 refuses later, because the task moved, emits `amendment.refused` and stays
 visible in `ralphctl amend <run> --list` (`refused: <reason>`) and `ralphctl
 status` until a later ruling for that task is applied -- later in recording
@@ -5668,7 +5671,7 @@ exists asks this route rather than probing.
 | `GET` | `/tasks` | the task list as recorded on disk, plus the `tasksStale`/`tasksSource` read contract (§5.3) |
 | `GET` | `/prd` | the PRD as markdown; `?original=true` for the pre-composite text; `404` when absent |
 | `GET` | `/notes` | the run's accumulated notes as markdown |
-| `GET` | `/tasks/{task_id}/status-ruling` | read-only: would an operator status ruling `?status=S` (with optional `?reason=`) be refused now? `{taskId, status, authoritative, current, allowed, reason}` from the engine's own record and the same legality check the applier uses; `current` is `null` for an unknown id; `422` for a status an operator may not rule; `503` when the engine cannot read its own record current (never a decision from a last-good copy) |
+| `GET` | `/tasks/{task_id}/status-ruling` | read-only: would an operator status ruling `?status=S` (with optional `?reason=`) be refused now? `{taskId, status, authoritative, found, current, allowed, reason}` from the engine's own record and the same legality check the applier uses; `found` is `false` for an unknown id; `422` for a status an operator may not rule; `503` when the engine cannot read its own record current (never a decision from a last-good copy, and no cache write) |
 | `GET` | `/iterations` | every iteration's `meta.json`, in order |
 | `GET` | `/iterations/{n}` | one iteration's `meta.json`; `404` when unknown |
 | `GET` | `/iterations/{n}/output` | that iteration's raw NDJSON transcript; `?tail=N`, `?follow=true`; `404` when it has no transcript |

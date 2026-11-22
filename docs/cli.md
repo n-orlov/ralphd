@@ -2260,7 +2260,10 @@ engine's reason and no ruling file, exactly as when the host reads the record.
 If the engine cannot supply that decision (no API recorded, unreachable, an
 older engine without the route, an engine that cannot read its own record
 current and answers `503`, or an answer not marked `authoritative`) `amend` fails with a
-non-zero exit (`4` unreachable) and records **nothing**; retry once the engine
+non-zero exit (`4` unreachable) and records **nothing**. A task the record holds
+with a `null` (or otherwise non-string) status is refused as `illegal
+transition`, never mistaken for an unknown id; an id the record does not hold
+exits `2` unless `--force`, even when the run dir's mirror still names it; retry once the engine
 answers or the container has exited and released `record/`. A run with no `record/` mount (started before the mount
 existed) is checked against the record the engine keeps in the run dir's
 `.tasks-protected/`, or against the run dir's `tasks.json` when that is the

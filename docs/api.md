@@ -702,14 +702,19 @@ status, else `422`) and `reason` (optional, the justification a `failed ->
 skipped` ruling needs). The engine reads its own authoritative record and asks
 the same `state.task_status_change_refusal` it applies a recorded ruling with,
 so the answer is the engine's own: `{"taskId", "status", "authoritative",
-"current", "allowed", "reason"}`, where `authoritative` is `true` (the record
-was read current, or no record exists yet) and `reason` is `""` when allowed
-and the refusal's text otherwise. An id the record does not hold answers `200`
-with `current: null`. When the engine cannot read its own record current (it
-does not parse, is not a record object with a task list, or cannot be read;
-including when only a last-good copy of an earlier read is available) the
+"found", "current", "allowed", "reason"}`, where `authoritative` is `true` (the
+record was read current, or no record exists yet), `found` says whether the
+record holds the id, `current` is the task's `status` value verbatim, and
+`reason` is `""` when allowed and the refusal's text otherwise. An id the record
+does not hold answers `200` with `found: false` and `current: null`; a task
+whose `status` is `null` (or any other non-string) answers `found: true`,
+`allowed: false` and `reason: "illegal transition"`, exactly as the applier
+refuses it. When the engine cannot read its own record current (it does not
+parse, is not UTF-8 text, is not a record object with a task list, or cannot be
+read; including when only a last-good copy of an earlier read is available) the
 route answers `503` (`task record unreadable`) instead of deciding from stale
-or missing data. It writes nothing and emits nothing. `ralphctl amend --status` calls it when
+or missing data. It writes nothing and emits nothing, not even the task
+reader's `.tasks-last-good.json` cache. `ralphctl amend --status` calls it when
 the host cannot read `record/` (docs/cli.md).
 
 ### `GET /iterations`

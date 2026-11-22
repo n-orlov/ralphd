@@ -2932,9 +2932,16 @@ def task_status_change_refusal(current: str, target_status: str,
     exemption from that guard). A move to the status the task already holds
     is not a refusal here; the engine treats it as a silent no-op.
     `source == "cure-reconciliation"` alone may restore a pre-reopen status.
+    A `current` that is not a status string (a row's `"status": null`, a
+    number, a list) is refused as `"illegal transition"`.
     """
     if current == target_status:
         return None
+    if not isinstance(current, str):
+        # A record row whose `status` is null, a number, a list...: no
+        # declared transition leaves it, and an unhashable value must be a
+        # refusal here, not a TypeError out of the table lookup.
+        return "illegal transition"
     operator_ruling = source == "operator"
     if not transitions.is_legal_task_status_transition(
             current, target_status, vigilant, operator_ruling=operator_ruling):
@@ -2959,33 +2966,46 @@ def operator_status_ruling_decision(run: "RunDir", task_id: str,
     it so `ralphctl amend --status` can ask a live engine when the record is
     held root-owned and unreadable from the host.
 
-    Returns `{"taskId", "status", "authoritative", "current", "allowed",
-    "reason"}`. `authoritative` is True only when the record was read
-    current off disk (`TasksRead.source == "file"`, holding a task list) or
-    genuinely does not exist yet (`"absent"`: no plan). A record that would
-    not parse or could not be read -- whether the reader fell back to a
-    last-good payload (`"last-good"`, possibly stale) or had nothing at all
-    (`"unreadable"`) -- answers `authoritative: False`, `current: None`,
-    `allowed: False` and a reason naming the read: no decision, never a
-    decision from stale or missing data. For an authoritative read,
-    `current` is `None` and `allowed` False (reason `"no matching task"`)
-    for an id the record does not hold. A ruling to the status the task
-    already holds is allowed (the applier's silent no-op)."""
-    res = run.read_tasks_result()
+    Returns `{"taskId", "status", "authoritative", "found", "current",
+    "allowed", "reason"}`. `authoritative` is True only when the record was
+    read current off disk (`TasksRead.source == "file"`, holding a task
+    list) or genuinely does not exist yet (`"absent"`: no plan). A record
+    that would not parse or could not be read -- whether the reader fell
+    back to a last-good payload (`"last-good"`, possibly stale), had nothing
+    at all (`"unreadable"`), or raised -- answers `authoritative: False`,
+    `found: False`, `current: None`, `allowed: False` and a reason naming
+    the read: no decision, never a decision from stale or missing data. The
+    read passes `persist=False`, so not even the reader's last-good cache is
+    written. For an authoritative read, `found` says whether the record
+    holds the id; an id it does not hold answers `found: False`, `current:
+    None`, `allowed: False` (reason `"no matching task"`). `current` is the
+    record's own `status` value verbatim for a found task -- `None` too when
+    the row carries `"status": null`, which is why "unknown id" is `found`,
+    never `current is None`. A ruling to the status the task already holds
+    is allowed (the applier's silent no-op)."""
     out = {"taskId": task_id, "status": target_status}
+
+    def _no_decision(detail: str) -> dict:
+        return {**out, "authoritative": False, "found": False,
+                "current": None, "allowed": False,
+                "reason": f"task record unreadable ({detail})"}
+
+    try:
+        res = run.read_tasks_result(persist=False)
+    except (OSError, ValueError) as exc:
+        return _no_decision(f"{type(exc).__name__}: {exc}")
     rows = res.doc.get("tasks") if isinstance(res.doc, dict) else None
     if not (res.source == "absent"
             or (res.source == "file" and isinstance(rows, list))):
-        detail = res.error or "the record holds no task list"
-        return {**out, "authoritative": False, "current": None,
-                "allowed": False,
-                "reason": f"task record unreadable ({res.source}: {detail})"}
+        return _no_decision(
+            f"{res.source}: {res.error or 'the record holds no task list'}")
     task = next((t for t in rows or [] if isinstance(t, dict)
                  and str(t.get("id")) == str(task_id)), None)
     out["authoritative"] = True
     if task is None:
-        return {**out, "current": None, "allowed": False,
+        return {**out, "found": False, "current": None, "allowed": False,
                 "reason": "no matching task"}
+    out["found"] = True
     current = task.get("status", "pending")
     refusal = task_status_change_refusal(
         current, target_status, vigilant, source="operator",
@@ -4818,16 +4838,19 @@ def read_tasks_doc(
     last_error: str | None = None
     for attempt in range(max(1, attempts)):
         try:
-            text = path.read_text()
+            raw = path.read_bytes()
         except FileNotFoundError:
             return TasksRead(doc={}, source="absent", stale=False)
         except OSError as exc:  # unreadable for some other reason
             last_error = f"{type(exc).__name__}: {exc}"
             break
         try:
-            doc = json.loads(text)
-        except json.JSONDecodeError as exc:
-            last_error = f"JSONDecodeError: {exc}"
+            # Bytes that are not UTF-8 text are as unparseable as a
+            # truncated file (v0.38 C.1): a ValueError, never an exception
+            # out of the reader.
+            doc = json.loads(raw.decode("utf-8"))
+        except ValueError as exc:   # JSONDecodeError, UnicodeDecodeError
+            last_error = f"{type(exc).__name__}: {exc}"
         else:
             if isinstance(doc, dict):
                 _remember_tasks(key, doc)
@@ -11463,10 +11486,12 @@ class RunDir:
         a mid-write file yields the last-good payload, never `{}`."""
         return self.read_tasks_result().doc
 
-    def read_tasks_result(self) -> TasksRead:
+    def read_tasks_result(self, *, persist: bool = True) -> TasksRead:
         """Full three-way `TasksRead` (absent / file / last-good / unreadable)
         for callers that must render the stale flag -- `GET /tasks`, the
         `/status` task counts, `ralphctl tasks`, the hub table.
+        `persist=False` makes the read write nothing, not even the
+        last-good cache (`read_tasks_doc`): what a read-only route passes.
 
         Task 004 (requirement B): reads the protected, authoritative copy
         (`self.protected_tasks_dir`) once it exists -- never
@@ -11513,8 +11538,8 @@ class RunDir:
 
         if privsep.separated():
             with privsep.root_for_write():
-                return read_tasks_doc(_pick_source_dir())
-        return read_tasks_doc(_pick_source_dir())
+                return read_tasks_doc(_pick_source_dir(), persist=persist)
+        return read_tasks_doc(_pick_source_dir(), persist=persist)
 
     # -- vigilant-mode verification: task record, not a sidecar (task 020) -
     # Through v0.8 this was a separate file, engine-owned and never touched

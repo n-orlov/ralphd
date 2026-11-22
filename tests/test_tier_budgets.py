@@ -1035,8 +1035,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # last-good cache -- supplies no decision; an answer not marked
     # authoritative records nothing; the route's 503), in both tiers ->
     # fast 9172, smoke 7391.
-    "fast": {"tests": 9172, "modules": 572},
-    "smoke": {"tests": 7391, "modules": 445},
+    # v0.38 task cure-01-01-2 second retry: +31 tests in tests/test_amend_
+    # status_at_the_door.py (a null or non-string status is a task the door
+    # and the applier refuse, never an unknown id; an id only the mirror
+    # names needs --force; the route's 503 on a non-UTF-8 record and its
+    # cache-free read), in both tiers -> fast 9203, smoke 7422.
+    "fast": {"tests": 9203, "modules": 572},
+    "smoke": {"tests": 7422, "modules": 445},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

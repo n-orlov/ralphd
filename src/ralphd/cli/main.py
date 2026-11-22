@@ -6496,14 +6496,18 @@ def _amend_authoritative_task(run_id: str, task_id: str) -> tuple[str, dict | No
     return "ok", None
 
 
-def _amend_engine_decision(args, reason: str) -> tuple[str | None, str]:
+def _amend_engine_decision(args, reason: str) -> tuple[bool, object, str]:
     """The live engine's own answer to "is this status ruling refused?",
     via the read-only `GET /tasks/<id>/status-ruling` (the engine reads its
     own record and asks `state.task_status_change_refusal`). Returns
-    `(current_status, refusal)` with `refusal == ""` when allowed (`current_status` None: the record holds no such task). Any way of
-    not getting that answer (no recorded API, unreachable, an engine without
-    the route, a malformed body) exits non-zero with nothing recorded: a
-    ruling is never accepted on a decision nobody authoritative made."""
+    `(found, current_status, refusal)`: `found` False when the engine's
+    record holds no such task, else the record's `status` value verbatim
+    (possibly `None`: a row with `"status": null` is a task, not an unknown
+    id) and `refusal == ""` when allowed. Any way of not getting that answer
+    (no recorded API, unreachable, an engine without the route, a body not
+    marked authoritative or missing `found`/`allowed`) exits non-zero with
+    nothing recorded: a ruling is never accepted on a decision nobody
+    authoritative made."""
     path = (f"/tasks/{urllib.parse.quote(str(args.task_id), safe='')}"
             f"/status-ruling?status={urllib.parse.quote(args.status, safe='')}"
             f"&reason={urllib.parse.quote(reason or '', safe='')}")
@@ -6521,14 +6525,14 @@ def _amend_engine_decision(args, reason: str) -> tuple[str | None, str]:
         die(e.code if isinstance(e.code, int) and e.code else 4, unavailable)
     # Only an answer the engine itself marks authoritative (read current
     # off its own record) decides; anything else -- a body without the
-    # flag, or one built from a stale or unreadable record -- is no answer.
+    # flags, or one built from a stale or unreadable record -- is no answer.
     if (not isinstance(res, dict) or res.get("authoritative") is not True
-            or not isinstance(res.get("allowed"), bool)
-            or not isinstance(res.get("current"), (str, type(None)))):
+            or not isinstance(res.get("found"), bool)
+            or not isinstance(res.get("allowed"), bool)):
         die(4, unavailable)
-    if res["current"] is None:
-        return None, ""   # the record holds no such task (`--force`)
-    return res["current"], "" if res["allowed"] else str(
+    if not res["found"]:
+        return False, None, ""
+    return True, res.get("current"), "" if res["allowed"] else str(
         res.get("reason") or "refused by the engine")
 
 
@@ -6545,30 +6549,40 @@ def _amend_status_door_check(args, reason: str) -> None:
     root-owned), the decision is the live engine's: it is asked through
     `GET /tasks/<id>/status-ruling` and its reason is shown on a refusal. If
     the engine cannot answer, the command fails and records nothing. The run
-    dir's mirror is never consulted -- it is agent-writable and may be stale."""
+    dir's mirror is never consulted -- it is agent-writable and may be stale
+    -- so an id the authoritative record does not hold is refused (exit 2)
+    unless `--force`, even when the mirror names it."""
     state, task = _amend_authoritative_task(args.run_id, args.task_id)
+    if state == "absent":
+        return
     if state == "unreadable":
-        current, refusal = _amend_engine_decision(args, reason)
-        if refusal:
-            die(2, f"status ruling refused: task {args.task_id} is "
-                   f"{current!r} (the engine's record); {current!r} -> "
-                   f"{args.status!r} is not allowed: {refusal}; nothing was "
-                   "recorded")
-        return
-    if task is None:
-        return
-    cfg_path = config_root(args.run_id) / "job.yaml"
-    vigilant = JobConfig.load(cfg_path).vigilant if cfg_path.is_file() else False
-    status = _read_json(run_root(args.run_id) / "status.json", {}) or {}
-    cure_reopened = str(args.task_id) in (status.get("preCureStatuses") or {})
-    current = task.get("status", "pending")
-    refusal = task_status_change_refusal(
-        current, args.status, vigilant, source="operator",
-        justification=reason, cure_reopened=cure_reopened)
+        found, current, refusal = _amend_engine_decision(args, reason)
+        where = "the engine's record"
+    else:
+        found = task is not None
+        current = task.get("status", "pending") if found else None
+        where = "record/tasks.json"
+        refusal = ""
+        if found:
+            cfg_path = config_root(args.run_id) / "job.yaml"
+            vigilant = (JobConfig.load(cfg_path).vigilant
+                        if cfg_path.is_file() else False)
+            status = _read_json(run_root(args.run_id) / "status.json", {}) or {}
+            refusal = task_status_change_refusal(
+                current, args.status, vigilant, source="operator",
+                justification=reason,
+                cure_reopened=str(args.task_id) in (
+                    status.get("preCureStatuses") or {})) or ""
+    if not found:
+        if args.force:
+            return
+        die(2, f"task {args.task_id!r} is not in the authoritative task "
+               f"record ({where}); pass --force to record the ruling anyway; "
+               "nothing was recorded")
     if refusal:
         die(2, f"status ruling refused: task {args.task_id} is {current!r} "
-               f"in record/tasks.json; {current!r} -> {args.status!r} is not "
-               f"allowed: {refusal}; nothing was recorded")
+               f"({where}); {current!r} -> {args.status!r} is not allowed: "
+               f"{refusal}; nothing was recorded")
 
 
 def _amend_resolve_approach(args) -> int | None:

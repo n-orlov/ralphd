@@ -323,6 +323,8 @@ def _break_engine_record(eng: "_RealEngine", how: str, *, cached: bool):
         rec.write_text(json.dumps([_task("pending")]))
     elif how == "no-task-list":    # an object that holds no task list
         rec.write_text(json.dumps({"version": 1, "tasks": "001"}))
+    elif how == "non-utf8":        # bytes that are not UTF-8 text at all
+        rec.write_bytes(b'{"version": 1, "tasks": [\xff\xfe]}')
     elif how == "denied":          # the engine's own read fails with EACCES
         if os.geteuid() == 0:
             pytest.skip("root reads through mode 000")
@@ -339,6 +341,8 @@ def _break_engine_record(eng: "_RealEngine", how: str, *, cached: bool):
     ("wrong-shape", True),
     ("no-task-list", False),
     ("denied", False),
+    ("non-utf8", False),           # was a 500 out of the reader
+    ("non-utf8", True),
 ])
 @pytest.mark.parametrize("target,reason", [("skipped", "moot"),
                                            ("pending", "again")])
@@ -451,7 +455,8 @@ def test_the_engines_status_ruling_route_answers_503_on_an_unreadable_record(
         eng.run.tasks_file.unlink()
         with urllib.request.urlopen(url, timeout=5) as r:
             got = json.loads(r.read())
-        assert (got["authoritative"], got["current"]) == (True, None)
+        assert (got["authoritative"], got["found"], got["current"]) == (
+            True, False, None)
     finally:
         eng.stop()
 
@@ -475,11 +480,176 @@ def test_the_engines_status_ruling_route_decides_and_writes_nothing(tmp_path):
         assert ask("001", "completed")["allowed"] is True   # no-op
         assert ask("002", "skipped")["allowed"] is False    # no justification
         assert ask("002", "skipped", "moot")["allowed"] is True
-        assert ask("404", "skipped")["current"] is None
+        unknown = ask("404", "skipped")
+        assert (unknown["found"], unknown["current"]) == (False, None)
+        assert ask("001", "pending")["found"] is True
         assert before == (eng.run.tasks_file.read_bytes(),
                           len(list(eng.run.root.rglob("*"))))
     finally:
         eng.stop()
+
+
+# -- A task whose status is not a status string is a task, not an unknown id --
+
+def _odd(status, tid="017"):
+    return {**_task("pending", tid), "status": status}
+
+
+@pytest.mark.parametrize("how", ["denied", "damaged"])
+@pytest.mark.parametrize("target", ["pending", "skipped"])
+@pytest.mark.parametrize("force", [False, True])
+def test_a_null_status_task_on_the_engines_record_is_refused_not_treated_as_unknown(
+        ctl, live_engine, how, target, force):
+    # The finding's case: the engine's record holds task 017 with a null
+    # status (the applier refuses every move out of it); the host record is
+    # unreadable and the mirror is stale (pending). The engine says
+    # `allowed: false`; the CLI must not read `current: null` as "unknown
+    # id" and record the ruling -- not even with --force, which overrides
+    # plan membership only, never legality.
+    cdir = live_engine([_odd(None)], [_task("pending", "017")], how=how)
+    args = ["amend", RUN, "017", "--status", target, "because"]
+    res = ctl.run(*args, *(["--force"] if force else []))
+    assert res.returncode == 2, (res.stdout, res.stderr)
+    assert ILLEGAL_REASON in res.stderr
+    assert "nothing was recorded" in res.stderr
+    assert _ruling_files(cdir) == []
+
+
+# Same rule, cases the finding did not list: a status that is a number, a
+# list or an object (an unhashable value used to crash the legality check:
+# a 500 from the route, a TypeError in the applier).
+@pytest.mark.parametrize("odd", [5, ["completed"], {"s": "completed"}, ""])
+def test_a_non_string_status_on_the_engines_record_is_refused_with_the_engines_reason(
+        ctl, live_engine, odd):
+    cdir = live_engine([_odd(odd)], [_task("pending", "017")])
+    res = ctl.run("amend", RUN, "017", "--status", "skipped", "moot")
+    assert res.returncode == 2, (res.stdout, res.stderr)
+    assert ILLEGAL_REASON in res.stderr
+    assert _ruling_files(cdir) == []
+
+
+@pytest.mark.parametrize("odd", [None, 7, ["completed"]])
+def test_a_non_string_status_on_a_readable_record_is_refused_too(ctl, odd):
+    cdir, _ = _seed(ctl, [_odd(odd)], mirror=[_task("pending", "017")])
+    res = ctl.run("amend", RUN, "017", "--status", "skipped", "moot")
+    assert res.returncode == 2, (res.stdout, res.stderr)
+    assert ILLEGAL_REASON in res.stderr
+    assert _ruling_files(cdir) == []
+
+
+@pytest.mark.parametrize("odd", [None, 5, ["completed"], {"s": 1}])
+def test_the_applier_refuses_a_ruling_on_a_non_string_status_without_crashing(
+        tmp_path, odd):
+    from ralphd.engine.state import RunDir, apply_task_status_change
+    run = RunDir(root=tmp_path / "r")
+    atomic_write_json(run.tasks_file, {"version": 1, "tasks": [_odd(odd)]})
+    got = apply_task_status_change(run, "017", "skipped", False,
+                                   source="operator", reason="moot")
+    assert (got["applied"], got["reason"]) == (False, ILLEGAL_REASON)
+    assert run.read_tasks()["tasks"][0]["status"] == odd
+
+
+# -- An id the authoritative record does not hold needs --force ---------------
+
+def test_an_id_only_the_stale_mirror_names_is_refused_without_force_on_the_engine_path(
+        ctl, live_engine):
+    cdir = live_engine([_task("pending")], [_task("pending"),
+                                           _task("petitioned", "017")])
+    res = ctl.run("amend", RUN, "017", "--status", "skipped", "moot")
+    assert res.returncode == 2, (res.stdout, res.stderr)
+    assert "--force" in res.stderr and "nothing was recorded" in res.stderr
+    assert _ruling_files(cdir) == []
+    # --force records it: the engine KNOWS its record does not hold 017.
+    res = ctl.run("amend", RUN, "017", "--status", "skipped", "moot",
+                  "--force")
+    assert res.returncode == 0, (res.stdout, res.stderr)
+    assert len(_ruling_files(cdir)) == 1
+
+
+def test_an_id_only_the_stale_mirror_names_is_refused_without_force_on_a_readable_record(
+        ctl):
+    cdir, _ = _seed(ctl, [_task("pending")],
+                    mirror=[_task("pending"), _task("petitioned", "017")])
+    res = ctl.run("amend", RUN, "017", "--status", "skipped", "moot")
+    assert res.returncode == 2, (res.stdout, res.stderr)
+    assert "record/tasks.json" in res.stderr
+    assert _ruling_files(cdir) == []
+
+
+# -- The route: 503 for bytes that are not text, and a read that writes nothing
+
+def test_the_route_answers_503_not_500_on_a_non_utf8_record(tmp_path):
+    import urllib.error
+    import urllib.request
+    eng = _RealEngine(tmp_path, [_task("petitioned")])
+    try:
+        url = (f"http://127.0.0.1:{eng.port}/tasks/001/status-ruling"
+               "?status=skipped&reason=moot")
+        for raw in (b"\xff\xfe\x00{", "{\"tasks\": []}".encode("utf-16"),
+                    b'{"version": 1, "tasks": [{"id": "\xe9"}]}'):
+            for cached in (True, False):
+                atomic_write_json(eng.run.tasks_file,
+                                  {"version": 1, "tasks": [_task("petitioned")]})
+                _break_engine_record(eng, "garbage", cached=cached)
+                eng.run.tasks_file.write_bytes(raw)
+                with pytest.raises(urllib.error.HTTPError) as err:
+                    urllib.request.urlopen(url, timeout=5)
+                assert err.value.code == 503, raw
+                assert "task record unreadable" in err.value.read().decode()
+    finally:
+        eng.stop()
+
+
+@pytest.mark.parametrize("how", ["garbage", "non-utf8", "wrong-shape"])
+def test_the_route_writes_no_last_good_cache_on_a_broken_record(tmp_path, how):
+    import urllib.error
+    import urllib.request
+
+    from ralphd.engine import state as state_mod
+    eng = _RealEngine(tmp_path, [_task("petitioned")])
+    cache = eng.run.root / state_mod.TASKS_LAST_GOOD_NAME
+    try:
+        _break_engine_record(eng, how, cached=True)   # warm in-memory cache
+        cache.unlink(missing_ok=True)
+        before = sorted(p.name for p in eng.run.root.rglob("*"))
+        url = (f"http://127.0.0.1:{eng.port}/tasks/001/status-ruling"
+               "?status=skipped&reason=moot")
+        with pytest.raises(urllib.error.HTTPError) as err:
+            urllib.request.urlopen(url, timeout=5)
+        assert err.value.code == 503
+        assert not cache.exists()
+        assert sorted(p.name for p in eng.run.root.rglob("*")) == before
+        # An existing cache is left byte-for-byte as it was, too.
+        cache.write_text('{"version": 1, "tasks": []}')
+        with pytest.raises(urllib.error.HTTPError):
+            urllib.request.urlopen(url, timeout=5)
+        assert cache.read_text() == '{"version": 1, "tasks": []}'
+    finally:
+        eng.stop()
+
+
+def test_the_route_reports_a_null_status_task_as_found_and_refused(tmp_path):
+    import urllib.request
+    eng = _RealEngine(tmp_path, [_odd(None)])
+    try:
+        url = (f"http://127.0.0.1:{eng.port}/tasks/017/status-ruling"
+               "?status=pending")
+        with urllib.request.urlopen(url, timeout=5) as r:
+            got = json.loads(r.read())
+        assert (got["authoritative"], got["found"], got["current"],
+                got["allowed"], got["reason"]) == (
+            True, True, None, False, ILLEGAL_REASON)
+    finally:
+        eng.stop()
+
+
+def test_the_task_reader_treats_non_utf8_bytes_as_unparseable(tmp_path):
+    from ralphd.engine.state import read_tasks_doc
+    (tmp_path / "tasks.json").write_bytes(b"\xff\xfe{")
+    res = read_tasks_doc(tmp_path, attempts=1, persist=False)
+    assert (res.source, res.stale) == ("unreadable", True)
+    assert "UnicodeDecodeError" in res.error
+    assert not (tmp_path / ".tasks-last-good.json").exists()
 
 
 def test_without_a_record_mount_the_door_reads_the_run_dirs_protected_record(
