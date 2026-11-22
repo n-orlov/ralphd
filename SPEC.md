@@ -3250,8 +3250,10 @@ petitioned task (`taskId`, `title`, `petition` -- `obligation`, `type`,
 `evidence`, or `null` -- and `dependents`), and `inputQuestion.text` names each
 task, its petition, its dependents and the two operator answers:
 `ralphctl amend <run> --waive <task> <reason>` and `ralphctl amend <run> <task>
---status validated|skipped <reason>`. `amend` is host-side and never reaches the
-engine, so the answer is two steps: record the ruling, then `ralphctl answer
+--status validated|skipped <reason>`. `amend` writes the ruling file on the host and never applies it
+(its only engine call is the read-only legality check `GET
+/tasks/{task_id}/status-ruling` a `--status` ruling makes while the record is
+unreadable), so the answer is two steps: record the ruling, then `ralphctl answer
 <run>` with no options, which releases the park (`input.answered`, `outcome:
 "petition_hold_released"`) so the loop re-reads the plan and applies the ruling at
 its next boundary. Any option on that `answer` is refused, a bare `ralphctl
@@ -3792,7 +3794,7 @@ shell, is the durable record of how a job was wired.
 ├── job.yaml            budgets, flags, model tiers, retry policy, pricing
 ├── prompts/<name>.md   optional phase-prompt overrides (operator-placed)
 ├── skills/<name>/      one directory per skill, each with a SKILL.md
-├── creds/              <name>.env files + recognized extras
+├── creds/              <name>.env and <name>.vars files + recognized extras
 ├── pi/                 pi provider config (models.json, settings.json, auth.json)
 ├── llm-wiring.json     resolved `--llm` env + mounts        (0600, host-only)
 ├── env-wiring.json     resolved --forward-env/--llm-env/--env (0600, host-only)
@@ -6035,7 +6037,7 @@ returns immediately.
 | `--forward-env NAME\|PREFIX_*` | none | forward host env var(s) by name or prefix; repeatable |
 | `--env KEY=VAL` | none | plain container env; repeatable |
 | `--skills DIR` | none | skill dir (or a dir of them); repeatable |
-| `--creds DIR` | none | copy `*.env` plus recognized extras into the job's creds |
+| `--creds DIR` | none | copy `*.env`, `*.vars` and recognized extras into the job's creds |
 | `--allow-docker` | off | mount the host docker socket — root-equivalent host access; recorded on/off in `<config-dir>/docker-access.json` so every resume and auto-resume re-applies it (#297, §13.2) |
 | `--image REF` | built `ralphd:<hash>`, or `$RALPHD_IMAGE` | pin a finished job image and run it as-is, hashing and building nothing (§3.2) |
 | `--base-image REF` | none | build the job image *on top of* this image: it only has to carry your toolchain, ralphd layers the engine and `pi` onto it and runs the derived `ralphd-derived:<hash>`. Mutually exclusive with `--image` |

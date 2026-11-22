@@ -626,7 +626,8 @@ a cure pass re-opened (`preCureStatuses`) and emits `task.un_reopened` with
 `ralphctl amend <run> <task> --status <s>` checks the ruling when it records it,
 against the task's record, through the one check the engine itself applies
 (`state.task_status_change_refusal`): an illegal move exits non-zero and records
-nothing (`--force` records it unchecked). When the engine later refuses a ruling
+nothing; `--force` overrides only the check that the record holds the task id,
+never this one. When the engine later refuses a ruling
 that was legal when recorded because the task moved, it emits
 `amendment.refused`, and `ralphctl amend --list` and `ralphctl status` show the
 refusal. A record that cannot be read is never replaced by the run directory's

@@ -2006,8 +2006,9 @@ the one prompt adjudication of it returned no adjudication or left the hold
 unchanged. It never expires, and its `inputQuestion.text` names each petitioned
 task, its petition, its dependents and the two answers: `ralphctl amend <run>
 --waive <task> <reason>` or `ralphctl amend <run> <task> --status
-validated|skipped <reason>`. `amend` is host-side and never reaches the engine, so
-record it first and then run `ralphctl answer <run>` with no options: the park is
+validated|skipped <reason>`. `amend` writes the ruling file on the host and never applies
+it (its only engine call is the read-only legality check a `--status` ruling
+makes while the record is unreadable, below), so record it first and then run `ralphctl answer <run>` with no options: the park is
 released and the worker re-reads the plan (a hold the ruling did not move parks
 again). Any option on that `answer`, and a bare `ralphctl unpause`, is refused.
 
@@ -2326,8 +2327,8 @@ criteria text untouched and emitting an `amendment_status_applied` event with
 all — a status ruling is not a claim the criteria were met and must not be
 able to read like one.
 
-`--list` has no live half at all: `ralphctl amend` never talks to the engine,
-so there is nothing for a live container to answer differently than the file
+`--list` has no live half at all: `ralphctl amend --list` never talks to the
+engine (only a `--status` ruling asks it, read-only, below), so there is nothing for a live container to answer differently than the file
 on disk — it always reads `config_root(run_id)/amendments/` directly, live or
 dead run, with a `(no operator rulings recorded)` notice when there are none.
 Unknown run id is exit `3`; combining `--list` with a task id, text, `--file`,
