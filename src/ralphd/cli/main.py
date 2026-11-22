@@ -88,6 +88,9 @@ from ..engine.state import (
     EXHAUSTED_STATE,
     LEGACY_TIMED_OUT_STATE,
     amendment_entries,
+    outstanding_refused_rulings,
+    refused_amendment_rulings,
+    task_status_change_refusal,
     archived_approach_dir,
     archived_approach_numbers,
     archived_approaches_dir,
@@ -4402,6 +4405,11 @@ def cmd_status(args):
         container_gone is not None
         and container_gone["liveness"] == CONTAINER_ABSENT)
 
+    status["refusedRulings"] = [
+        {k: ev.get(k) for k in ("file", "taskId", "previous", "status",
+                                "reason")}
+        for ev in outstanding_refused_rulings(run_root(args.run_id))]
+
     # v0.38 E.2 (#319 item 3): a run that is not running should have no
     # containers left. Ask docker only then (a running run's own siblings are
     # expected), and say so on the status itself: the count of RUNNING
@@ -4556,6 +4564,13 @@ def cmd_status(args):
     # config dir alone) so a run that lost its socket says so.
     if isinstance(status.get("dockerAccess"), dict):
         lines.append(f"docker:    {status['dockerAccess'].get('line')}")
+    # v0.38 C.2: one line per operator status ruling the engine refused,
+    # until a later ruling for that task is applied.
+    for _ref in status.get("refusedRulings") or []:
+        lines.append(
+            f"warning:   operator status ruling {_ref.get('file')} for task "
+            f"{_ref.get('taskId')} (-> {_ref.get('status')}) was refused: "
+            f"{_ref.get('reason')}")
     # v0.38 E.2: containers still running for a run that is not running.
     if status.get("liveSiblings"):
         lines.append(
@@ -6425,6 +6440,57 @@ def _amend_echo_target_or_die(args) -> None:
            f"(tasks.json); pass --force to record the ruling anyway")
 
 
+def _amend_authoritative_task(run_id: str, task_id: str) -> tuple[dict | None, str]:
+    """The task row an operator status ruling is checked against, and where
+    it came from. The authoritative record is `record/tasks.json` under the
+    run's config dir (`task_record_dir`); the run dir's `tasks.json` is a
+    mirror of it. A live container can hold the record directory root-owned
+    and unreadable from the host, so when the record cannot be read the
+    mirror answers instead (named in the second return value). `(None, "")`
+    when neither names the task (no plan yet, or `--force` on an unknown id).
+    """
+    rec = task_record_dir(run_id) / "tasks.json"
+    source = "record/tasks.json"
+    try:
+        doc = json.loads(rec.read_text())
+        rows = doc.get("tasks") if isinstance(doc, dict) else None
+    except (OSError, ValueError):
+        rows = None
+    if not isinstance(rows, list):
+        res = read_tasks_doc(run_root(run_id), persist=False)
+        rows = res.tasks if res.present else []
+        source = "tasks.json mirror (record/tasks.json unreadable)"
+    for t in rows:
+        if isinstance(t, dict) and str(t.get("id")) == str(task_id):
+            return t, source
+    return None, ""
+
+
+def _amend_status_door_check(args, reason: str) -> None:
+    """v0.38 C.1: refuse an operator status ruling the engine would refuse
+    when it applies it, before any ruling file is written. Asks the engine's
+    own `state.task_status_change_refusal` (the transition table, the
+    operator-ruling exits and the cure-reopened guard) against the
+    authoritative task record, so the refusal carries the engine's reason.
+    A ruling to the status the task already holds is not refused (the engine
+    treats it as a no-op)."""
+    task, source = _amend_authoritative_task(args.run_id, args.task_id)
+    if task is None:
+        return
+    cfg_path = config_root(args.run_id) / "job.yaml"
+    vigilant = JobConfig.load(cfg_path).vigilant if cfg_path.is_file() else False
+    status = _read_json(run_root(args.run_id) / "status.json", {}) or {}
+    cure_reopened = str(args.task_id) in (status.get("preCureStatuses") or {})
+    current = task.get("status", "pending")
+    refusal = task_status_change_refusal(
+        current, args.status, vigilant, source="operator",
+        justification=reason, cure_reopened=cure_reopened)
+    if refusal:
+        die(2, f"status ruling refused: task {args.task_id} is {current!r} "
+               f"in {source}; {current!r} -> {args.status!r} is not allowed: "
+               f"{refusal}; nothing was recorded")
+
+
 def _amend_resolve_approach(args) -> int | None:
     """Task 036 (#168, proposed fix item 1): the approach number
     `write_amendment` stamps in the header -- `--approach N` when given
@@ -6493,11 +6559,14 @@ def cmd_amend_list(args) -> None:
     _require_run(args.run_id)
     entries = amendment_entries(config_root(args.run_id))
     plan_ids = _amend_orphaned_task_ids(args)
+    refused = refused_amendment_rulings(run_root(args.run_id))
     if args.json:
         out_entries = []
         for e in entries:
             e = dict(e)
             e["orphaned"] = _amend_entry_is_orphaned(e, plan_ids)
+            r = refused.get(e.get("file"))
+            e["refused"] = r.get("reason") if r else None
             out_entries.append(e)
         print(json.dumps({"entries": out_entries}, indent=2))
         return
@@ -6531,6 +6600,10 @@ def cmd_amend_list(args) -> None:
             else str(e.get("taskId") or "-")
         state_col = "ORPHANED" if _amend_entry_is_orphaned(e, plan_ids) \
             else "-"
+        # v0.38 C.2: a status ruling the engine refused when it applied it.
+        _ref = refused.get(e.get("file"))
+        if _ref:
+            preview = f"refused: {_ref.get('reason')}  [{preview}]"
         print(f"{(str(seq) if isinstance(seq, int) else '-'):>3}  {mode:<7}  "
               f"{scope:<5}  {str(e.get('ts') or '-'):<25}  {task_col:<8}  "
               f"{state_col:<9}  {preview}")
@@ -6715,6 +6788,7 @@ def cmd_amend(args):
             die(2, f"unknown status {args.status!r}; must be one of "
                    f"{', '.join(OPERATOR_RULEABLE_TASK_STATUSES)}{extra}")
         reason = args.text or (Path(args.file).read_text() if args.file else "")
+        _amend_status_door_check(args, reason)
         fname = write_amendment(cdir, target, reason,
                                 status=args.status, approach=approach)
         out(args, {"file": fname, "taskId": target,

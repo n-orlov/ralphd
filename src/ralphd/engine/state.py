@@ -2837,6 +2837,86 @@ def amendment_entries(config_root: Path) -> list[dict]:
 # it, exactly as `amendment_status_applied` already does.
 UN_REOPEN_EVENT = "task.un_reopened"
 
+# v0.38 C.2: emitted when the engine refuses an operator status ruling at
+# apply time (the task's status moved after `ralphctl amend --status` recorded
+# it). Carries `file` (the ruling file), `taskId`, `previous`, `status` and
+# `reason` (the engine's own refusal reason).
+AMENDMENT_REFUSED_EVENT = "amendment.refused"
+
+
+def refused_amendment_rulings(run_root: Path) -> dict[str, dict]:
+    """The status rulings the engine currently refuses, keyed by ruling file
+    name, read from `events.jsonl` (no live engine needed): a file's latest
+    `amendment.refused` event, unless an `amendment_status_applied` event for
+    that same file came after it (the refusal later became legal and the
+    ruling took effect). Each value is the refusal event.
+    """
+    refused: dict[str, dict] = {}
+    for ev in read_events(run_root, types=(
+            AMENDMENT_REFUSED_EVENT, "amendment_status_applied")):
+        fname = ev.get("file")
+        if not fname:
+            continue
+        if ev.get("type") == AMENDMENT_REFUSED_EVENT:
+            refused[fname] = ev
+        else:
+            refused.pop(fname, None)
+    return refused
+
+
+def outstanding_refused_rulings(run_root: Path) -> list[dict]:
+    """`refused_amendment_rulings` minus every refusal whose task has had a
+    LATER operator ruling applied (v0.38 C.2: `ralphctl status` names a
+    refused ruling "until a later ruling for that task is applied"). Oldest
+    refusal first."""
+    live: dict[str, dict] = {}
+    for ev in read_events(run_root, types=(
+            AMENDMENT_REFUSED_EVENT, "amendment_status_applied")):
+        if ev.get("type") == AMENDMENT_REFUSED_EVENT:
+            if ev.get("file"):
+                live.pop(ev["file"], None)
+                live[ev["file"]] = ev
+        elif ev.get("source") == "operator":
+            for f in [f for f, r in live.items()
+                      if r.get("taskId") == ev.get("taskId")]:
+                live.pop(f)
+    return list(live.values())
+
+
+def task_status_change_refusal(current: str, target_status: str,
+                               vigilant: bool, *, source: str,
+                               justification: str = "",
+                               cure_reopened: bool = False) -> str | None:
+    """v0.38 C.1: the ONE legality check for moving a task from `current` to
+    `target_status`, returning the refusal's own reason or `None` when the
+    move is allowed. `apply_task_status_change` (the engine, at apply time)
+    and `ralphctl amend --status` (the host, at record time) both ask this
+    function, so a ruling refused at the door carries the exact reason the
+    engine would later give.
+
+    Checks, in order: the declared transition table (the base or vigilant
+    one, with the operator-ruling exits when `source == "operator"`,
+    PRD A.2), then `transitions.task_status_report_errors` (the
+    `failed -> skipped` justification rule, the un-reopen guard, and --
+    for an operator ruling on a cure-reopened task, PRD A.3 -- the one
+    exemption from that guard). A move to the status the task already holds
+    is not a refusal here; the engine treats it as a silent no-op.
+    `source == "cure-reconciliation"` alone may restore a pre-reopen status.
+    """
+    if current == target_status:
+        return None
+    operator_ruling = source == "operator"
+    if not transitions.is_legal_task_status_transition(
+            current, target_status, vigilant, operator_ruling=operator_ruling):
+        return "illegal transition"
+    errors = transitions.task_status_report_errors(
+        {"task_status": target_status, "justification": justification},
+        current, vigilant,
+        allow_un_reopen_restore=(source == "cure-reconciliation"),
+        operator_ruling=operator_ruling,
+        cure_reopened=cure_reopened)
+    return errors[0] if errors else None
+
 
 def apply_task_status_change(run: "RunDir", task_id: str, target_status: str,
                              vigilant: bool, *, source: str,
@@ -2918,33 +2998,14 @@ def apply_task_status_change(run: "RunDir", task_id: str, target_status: str,
         record.update(applied=False, reason="already at that status")
         return record
     operator_ruling = source == "operator"
-    if not transitions.is_legal_task_status_transition(
-            current, target_status, vigilant, operator_ruling=operator_ruling):
-        record.update(applied=False, reason="illegal transition")
-        return record
     effective_justification = justification or reason
-    # Cure-01-05 (PRD requirement B.3/B.4, F05, #221): the ONE source
-    # allowed to take the un-reopen RESTORE through this channel is this
-    # function's own reconciliation branch
-    # (`LoopSupervisor._reconcile_pre_cure_heads`, `source="cure-
-    # reconciliation"`) -- restoring the exact status the engine itself
-    # persisted (`preCureStatuses`) before the reopen, never a hat's
-    # free-form claim. That is what lets the declared edge be
-    # variant-independent (`transitions.UN_REOPEN_TASK_STATUS_TARGETS`,
-    # all six targets in the BASE table) without widening what anyone
-    # else may ask for: every other caller (an operator amendment ruling,
-    # the steer hat's `task-update`, a hat's contract report) keeps the
-    # ordinary refusals -- `superseded` out of any status, and the OTHER
-    # variant's claim terminal out of `pending`.
-    status_errors = transitions.task_status_report_errors(
-        {"task_status": target_status, "justification": effective_justification},
-        current, vigilant,
-        allow_un_reopen_restore=(source == "cure-reconciliation"),
-        operator_ruling=operator_ruling,
+    refusal = task_status_change_refusal(
+        current, target_status, vigilant, source=source,
+        justification=effective_justification,
         cure_reopened=(operator_ruling and task_id in (
             run.read_status().get("preCureStatuses") or {})))
-    if status_errors:
-        record.update(applied=False, reason=status_errors[0])
+    if refusal:
+        record.update(applied=False, reason=refusal)
         return record
     task["status"] = target_status
     if current == "failed" and target_status == "skipped":

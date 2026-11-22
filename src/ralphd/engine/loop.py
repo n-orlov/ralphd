@@ -19025,6 +19025,10 @@ class LoopSupervisor:
                 f"operator status ruling {r.get('file')} REFUSED for task "
                 f"{r.get('taskId')}: {r.get('reason')} "
                 f"({r.get('previous')} -> {r.get('status')})"))
+            self.run.emit(state.AMENDMENT_REFUSED_EVENT,
+                          file=r.get("file"), taskId=r.get("taskId"),
+                          previous=r.get("previous"), status=r.get("status"),
+                          reason=r.get("reason"))
 
     def _operator_ruling_review_context(self, audience: str = "review") -> str:
         """Task 013 (v0.23 PRD requirement A.2, #224): render every recorded

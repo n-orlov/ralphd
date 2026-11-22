@@ -2229,9 +2229,42 @@ so a ruling recorded while the container is up takes effect without a restart
 once per episode and a ruling on a live run changed nothing at all, since
 `mode: status` entries are deliberately kept out of review's prompt context
 too). It is checked against the same declared task-status transition table
-every other status move is checked against; an illegal transition for the
-CURRENT status is refused there, not here, since this command has no way to
-know the task's current status at write time. `ralphctl amend <run-id> --list`
+every other status move is checked against.
+
+**The record-time check (v0.38 C.1).** Before it writes anything, `--status`
+loads the run's authoritative task record and asks the engine's own legality
+check (`engine.state.task_status_change_refusal`, the same function the
+engine applies at apply time): the transition table, the operator-ruling exits
+(`petitioned -> validated` and `petitioned -> skipped`, legal in both the base
+and the vigilant table only as an operator ruling), the `failed -> skipped`
+justification rule, and the un-reopen guard, which an operator ruling on a task
+a cure pass re-opened (`preCureStatuses` in `status.json`) is exempt from
+(`pending -> validated`). An illegal ruling exits `2` with the engine's own
+reason and the task's current status, and **no ruling file is written**. A
+ruling to the status the task already holds is recorded (the engine treats it
+as a no-op). `--force` overrides only the plan-membership check, never this
+one.
+
+**Where task status lives.** Task status is authoritative in
+`~/.ralphd/configs/<run>/record/tasks.json` (the `record/` directory of the
+run's config dir, the engine's protected copy). The run dir's `tasks.json` is a
+**mirror** of that record, kept in sync on every write and what `ralphctl
+tasks`, the hub and the agents read. The check reads the record; while a live
+container holds `record/` unreadable from the host (root-owned 0700), it reads
+the mirror and says so in the refusal.
+
+**A refusal the engine makes later (v0.38 C.2).** If the task's status moved
+after the ruling was recorded, the engine refuses the ruling when it applies
+it and emits `amendment.refused` (the ruling `file`, the `taskId` and the
+`reason`; once per distinct refusal). `ralphctl amend <run-id> --list` then
+shows that ruling with `refused: <reason>` ahead of its text in the `RULING`
+column (and `"refused": "<reason>"` in `--json`, `null` otherwise), and
+`ralphctl status` prints one `warning:` line per such ruling (and
+`refusedRulings` in `--json`) until a later ruling for that task is applied.
+A refused ruling whose move later becomes legal is applied and stops showing
+as refused.
+
+`ralphctl amend <run-id> --list`
 shows a recorded status ruling as `status  -> <status> (<reason>)` in the
 table (and `mode: "status"` / `status: "<status>"` in `--json`), the same
 reader as every other ruling kind.
