@@ -1071,8 +1071,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # in both tiers -> fast 9326/578, smoke 7545/451.
     # v0.38 task cure-01-04: +12 tests / +1 module (tests/test_verified_
     # unchanged_blockers.py), in both tiers -> fast 9338/579, smoke 7557/452.
-    "fast": {"tests": 9338, "modules": 579},
-    "smoke": {"tests": 7557, "modules": 452},
+    # v0.38 task cure-01-05: +7 tests net, no module (tests/test_review_state_
+    # key.py: the gate's cure_top_up case dropped, 8 nodes on the key-alone
+    # rule added), in both tiers -> fast 9345/579, smoke 7564/452.
+    "fast": {"tests": 9345, "modules": 579},
+    "smoke": {"tests": 7564, "modules": 452},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

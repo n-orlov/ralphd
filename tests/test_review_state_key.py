@@ -490,20 +490,17 @@ def test_the_first_attempt_s_unjudged_head_is_a_changed_key(tmp_path, shape):
 # pinned in tests/test_review_state_key_edges.py)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("change", ["head", "task_status", "cure_top_up"])
+@pytest.mark.parametrize("change", ["head", "task_status"])
 def test_a_changed_key_dispatches_the_final_peer_gate_normally(
         tmp_path, change):
-    """A changed HEAD or task status dispatches the gate; so does an
-    operator cure-round top-up since its verdict (`ralphctl budget
-    --cure-passes`), which changes what the same rejection leads to."""
+    """A changed HEAD or task status is a changed key: the gate is
+    dispatched."""
     sup, runner = edges._gate_supervisor(tmp_path)
     edges._bounded(sup._step_verdict_gate())
     edges._bounded(edges._release_with_nothing_changed(sup))
 
     if change == "head":
         sup._workspace_head_sha = lambda: "b" * 40
-    elif change == "cure_top_up":
-        sup.set_cure_pass_ceiling(sup._cure_rounds_allowed(1) + 1)
     else:
         doc = sup.run.read_tasks()
         doc["tasks"].append(edges._task("002", "completed"))
@@ -550,3 +547,111 @@ def test_a_gate_dispatch_with_no_usable_verdict_judged_nothing(tmp_path):
 
     assert runner.calls["verdict_gate"] > calls, "the gate hat was dispatched"
     assert second == ("done", "succeeded")
+
+
+# ---------------------------------------------------------------------------
+# cure-01-05: the peer gate's key is B.1's key alone -- no budget in it
+# ---------------------------------------------------------------------------
+
+def _judge_then_release(sup):
+    edges._bounded(sup._step_verdict_gate())
+    edges._bounded(edges._release_with_nothing_changed(sup))
+
+
+@pytest.mark.parametrize("delta", [+1, +5, -1], ids=["up_one", "up_five", "down"])
+def test_a_cure_round_budget_change_does_not_reopen_a_judged_gate_key(
+        tmp_path, delta):
+    """After the gate judged a key, a cure-round top-up (or a lowered
+    allowance) since that verdict is not part of the key: the same HEAD and
+    task triples park `verified_unchanged` with no second gate dispatch."""
+    sup, runner = edges._gate_supervisor(tmp_path)
+    sup.set_cure_pass_ceiling(sup._cure_rounds_allowed(1) + 1)
+    edges._bounded(sup._step_verdict_gate())
+    edges._bounded(edges._release_with_nothing_changed(sup))
+    before = sup._cure_rounds_allowed(1)
+
+    sup.set_cure_pass_ceiling(before + delta)
+    assert sup._cure_rounds_allowed(1) == before + delta
+
+    out = edges._bounded(sup._step_verdict_gate())
+
+    assert out == ("advance", "paused", "verified_unchanged")
+    assert runner.calls["verdict_gate"] == 1, "the gate hat was dispatched"
+    status = sup.run.read_status()
+    assert status["pauseReason"] == "verified_unchanged"
+    assert status["inputQuestion"]["judge"] == "verdict_gate"
+
+
+def test_an_approving_gate_verdict_s_key_is_held_across_a_budget_change(
+        tmp_path):
+    """The rule is about the key a verdict was given on, not about a
+    rejection: a gate that APPROVED the key (the run goes on to finish) has
+    that key on record, and a second entry on it, whatever the budget now
+    allows, parks instead of dispatching."""
+    sup, runner = edges._supervisor(
+        tmp_path, [edges._task("001", "completed")],
+        {"verdict_gate": [edges._reply(verdict="verified")]},
+        peer_verdict_gate=True)
+    first = edges._bounded(sup._step_verdict_gate())
+    assert first == ("done", "succeeded"), first
+    judged = sup.run.read_status()["reviewStateKeys"]["1"]["gateJudged"]
+    assert judged["key"] == sup._review_state_key()
+
+    sup.set_cure_pass_ceiling(sup._cure_rounds_allowed(1) + 3)
+    again = edges._bounded(sup._step_verdict_gate())
+
+    assert again == ("advance", "paused", "verified_unchanged")
+    assert runner.calls["verdict_gate"] == 1
+
+
+def test_the_judged_gate_key_records_no_budget(tmp_path):
+    """The record holds the key and nothing that is not part of it."""
+    sup, _ = edges._gate_supervisor(tmp_path)
+    edges._bounded(sup._step_verdict_gate())
+
+    judged = sup.run.read_status()["reviewStateKeys"]["1"]["gateJudged"]
+
+    assert set(judged) == {"key"}
+
+
+def test_a_legacy_gate_record_with_an_allowance_is_still_held_by_the_key(
+        tmp_path):
+    """A `gateJudged` record written with a `cureRoundsAllowed` (earlier
+    shape) that differs from the allowance now: the key alone decides."""
+    sup, runner = edges._gate_supervisor(tmp_path)
+    key = sup._review_state_key()
+    sup._write_review_key_entry(1, {"gateJudged": {
+        "key": key, "cureRoundsAllowed": sup._cure_rounds_allowed(1) + 7}})
+
+    out = edges._bounded(sup._step_verdict_gate())
+
+    assert out == ("advance", "paused", "verified_unchanged")
+    assert runner.calls.get("verdict_gate", 0) == 0
+
+
+def test_a_final_review_dispatch_on_the_same_key_keeps_the_gate_s_judgement(
+        tmp_path):
+    """Another attempt on the same HEAD and task triples is held whichever
+    stage made it: a final-review attempt on the key the gate judged does not
+    wipe the gate's record."""
+    sup, runner = edges._gate_supervisor(tmp_path)
+    edges._bounded(sup._step_verdict_gate())
+    key = sup._review_state_key()
+
+    sup._record_review_dispatch_key(1, key)
+    assert sup._verdict_gate_key_unchanged(1, key)
+    out = edges._bounded(sup._step_verdict_gate())
+
+    assert out == ("advance", "paused", "verified_unchanged")
+    assert runner.calls["verdict_gate"] == 1
+
+
+def test_a_gate_judgement_belongs_to_its_approach(tmp_path):
+    """The record is per approach: the key judged on approach 1 does not hold
+    a gate entry of approach 2."""
+    sup, _ = edges._gate_supervisor(tmp_path)
+    edges._bounded(sup._step_verdict_gate())
+    key = sup._review_state_key()
+
+    assert sup._verdict_gate_key_unchanged(1, key)
+    assert not sup._verdict_gate_key_unchanged(2, key)

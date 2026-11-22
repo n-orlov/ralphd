@@ -15427,31 +15427,30 @@ class LoopSupervisor:
         attempt, retries included, by `_run_one_review_dispatch`). A new
         attempt supersedes the remembered deferral: only the verdict this
         attempt returns can set one again."""
-        self._write_review_key_entry(approach, {"dispatched": key})
+        entry: dict = {"dispatched": key}
+        # The gate's own judgement belongs to the gate, not to the review
+        # attempt: it stays on record so a gate entry on that same key parks.
+        judged = self._review_key_entry(approach).get("gateJudged")
+        if isinstance(judged, dict):
+            entry["gateJudged"] = judged
+        self._write_review_key_entry(approach, entry)
 
     def _verdict_gate_key_unchanged(self, approach: int, key: dict) -> bool:
         """True iff the final peer gate of this approach already returned a
-        verdict on a key equal to `key` (v0.38 B.3) under the same cure-round
-        allowance. An operator top-up (`ralphctl budget --cure-passes`) since
-        that verdict changes what the same rejection leads to -- a cure
-        round instead of a park on a spent allowance -- so the gate is asked
-        again rather than held."""
+        verdict on a key equal to `key` (v0.38 B.3). The key alone decides,
+        exactly as B.1's does for the final review: neither a budget change
+        (an operator cure-round top-up) nor anything else outside the key
+        re-opens a judgement the gate already gave on that HEAD and those
+        task triples."""
         judged = self._review_key_entry(approach).get("gateJudged")
-        if not (isinstance(judged, dict) and judged.get("key") == key):
-            return False
-        allowed = judged.get("cureRoundsAllowed")
-        return (allowed is None
-                or allowed == self._cure_rounds_allowed(approach))
+        return isinstance(judged, dict) and judged.get("key") == key
 
     def _record_gate_judged_key(self, approach: int, key: dict) -> None:
         """The final peer gate returned a usable verdict on `key`: remember
         it, so a later dispatch on the same key is held. A no-verdict outcome
         records nothing -- nothing was judged."""
         entry = dict(self._review_key_entry(approach))
-        entry["gateJudged"] = {
-            "key": key,
-            "cureRoundsAllowed": self._cure_rounds_allowed(approach),
-        }
+        entry["gateJudged"] = {"key": key}
         self._write_review_key_entry(approach, entry)
 
     def _record_deferred_verified_key(

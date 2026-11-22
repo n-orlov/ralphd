@@ -2170,7 +2170,7 @@ review dispatch. Both releases share one answer contract (`POST /answer`, docs/a
 (`JobConfig.peer_verdict_gate`) returns a usable verdict (approved or rejected),
 `_step_verdict_gate` stores the key it was entered on under `gateJudged` in the same
 approach entry of `reviewStateKeys` (a dispatch that yielded no usable verdict
-stores nothing: it judged nothing; a later final-review dispatch supersedes it). A
+stores nothing: it judged nothing). A
 later entry into the gate on an equal key, for instance a release of the gate's own
 operator-input park with nothing changed, does not dispatch the gate hat: it parks
 `awaiting_input` with the same `verified_unchanged` question (`judge:
@@ -2178,11 +2178,14 @@ verdict_gate`, no `heldTasks` unless a task is not terminal), taking `verdict_ga
 -> paused` (guard `verified_unchanged`). `ralphctl answer <run>` with no option
 releases it and the run re-enters `verdict_gate` (guard
 `paused_resumed_verdict_gate`), never `review`, which compares the key again. A
-changed HEAD or task status dispatches the gate normally, and so does an operator
-cure-round top-up (`ralphctl budget <run> --cure-passes`) since that verdict:
-`gateJudged` also records the approach's cure-round allowance it was judged under,
-and a different allowance changes what the same rejection leads to (a cure round
-instead of a park on a spent allowance).
+changed HEAD or task status dispatches the gate normally. The key alone decides, as it
+does for the final review: `gateJudged` records the key and nothing else, so a
+budget change since that verdict (an operator cure-round top-up through `ralphctl
+budget <run> --cure-passes`, or a lowered allowance) never re-opens a key the gate
+already judged. Another attempt on the same HEAD and task triples parks
+`verified_unchanged` without another gate dispatch, whether the earlier verdict
+approved or rejected, and a final-review attempt on that key leaves the gate's
+record in place (it only supersedes the review's own remembered deferral).
 
 **The key applies to the final review and the final peer gate only.** A phase
 review and a phase's peer gate (v0.37) never read or write it: they keep their own
