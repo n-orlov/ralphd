@@ -3114,19 +3114,46 @@ The rule lives in one place beside `TASK_DEPENDENCY_SATISFIED_STATUSES`:
 `state.settled_petitioned_task_ids` derives the settled set from the three
 sources. `scheduler.select_next_task`/`pending_candidates` (through `settled`),
 `state.task_blocked_by` (a settled task is no cause and no member of the
-`include_petitioned` hold, so the `taskBlockedBy` overlay on `GET /tasks`,
-`ralphctl tasks` and the hub drops its dependents; a live `GET /tasks` payload
-carries the settled ids as `taskSettledPetitioned`), the petition-held hold in
+`include_petitioned` hold), the petition-held hold in
 `_step_worker`, `LoopSupervisor._outstanding_for_completion` (the `plan_complete`
 check) and `_terminal_success_blockers` all read it through
 `LoopSupervisor._settled_petitioned_ids`. An unsettled petitioned dependency
 still blocks its dependents, and `skipped` keeps its meaning ("dead"): it still
 satisfies nothing, waiver or not.
 
-**A `petitioned` task has operator-only exits (v0.38, #306, #320).** The
-task-status table lists no successor of `petitioned`, so a worker's or verify's
-report of `petitioned -> validated` or `petitioned -> skipped` is refused in
-both variants. An operator status ruling (`ralphctl amend <run> <task> --status
+The `taskBlockedBy` overlay reads the same rule on every surface, so a settled
+task is never shown as a blocker its dependent has already been scheduled past.
+`GET /tasks` derives the settled set with the run's own approach
+(`RunDir.current_approach`, status.json's `approach`, the value the loop judges
+an approach-pinned waiver against) and publishes it as
+`taskSettledPetitioned`; the hub's live path re-derives `taskBlockedBy` from
+that field. The two read-only on-disk paths -- `ralphctl tasks`' fallback when
+the run's API is unreachable and the hub's on-disk table -- hold neither a
+`RunDir` nor the adjudication MAC key, so they call
+`state.settled_petitioned_task_ids_on_disk`: both waiver kinds are read exactly
+as the engine reads them (`<config>/amendments/` and `<run>/waivers/`), the
+approach is status.json's, and CONFIRMED adjudications come from
+`petitions.confirmed_obligations_on_disk`, which makes every check the engine
+can make without the key (no tamper event in `events.jsonl`, a well-formed
+record, a matching unkeyed digest, a record MAC equal to the last
+`petition_adjudications_recorded` witness) and reads any failure as no
+CONFIRMED obligation. That reader writes nothing and feeds the display only;
+the scheduler, the holds and plan completion use the keyed engine reader. The
+hub's per-run on-disk cache is keyed on the waivers dir, the amendments dir
+and the adjudication record as well as `tasks.json`, so a waiver recorded
+after the last plan write shows on the next poll.
+
+**A `petitioned` task leaves `petitioned` only through an operator ruling or
+the engine's CONFIRMED adjudication (v0.38, #306, #320).** The task-status table
+lists no successor of `petitioned`, so a worker's or verify's report of
+`petitioned -> validated` or `petitioned -> skipped` is refused in both
+variants. The engine's own exit is unchanged:
+`petitions.apply_confirmed_petition_adjudications`, run in the same pass that
+records a CONFIRMED adjudication, moves the matching petitioned task to
+`skipped` with the adjudication in its `notes` and re-points its dependents
+(`task.dependency_repointed`, `source: "cure-insertion"`). A CONFIRMED
+adjudication that has not been applied that way -- the task is still
+`petitioned` -- settles the task under the rule above. An operator status ruling (`ralphctl amend <run> <task> --status
 validated|skipped`, applied through `state.apply_task_status_change` with
 `source="operator"`) takes either move, in the base and the vigilant table
 alike (`transitions.OPERATOR_TASK_STATUS_EXITS`, read by
@@ -3368,7 +3395,7 @@ The three `phase_gate.*` events (PRD v0.37 requirement F.1, #313) each carry `pl
 | `task.dependency_repointed` | `taskId`, `removed` (the ids dropped, sorted), `added` (the ids gained, sorted), `dependsOn` (the new full list), `reason`, `source` (`"worker-repoint"` or `"cure-insertion"`) | #209 defect 7, widened by task 003 (requirement E.1) and task 004 (requirement E.2): an existing task's whole `dependsOn` list was replaced -- from a worker's own optional `proposed_task_updates` report (`state.apply_worker_dependency_repoints`, `source: "worker-repoint"`), or from one of two engine-driven re-points that both write `source: "cure-insertion"`: `state._repoint_dependents_onto_cure_task`'s dependent-repointing of a cure insertion, and `petitions.apply_confirmed_petition_adjudications`'s dependent-repointing off a `petitioned` task a CONFIRMED adjudication just moved to `skipped` -- one event per dependent whose write actually changes, either way -- the ACCEPTED-write sibling of `task.dependency_edge_rejected`, whose `taskId`/`reason`/`source` field names it copies. Standing for the worker-repoint write is `state.task_blocked_by`'s own derived doom over a `pending` task; only a `failed`/`skipped` edge may be dropped and the replacement may name none at all; the entry's mandatory `reason` also lands on the task's own `notes`, because the lint can check the graph's shape but never the semantic claim that the new edge carries the dead one's work, so this event plus that note are what let review and the operator judge it after the fact. Standing for a `"cure-insertion"` write is either the finding's own naming of a `failed` task in its `clause`/`evidence`, or a CONFIRMED petition adjudication naming the `petitioned` task's own obligation; its `reason` is a fixed sentence naming what covers the removed task's scope, and lands on `events.jsonl` only, never on the dependent's own `notes` |
 | `petition.remedy_task_inserted` | `approach`, `obligation`, `taskId`, `finding` | #209 defect 4: a REFUTED petition adjudication whose remedy is WORK (`remedy_type` resolving to `substance`) became ONE cure task, through the same `state.insert_cure_tasks` call review's own cure pass makes (`petitions.refuted_remedy_cure_findings` decides, `LoopSupervisor._insert_refuted_remedy_tasks` writes) -- one line per inserted task, `finding` the synthesized blocking-finding record verbatim, mirroring `approach.cure_pass`'s own `findings` key. Emitted from the mid-run adjudication episode (§4.6) and from an ordinary run-ending review pass alike (v0.23 requirement D.2, task 019, #220 -- before that task the call was restricted to the mid-run episode, the one dispatch site whose inserted task the worker loop was guaranteed to act on; v0.23 requirement D.1's own new `review_cure_pending_at_verified` terminal-success blocker for a non-terminal `review-cure`-origin task made an approach-end insertion safe too), and it increments NEITHER `curePasses` nor `gateCurePasses`, so a remedy can never spend `cure_pass_ceiling` out from under review's or the peer verdict gate's own cure pass |
 | `task.verify_skipped_exhausted` | `taskId`, `validationAttempts`, `limit` | a task reached the verify dispatch in `awaiting-validation` with its verify budget already spent (`validationAttempts >= VALIDATION_ATTEMPT_LIMIT`); no verifier ran, and the task moved to `failed` with `failureKind: validation-exhausted` in the same step |
-| `task.un_reopened` | `taskId`, `previous` (always `"pending"`), `status` (the restored terminal status -- whichever of `"completed"`/`"validated"`/`"failed"`/`"skipped"`/`"superseded"`/`"petitioned"` (task 001, F04) the record genuinely held, read from `preCureStatuses`, never guessed from `cfg.vigilant`; since cure-01-05 (PRD requirement B.3/B.4, F05, #221) every one of the six is declared out of `pending` in BOTH variants, so the restore no longer depends on the verification mode in force), `source` (always `"cure-reconciliation"`), `reason` | v0.23 requirement B.3 (task 007, #221): `state.apply_task_status_change` took the declared un-reopen edge (`transitions.is_un_reopen_transition`, `TASK_STATUS_TABLE["pending"]`) -- `pending` back to a record's own pre-reopen terminal status -- instead of the generic `amendment_status_applied` audit event every other transition through that function still emits; `source` is always `"cure-reconciliation"` (v0.23 requirement B.4, task 008, #221), naming `LoopSupervisor._reconcile_pre_cure_heads` -- the completion-path hook that diffs a re-opened record's persisted `preCureHeads` sha against HEAD, on the cure task's OWN completion, and takes this edge only for a record none of whose cited paths that diff touched, and only once every cure task that re-opened that record at the same baseline has landed -- because this restore is the engine's OWN reconciliation of a status it itself persisted, never a caller's claim: an amendment ruling's `"operator"` source and the steer hat's `"steer"` `task-update` source reach the SAME `apply_task_status_change`, but `transitions.task_status_report_errors` refuses the un-reopen edge unconditionally for any caller other than this one reconciliation branch (`allow_un_reopen_restore=True` only when `source == "cure-reconciliation"`, cure-01-05-2, #221, generalized to every non-engine caller at `88fe9d69`) -- so `task.un_reopened`'s own `source` field never reads anything but `"cure-reconciliation"`; `reason` names those cure task ids, the diffed sha range and that no cited path was touched. Never emitted for the ordinary `pending -> in-progress` claim edge, which keeps `amendment_status_applied`/no event exactly as before |
+| `task.un_reopened` | `taskId`, `previous` (always `"pending"`), `status` (the restored terminal status -- whichever of `"completed"`/`"validated"`/`"failed"`/`"skipped"`/`"superseded"`/`"petitioned"` (task 001, F04) the record genuinely held, read from `preCureStatuses`, never guessed from `cfg.vigilant`; since cure-01-05 (PRD requirement B.3/B.4, F05, #221) every one of the six is declared out of `pending` in BOTH variants, so the restore no longer depends on the verification mode in force), `source` (`"cure-reconciliation"` or, since v0.38, `"operator"`), `reason` | v0.23 requirement B.3 (task 007, #221): `state.apply_task_status_change` took the declared un-reopen edge (`transitions.is_un_reopen_transition`, `TASK_STATUS_TABLE["pending"]`) -- `pending` back to a record's own pre-reopen terminal status -- instead of the generic `amendment_status_applied` audit event every other transition through that function still emits; the engine's own restore carries `source: "cure-reconciliation"` (v0.23 requirement B.4, task 008, #221), naming `LoopSupervisor._reconcile_pre_cure_heads` -- the completion-path hook that diffs a re-opened record's persisted `preCureHeads` sha against HEAD, on the cure task's OWN completion, and takes this edge only for a record none of whose cited paths that diff touched, and only once every cure task that re-opened that record at the same baseline has landed -- because this restore is the engine's OWN reconciliation of a status it itself persisted, never a caller's claim: an amendment ruling's `"operator"` source and the steer hat's `"steer"` `task-update` source reach the SAME `apply_task_status_change`, but `transitions.task_status_report_errors` refuses the un-reopen edge for every caller other than this reconciliation branch (`allow_un_reopen_restore=True` only when `source == "cure-reconciliation"`, cure-01-05-2, #221, generalized to every non-engine caller at `88fe9d69`) and, since v0.38 (#306, #320), an operator status ruling (`ralphctl amend <run> <task> --status <s>`, `source: "operator"`, `cure_reopened=True` when the task is in `preCureStatuses`) -- so `task.un_reopened`'s `source` reads `"cure-reconciliation"` for the engine's own restore and `"operator"` for an operator ruling, never `"steer"` and never a hat's; for `"cure-reconciliation"`, `reason` names those cure task ids, the diffed sha range and that no cited path was touched, and for `"operator"` it is the ruling's own reason. Never emitted for the ordinary `pending -> in-progress` claim edge, which keeps `amendment_status_applied`/no event exactly as before |
 
 **A run's terminal `state` event is appended before the status.json write
 that makes `state` itself read as terminal (task 006, #169).**

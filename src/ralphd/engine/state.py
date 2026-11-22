@@ -5070,33 +5070,15 @@ def task_dependency_satisfied(task_id, status, settled=()) -> bool:
             and str(task_id) in settled)
 
 
-def settled_petitioned_task_ids(run: "RunDir", tasks, *, config_root: Path,
-                                approach: int | None = None) -> frozenset[str]:
-    """The ids of every `petitioned` task in `tasks` that is settled, read
-    from the three settling sources:
-
-    - an applied task-level operator waiver (`<config_root>/amendments/`,
-      `mode: waive`, `taskId` naming the task; the LAST ruling recorded
-      against that task is the operator's current word, and a ruling pinned
-      to another approach does not bind this one);
-    - a run-level clause-bound waiver (`run.waiver_entries()`) whose clause
-      matches the task's own petition obligation (`petitions.task_petition_
-      obligation`, the same substring-either-direction match a CONFIRMED
-      adjudication uses);
-    - a CONFIRMED adjudication (`petitions.petitioned_task_accepted`); a
-      tampered record counts as an empty set, failing towards blocking.
-    """
+def _settled_ids(petitioned, *, confirmed, amendments, waivers,
+                 approach) -> frozenset[str]:
+    """The settled-rule core shared by the engine reader and the on-disk
+    reader below: which of the `petitioned` task dicts are settled, given
+    the CONFIRMED obligations, the operator's amendment entries, the
+    stored clause waivers and the approach the reader is on."""
     from . import petitions
-    petitioned = [t for t in (tasks or []) if isinstance(t, dict)
-                  and t.get("status") == TASK_STATUS_PETITIONED
-                  and t.get("id") not in (None, "")]
-    if not petitioned:
-        return frozenset()
-    confirmed, tampered = petitions.confirmed_obligations(run)
-    if tampered:
-        confirmed = set()
     latest: dict[str, dict] = {}
-    for e in amendment_entries(config_root):
+    for e in amendments:
         if e.get("scope") != "task":
             continue
         latest[str(e.get("taskId"))] = e
@@ -5105,7 +5087,7 @@ def settled_petitioned_task_ids(run: "RunDir", tasks, *, config_root: Path,
         if e.get("waive") and (e.get("approach") is None
                                or e.get("approach") == approach)}
     clauses = {petitions._normalize_obligation(w["clause"])
-               for w in run.waiver_entries() if w.get("clause")}
+               for w in waivers if w.get("clause")}
     out = set()
     for t in petitioned:
         tid = str(t["id"])
@@ -5115,6 +5097,70 @@ def settled_petitioned_task_ids(run: "RunDir", tasks, *, config_root: Path,
                     petitions.task_petition_obligation(t), clauses)):
             out.add(tid)
     return frozenset(out)
+
+
+def _petitioned_tasks(tasks) -> list:
+    return [t for t in (tasks or []) if isinstance(t, dict)
+            and t.get("status") == TASK_STATUS_PETITIONED
+            and t.get("id") not in (None, "")]
+
+
+def settled_petitioned_task_ids(run: "RunDir", tasks, *, config_root: Path,
+                                approach: int | None = None) -> frozenset[str]:
+    """The ids of every `petitioned` task in `tasks` that is settled, read
+    from the three settling sources:
+
+    - an applied task-level operator waiver (`<config_root>/amendments/`,
+      `mode: waive`, `taskId` naming the task; the LAST ruling recorded
+      against that task is the operator's current word, and a ruling pinned
+      to another approach does not bind this one). `approach` defaults to
+      the run's own (`RunDir.current_approach`, status.json), so a reader
+      that does not hold the supervisor (`GET /tasks`) judges the pin the
+      way the loop does;
+    - a run-level clause-bound waiver (`run.waiver_entries()`) whose clause
+      matches the task's own petition obligation (`petitions.task_petition_
+      obligation`, the same substring-either-direction match a CONFIRMED
+      adjudication uses);
+    - a CONFIRMED adjudication (`petitions.petitioned_task_accepted`); a
+      tampered record counts as an empty set, failing towards blocking.
+    """
+    from . import petitions
+    petitioned = _petitioned_tasks(tasks)
+    if not petitioned:
+        return frozenset()
+    if approach is None:
+        approach = run.current_approach()
+    confirmed, tampered = petitions.confirmed_obligations(run)
+    if tampered:
+        confirmed = set()
+    return _settled_ids(petitioned, confirmed=confirmed,
+                        amendments=amendment_entries(config_root),
+                        waivers=run.waiver_entries(), approach=approach)
+
+
+def settled_petitioned_task_ids_on_disk(run_root: Path, tasks, *,
+                                        config_root: Path) -> frozenset[str]:
+    """The same rule for a READ-ONLY viewer of a run dir that holds no
+    `RunDir` and no MAC key -- the CLI's `ralphctl tasks` fallback and the
+    hub's on-disk path. Both waiver kinds are read exactly as the engine
+    reads them; the approach is status.json's; CONFIRMED adjudications go
+    through `petitions.confirmed_obligations_on_disk` (every unkeyed check,
+    no writes). It feeds the blocked-by display only."""
+    from . import petitions
+    petitioned = _petitioned_tasks(tasks)
+    if not petitioned:
+        return frozenset()
+    root = Path(run_root)
+    status = read_json(root / "status.json", {})
+    try:
+        approach = int((status if isinstance(status, dict) else {})
+                       .get("approach") or 1)
+    except (TypeError, ValueError):
+        approach = 1
+    return _settled_ids(petitioned,
+                        confirmed=petitions.confirmed_obligations_on_disk(root),
+                        amendments=amendment_entries(config_root),
+                        waivers=waiver_entries(root), approach=approach)
 
 # The one spelling of the status itself, so a caller outside this module
 # (`LoopSupervisor._all_tasks_completed`) names it rather than re-typing

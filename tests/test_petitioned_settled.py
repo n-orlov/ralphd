@@ -8,13 +8,15 @@ CONFIRMED adjudication. It keeps its status throughout (no status lies). The
 rule lives next to `TASK_DEPENDENCY_SATISFIED_STATUSES`
 (`state.task_dependency_satisfied`, `state.settled_petitioned_task_ids`).
 
-Only an operator status ruling moves a petitioned task out
-(`petitioned -> validated|skipped`, both variants), and only an operator
-ruling takes the un-reopen edge on a cure-reopened task; a hat's report of
-either stays refused.
+An operator status ruling moves a petitioned task out
+(`petitioned -> validated|skipped`, both variants), beside the engine's own
+CONFIRMED-adjudication application (`-> skipped`), and an operator ruling
+takes the un-reopen edge on a cure-reopened task; a hat's report of either
+stays refused.
 
 Sections: (1) one test per settling source, (2) the plan_complete check,
-(3) controls that hold before and after, (4) the operator exits.
+(3) controls that hold before and after, (4) the operator exits, (5) the
+display surfaces (`GET /tasks`, the hub's on-disk table, `ralphctl tasks`).
 """
 
 from __future__ import annotations
@@ -22,11 +24,14 @@ from __future__ import annotations
 import json
 
 import pytest
+from test_cli_docker import ctl, unix_sock  # noqa: F401  (fixtures)
 
+from ralphd.cli import ui_server
 from ralphd.engine import loop as loop_mod
 from ralphd.engine import petitions, state, transitions
 from ralphd.engine.scheduler import select_next_task
 from ralphd.engine.state import (
+    TASK_BLOCKED_FIELD,
     RunDir,
     apply_amendment_status_rulings,
     write_amendment,
@@ -298,3 +303,166 @@ def test_operator_ruling_validated_on_a_never_reopened_task_is_still_refused(
 
     assert [r["applied"] for r in results] == [False]
     assert run.read_tasks()["tasks"][0]["status"] == "pending"
+
+
+# ---------------------------------------------------------------------------
+# (5) the display surfaces read the same rule: `GET /tasks` (with the run's
+#     own approach), the hub's on-disk table and `ralphctl tasks`' on-disk
+#     fallback. A settled petitioned dependency is no blocker on any of them.
+# ---------------------------------------------------------------------------
+
+def _plan_text(tasks) -> str:
+    return json.dumps({"version": 1, "tasks": tasks})
+
+
+@pytest.fixture
+def api_get(tmp_path, monkeypatch):
+    """`GET <path>` against the engine API over a run on approach 2, with
+    the API module's `/config` pointed at a temp dir."""
+    import asyncio
+
+    import httpx
+
+    from ralphd.engine import api as api_mod
+    from ralphd.engine.api import create_app
+    from ralphd.engine.config import JobConfig
+    from ralphd.engine.loop import LoopSupervisor
+
+    cdir = tmp_path / "config"
+    cdir.mkdir()
+    monkeypatch.setattr(api_mod, "CONFIG_DIR", cdir)
+    run = RunDir(root=tmp_path / "run")
+    run.update_status(state="running", approach=2)
+    run.tasks_file.write_text(_plan_text([_petitioned(), _dependent()]))
+    sup = LoopSupervisor(JobConfig(run_id="unit", infra_retry_backoff_s=[0.0],
+                                  infra_retry_backoff_max_s=0.0), run, tmp_path)
+    app = create_app(sup.cfg, run, sup)
+
+    def get(path: str) -> dict:
+        async def go():
+            async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app),
+                    base_url="http://engine") as c:
+                r = await c.get(path)
+                assert r.status_code == 200, r.text
+                return r.json()
+        return asyncio.run(go())
+
+    get.run, get.cdir = run, cdir
+    return get
+
+
+def test_get_tasks_drops_a_dependency_waived_for_the_current_approach(api_get):
+    assert api_get("/tasks")[TASK_BLOCKED_FIELD] == {"002": ["001"]}
+    write_amendment(api_get.cdir, "001", "accepted on approach 2", waive=True,
+                    approach=2)
+
+    assert TASK_BLOCKED_FIELD not in api_get("/tasks")
+
+
+def test_control_get_tasks_keeps_a_dependency_waived_for_another_approach(api_get):
+    write_amendment(api_get.cdir, "001", "accepted on approach 1", waive=True,
+                    approach=1)
+
+    assert api_get("/tasks")[TASK_BLOCKED_FIELD] == {"002": ["001"]}
+
+
+def test_get_tasks_drops_a_dependency_covered_by_a_clause_waiver(api_get):
+    api_get.run.add_waiver(clause=OBLIGATION, finding="not a defect",
+                           judge="review")
+
+    assert TASK_BLOCKED_FIELD not in api_get("/tasks")
+
+
+def _hub_registry(tmp_path, run_id: str):
+    reg = tmp_path / "registry"
+    rdir = reg / "runs" / run_id
+    rdir.mkdir(parents=True)
+    (reg / "configs" / run_id).mkdir(parents=True)
+    (rdir / "status.json").write_text(json.dumps({
+        "runId": run_id, "state": "failed", "approach": 1,
+        "schemaVersion": 1, "startedAt": "2026-01-01T00:00:00Z"}))
+    (rdir / "tasks.json").write_text(_plan_text([_petitioned(), _dependent()]))
+    (rdir / "host.json").write_text(json.dumps({
+        "runId": run_id, "container": f"ralphd-{run_id}", "port": 1,
+        "apiUrl": "http://127.0.0.1:1", "image": "img", "startedAt": "x"}))
+    return reg, rdir
+
+
+def _hub_blocked(reg, run_id):
+    return ui_server.run_detail(reg, run_id)["tasks"].get(TASK_BLOCKED_FIELD)
+
+
+def test_hub_on_disk_drops_a_dependency_covered_by_a_clause_waiver(tmp_path):
+    reg, rdir = _hub_registry(tmp_path, "hub-clause")
+    # first read populates the per-run cache with the blocker...
+    assert _hub_blocked(reg, "hub-clause") == {"002": ["001"]}
+    # ...and a waiver landing later is seen though tasks.json never moved.
+    RunDir(root=rdir).add_waiver(clause=OBLIGATION, finding="not a defect",
+                                 judge="review")
+
+    assert _hub_blocked(reg, "hub-clause") is None
+
+
+def test_hub_on_disk_drops_a_dependency_covered_by_a_task_waiver(tmp_path):
+    reg, _ = _hub_registry(tmp_path, "hub-task")
+    write_amendment(reg / "configs" / "hub-task", "001", "accepted", waive=True)
+
+    assert _hub_blocked(reg, "hub-task") is None
+
+
+def test_hub_on_disk_drops_a_dependency_covered_by_a_confirmed_adjudication(
+        tmp_path):
+    reg, rdir = _hub_registry(tmp_path, "hub-confirmed")
+    petitions.record_confirmed_adjudications(
+        RunDir(root=rdir), [{"obligation": OBLIGATION,
+                             "adjudication": "CONFIRMED"}])
+
+    assert _hub_blocked(reg, "hub-confirmed") is None
+
+
+def test_control_hub_on_disk_ignores_an_unwitnessed_adjudication_record(tmp_path):
+    """A record the engine never announced writing (no witness MAC in
+    events.jsonl) settles nothing on the read-only path either."""
+    reg, rdir = _hub_registry(tmp_path, "hub-forged")
+    entries = [{"obligation": OBLIGATION, "adjudication": "CONFIRMED"}]
+    (rdir / "petition-adjudications.json").write_text(json.dumps({
+        "entries": entries, "mac": "0" * 64,
+        "digest": petitions._adjudications_digest(entries)}))
+
+    assert _hub_blocked(reg, "hub-forged") == {"002": ["001"]}
+
+
+def test_ralphctl_tasks_on_disk_drops_a_dependency_covered_by_a_clause_waiver(ctl):
+    from test_cli_resume import _seed_run
+    rdir, _ = _seed_run(ctl, "tst-settled-clause")
+    (rdir / "tasks.json").write_text(_plan_text([_petitioned(), _dependent()]))
+    RunDir(root=rdir).add_waiver(clause=OBLIGATION, finding="not a defect",
+                                 judge="review")
+
+    doc = json.loads(ctl.run("--json", "tasks", "tst-settled-clause").stdout)
+    assert doc["live"] is False
+    assert TASK_BLOCKED_FIELD not in doc
+    res = ctl.run("tasks", "tst-settled-clause")
+    assert res.returncode == 0, res.stderr
+    line = next(ln for ln in res.stdout.splitlines() if "] 002 " in ln)
+    assert "blocked" not in line
+
+
+def test_ralphctl_tasks_on_disk_drops_a_dependency_covered_by_a_task_waiver(ctl):
+    from test_cli_resume import _seed_run
+    rdir, cdir = _seed_run(ctl, "tst-settled-task")
+    (rdir / "tasks.json").write_text(_plan_text([_petitioned(), _dependent()]))
+    write_amendment(cdir, "001", "accepted", waive=True)
+
+    doc = json.loads(ctl.run("--json", "tasks", "tst-settled-task").stdout)
+    assert TASK_BLOCKED_FIELD not in doc
+
+
+def test_control_ralphctl_tasks_on_disk_still_shows_an_unsettled_blocker(ctl):
+    from test_cli_resume import _seed_run
+    rdir, _ = _seed_run(ctl, "tst-settled-none")
+    (rdir / "tasks.json").write_text(_plan_text([_petitioned(), _dependent()]))
+
+    doc = json.loads(ctl.run("--json", "tasks", "tst-settled-none").stdout)
+    assert doc[TASK_BLOCKED_FIELD] == {"002": ["001"]}

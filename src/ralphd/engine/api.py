@@ -251,7 +251,8 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         res = run.read_tasks_result()
         return dataclasses.replace(
             res, settled=settled_petitioned_task_ids(
-                run, res.tasks, config_root=CONFIG_DIR)).payload
+                run, res.tasks, config_root=CONFIG_DIR,
+                approach=run.current_approach())).payload
 
     @app.get("/prd")
     async def prd(original: bool = False):

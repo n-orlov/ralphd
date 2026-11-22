@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import contextlib
+import dataclasses
 import functools
 import hashlib
 import io
@@ -137,6 +138,7 @@ from ..engine.state import (
     read_iteration_prompt,
     read_operator_termination,
     read_tasks_doc,
+    settled_petitioned_task_ids_on_disk,
     record_operator_termination,
     repoint_amendment,
     router_call_entries,
@@ -4674,7 +4676,11 @@ def _tasks_doc(run_id: str) -> tuple[bool, dict]:
     res = read_tasks_doc(run_root(run_id), persist=False)
     # Task 025 (#33): `TasksRead.payload`, the same shaping `GET /tasks` serves
     # -- so the on-disk answer carries the derived `taskFailureKinds` too and
-    # `--json` reads the same either way.
+    # `--json` reads the same either way. v0.38 (#306): and the same settled
+    # rule, so a waived or CONFIRMED petitioned dependency is not shown as a
+    # blocker here while the engine has already scheduled past it.
+    res = dataclasses.replace(res, settled=settled_petitioned_task_ids_on_disk(
+        run_root(run_id), res.tasks, config_root=config_root(run_id)))
     return False, res.payload
 
 

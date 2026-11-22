@@ -2151,6 +2151,40 @@ def confirmed_obligations(run) -> tuple[set[str], bool]:
             False)
 
 
+def confirmed_obligations_on_disk(run_root) -> set[str]:
+    """v0.38 (#306): the CONFIRMED obligations a READ-ONLY viewer of a run
+    dir may show as settled -- the host CLI's and the hub's on-disk
+    fallback, which hold no MAC key and must write nothing (no event, no
+    sticky flag, no key file). Every check `_read_adjudications_record`
+    can make without the key is made, and any failure reads as the EMPTY
+    set (towards blocking): a tamper event already in `events.jsonl`, a
+    malformed record, an unkeyed `digest` that disagrees with the
+    entries, or a record MAC that is not the last one the engine
+    announced writing (`ADJUDICATIONS_RECORDED_EVENT`). This feeds the
+    blocked-by DISPLAY only; the engine's own decisions (scheduler,
+    holds, plan completion) go through `confirmed_obligations`, keyed."""
+    from ralphd.engine.state import read_events, read_json
+    root = Path(run_root)
+    if read_events(root, (ADJUDICATIONS_TAMPERED_EVENT,)):
+        return set()
+    doc = read_json(root / "petition-adjudications.json", default=None)
+    if not isinstance(doc, dict):
+        return set()
+    entries = doc.get("entries")
+    if not isinstance(entries, list) or \
+            doc.get("digest") != _adjudications_digest(entries):
+        return set()
+    witnesses = [ev.get("mac") for ev in read_events(
+        root, (ADJUDICATIONS_RECORDED_EVENT,)) if isinstance(ev.get("mac"), str)]
+    stored = doc.get("mac")
+    if not witnesses or not isinstance(stored, str) \
+            or not hmac.compare_digest(witnesses[-1], stored):
+        return set()
+    return {_normalize_obligation(e["obligation"]) for e in entries
+            if isinstance(e, dict) and e.get("adjudication") == "CONFIRMED"
+            and isinstance(e.get("obligation"), str)}
+
+
 def settled_obligations(run) -> tuple[set[str], bool]:
     """`(obligations, tampered)` -- the normalised set of obligations
     ADJUDICATED at run scope so far, CONFIRMED **and** REFUTED alike. This

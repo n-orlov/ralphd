@@ -563,13 +563,22 @@ adjudication names that obligation. A settled task keeps the status
 `plan_complete` or a terminal-success verdict. One rule,
 `state.task_dependency_satisfied`, beside `TASK_DEPENDENCY_SATISFIED_STATUSES`,
 is read by the scheduler, the `taskBlockedBy` overlay, the petition-held hold
-and the plan-complete and terminal-success checks. An unsettled petitioned
-dependency still blocks its dependents, and a `skipped` dependency never
-satisfies one. Only an operator status ruling (`ralphctl amend <run> <task>
---status validated|skipped`) moves a petitioned task to another status, in both
-the base and the vigilant table. A hat's report of the same move is refused. An
-operator `--status` ruling also takes the un-reopen edge for a task a cure pass
-re-opened (`preCureStatuses`); the guard still refuses it from every hat.
+and the plan-complete and terminal-success checks. The overlay reads it on every
+surface: `GET /tasks` uses the run's current approach, and the read-only on-disk
+paths (`ralphctl tasks` with the API unreachable, the hub's on-disk table) use
+`state.settled_petitioned_task_ids_on_disk`, which reads both waiver kinds and
+checks CONFIRMED adjudications as far as it can without the engine's MAC key.
+An unsettled petitioned dependency still blocks its dependents, and a `skipped`
+dependency never satisfies one.
+
+A petitioned task leaves `petitioned` in two ways. The engine applies a CONFIRMED
+adjudication (`petitions.apply_confirmed_petition_adjudications`): the task
+moves to `skipped` and its dependents are re-pointed. An operator status ruling
+(`ralphctl amend <run> <task> --status validated|skipped`) takes either move, in
+both the base and the vigilant table. A hat's report of the same move is
+refused. An operator `--status` ruling also takes the un-reopen edge for a task
+a cure pass re-opened (`preCureStatuses`) and emits `task.un_reopened` with
+`source: "operator"`. The guard still refuses that edge from every hat.
 
 Before dispatch, the harness claims the selected task as `in-progress` and
 records that transition. It also fixes the task's effective tier for this claim.
