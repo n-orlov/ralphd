@@ -5019,8 +5019,9 @@ error type.
 
 **The three probe outcomes.** Both harnesses' `cli_version` (claude-code runs
 `<cli> -v`, codex `<cli> --version`) tells three outcomes apart, and `version_gate`
-maps each to its own in-band error: (1) a version read: it is compared to the
-minimum, and below it (or unparseable) is `*_version_too_old`, refused; (2) no
+maps each to its own in-band error: (1) a version read from either captured
+stream (stdout first, then stderr): it is compared to the minimum whichever stream
+carried it, and below it (or unparseable) is `*_version_too_old`, refused; (2) no
 version in the output: output that is present (on stdout or stderr) with no version
 in it is `*_version_too_old` ("could not read the version"), refused, while a CLI
 that ran and printed nothing at all is `claude_code_version_probe_empty` or

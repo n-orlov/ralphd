@@ -1088,8 +1088,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # no budget left x2, an abort over it still ends the run, other parks
     # still take the budget tail x2, a raised iteration/approach budget does
     # not reopen the key x2), in both tiers -> fast 9359, smoke 7578.
-    "fast": {"tests": 9359, "modules": 579},
-    "smoke": {"tests": 7578, "modules": 452},
+    # v0.38 task cure-01-06: +12 tests, no module (tests/test_cli_version_
+    # probe_outcomes.py: a version on stderr alone at/below the minimum, on
+    # stderr after unparseable stdout, stdout winning over stderr, both
+    # streams below, a bare number on stderr not a version; x2 harnesses), in
+    # both tiers -> fast 9371, smoke 7590.
+    "fast": {"tests": 9371, "modules": 579},
+    "smoke": {"tests": 7590, "modules": 452},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

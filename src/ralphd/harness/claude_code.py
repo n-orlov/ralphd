@@ -190,7 +190,8 @@ def cli_version(cli: str) -> str | None:
         return ProbeFailed(f"{cli} -v could not be run: {e}")
     except subprocess.SubprocessError as e:
         return ProbeFailed(f"{cli} -v could not be run: {e}")
-    version = read_version(out.stdout)
+    # Either captured stream may carry the banner; stdout is read first.
+    version = read_version(out.stdout) or read_version(out.stderr)
     if version is None and not (out.stdout or "").strip() \
             and not (out.stderr or "").strip():
         return EmptyProbeOutput(

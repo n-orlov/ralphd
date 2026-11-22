@@ -96,7 +96,7 @@ PROBE_FAILED = "codex_version_probe_failed"
 PROBE_EMPTY = "codex_version_probe_empty"
 # Seconds the `<cli> --version` probe may take.
 PROBE_TIMEOUT_S = 30
-_VERSION_RE = re.compile(r"\d+(?:\.\d+)*")
+_VERSION_RE = re.compile(r"\d+(?:\.\d+)+")
 
 # Codex's own retry loops are kept small so the engine's fault ladder owns
 # retrying (the default is about thirty requests).
@@ -239,7 +239,8 @@ def cli_version(cli: str) -> str | None:
         return ProbeFailed(f"{cli} --version could not be run: {e}")
     except subprocess.SubprocessError as e:
         return ProbeFailed(f"{cli} --version could not be run: {e}")
-    m = _VERSION_RE.search(out.stdout or "")
+    # Either captured stream may carry the banner; stdout is read first.
+    m = _VERSION_RE.search(out.stdout or "") or _VERSION_RE.search(out.stderr or "")
     version = m.group(0) if m else None
     if version is None and not (out.stdout or "").strip() \
             and not (out.stderr or "").strip():

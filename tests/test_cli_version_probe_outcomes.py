@@ -200,6 +200,48 @@ def test_unparseable_output_on_stderr_alone_is_present_output(h, tmp_path):
     assert _classify(err)["faultClass"] == FAULT_CLASS_REFUSED
 
 
+# -- a parseable version is compared whichever stream carries it (D.1/D.3) ----
+
+def test_a_version_on_stderr_alone_at_the_minimum_passes(h, tmp_path):
+    cli = _script(tmp_path, f"echo {h['min']} >&2")
+    assert h["mod"].cli_version(cli) == h["min"]
+    assert h["mod"].version_gate(cli, h["mod"].cli_version(cli)) is None
+
+
+def test_a_version_on_stderr_alone_below_the_minimum_is_too_old_with_its_number(h, tmp_path):
+    cli = _script(tmp_path, f"echo {h['below']} >&2; exit 1")
+    assert h["mod"].cli_version(cli) == h["below"]
+    err = _gate(h, cli)
+    assert err["type"] == h["too_old"]
+    assert h["below"] in err["message"] and h["min"] in err["message"]
+    assert "could not read" not in err["message"]
+
+
+def test_a_version_on_stderr_after_unparseable_stdout_is_still_compared(h, tmp_path):
+    cli = _script(tmp_path, f"echo banner without a number; echo {h['min']} >&2")
+    assert h["mod"].cli_version(cli) == h["min"]
+    assert h["mod"].version_gate(cli, h["mod"].cli_version(cli)) is None
+
+
+def test_stdout_version_wins_over_stderr_version(h, tmp_path):
+    cli = _script(tmp_path, f"echo {h['min']}; echo {h['below']} >&2")
+    assert h["mod"].cli_version(cli) == h["min"]
+
+
+def test_a_version_on_both_streams_below_the_minimum_is_too_old(h, tmp_path):
+    cli = _script(tmp_path, f"echo {h['below']}; echo {h['below']} >&2")
+    err = _gate(h, cli)
+    assert err["type"] == h["too_old"] and h["below"] in err["message"]
+
+
+def test_a_bare_number_on_stderr_is_not_a_version(h, tmp_path):
+    cli = _script(tmp_path, "echo 'error 404' >&2; exit 2")
+    assert h["mod"].cli_version(cli) is None
+    err = _gate(h, cli)
+    assert err["type"] == h["too_old"]
+    assert "could not read" in err["message"]
+
+
 # -- a non-executable CLI found only through PATH -----------------------------
 
 def _noexec_on_path(tmp_path: Path, monkeypatch) -> str:
