@@ -234,9 +234,10 @@ also classify the remedy: `remedy_type: "form"` when it changes NO
 deliverable, only how one is produced (rerun a command differently, adjust
 a process, restate something already true), or `remedy_type: "substance"`
 (the default when omitted) when it actually requires a different
-deliverable. A `form` remedy routes the affected task to `validated`, with
-the remedy recorded as a debt item rather than a retry driver; a
-`substance` remedy fails the affected task -- which is then dependency-dead.
+deliverable. A `form` remedy fails the affected task, with the remedy
+recorded as a debt item and no cure task built; a `substance` remedy also
+fails the affected task -- which is then dependency-dead. A REFUTED
+petition never validates a task.
 On a `substance` remedy, the engine ALSO builds ONE cure task out of your
 remedy text, on the same path a curable rejection's cure task takes,
 re-pointing every dependent of the failed task onto it -- whether this
@@ -301,26 +302,26 @@ own criteria) is never amended -- it converts to a disclosed residual,
 with no text rewritten anywhere. Omit both fields on any
 CONFIRMED entry you are not re-scoping (the overwhelming common case).
 
-### Closing a petitioned task
+### Settling a petitioned task
 
 When the obligation you are adjudicating is a task's OWN engine-filed
 petition -- the one a task's validation ladder exhausted into (its status
 reads `petitioned`), not a PRD requirement or another task's criteria --
-and you rule it CONFIRMED, the engine closes the loop itself: it moves
-that task to `skipped`, records your adjudication on the task's own
-`notes` field (the obligation is void), and removes that task's id from
-every OTHER task's `dependsOn`. If some other, still-viable task should
-inherit that dependency instead of the dependent simply losing it, name it
-with a THIRD optional field on the same entry: `replacement_task_id` (the
-exact id of the task that takes its place). Omit it, or name a task id
-that is not in the current plan, and the dependency is removed with
-nothing put in its place. This is unrelated to `task_id`/
-`replacement_criteria` above -- those re-scope a task's criteria while it
-STAYS in the plan; `replacement_task_id` only ever applies when the task
-itself is leaving the plan. A REFUTED adjudication of a `petitioned` task's
-own obligation behaves exactly as it always has (the task moves to
-`failed` or `validated`, per its `remedy_type`) -- this section only
-changes what CONFIRMED does.
+and you rule it CONFIRMED, the engine settles that task: it stays
+`petitioned` (its status is never rewritten for you), your adjudication is
+recorded on the task's own `notes` field, and every `dependsOn` that names
+it is satisfied from then on, so its dependents become schedulable and it
+does not block plan completion. If the dependents also need work that
+some other task carries, name that task with a THIRD optional field on the
+same entry: `replacement_task_id` (the exact id). The engine adds it to
+each dependent's `dependsOn` beside the settled edge. Omit it, or name a
+task id that is not in the current plan, and nothing is added. This is
+unrelated to `task_id`/`replacement_criteria` above -- those re-scope a
+task's criteria; `replacement_task_id` only ever applies to a CONFIRMED
+entry naming a petitioned task's own obligation. A REFUTED adjudication
+of a `petitioned` task's own obligation behaves exactly as it always has
+(the task moves to `failed`, whatever its `remedy_type`) -- this
+section only changes what CONFIRMED does.
 
 ## Structured findings (severity, curability, clause, evidence)
 
@@ -552,18 +553,18 @@ exactly one JSON object:
   "remedy_type": "form"|"substance" (<REFUTED only, default substance>),
   "task_id": "<only when re-scoping that ONE task's own criteria, see below>",
   "replacement_criteria": "<only alongside task_id above>",
-  "replacement_task_id": "<only when a CONFIRMED entry closes a petitioned
-  task and a different task inherits its dependents, see below>"}]`
+  "replacement_task_id": "<only when a CONFIRMED entry settles a petitioned
+  task and its dependents also need a different task, see below>"}]`
   to whichever verdict object above you report, one entry per open petition --
   every open petition gets an adjudication regardless of whether your overall
   verdict is `verified` or `rejected`. `task_id`/`replacement_criteria` are
   described under "Criteria amendment authority" above -- add them only on a
   CONFIRMED, `contradictory-clauses`/`self-referential` entry whose obligation
   is that task's own `successCriteria`; omit both on every other entry.
-  `replacement_task_id` is described under "Closing a petitioned task" above
-  -- add it only on a CONFIRMED entry that closes a `petitioned` task whose
-  dependents should inherit a different task instead of losing the
-  dependency outright; omit it on every other entry.
+  `replacement_task_id` is described under "Settling a petitioned task" above
+  -- add it only on a CONFIRMED entry that settles a `petitioned` task whose
+  dependents should also wait on a different task; omit it on every other
+  entry.
 
 **Mid-run adjudication episodes.** If this
 prompt tells you this iteration is a bounded, off-budget mid-run petition

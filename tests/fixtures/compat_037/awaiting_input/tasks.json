@@ -1,0 +1,17 @@
+{
+  "goal": "",
+  "repositories": [],
+  "scope": {},
+  "tasks": [
+    {
+      "estimatedIterations": 1,
+      "id": "001",
+      "priority": 1,
+      "status": "completed",
+      "successCriteria": "criterion of 001",
+      "tier": "normal",
+      "title": "task 001"
+    }
+  ],
+  "version": 1
+}

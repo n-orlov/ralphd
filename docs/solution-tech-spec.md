@@ -291,14 +291,16 @@ non-terminal states, each with one owner:
 | `state` | Entered by | Left by |
 |---|---|---|
 | `paused` | the operator only (`ralphctl pause`, the hub, `POST /pause`); `status.json` records `pausedBy: "operator"` and the optional `pauseNote` | `ralphctl unpause` |
-| `awaiting_input` | the engine, only to ask the operator about findings (`inputQuestion`) or about a secret found in a commit | an answer (`ralphctl answer`, `POST /answer`, the hub panel) or the input timeout |
+| `awaiting_input` | the engine, only to ask the operator about findings (`inputQuestion`), about a secret found in a commit, or about a held petitioned task the prompt adjudication did not settle (`kind: petition_hold`, below), or because the final review would judge a state a deferred VERIFIED already judged, or the final peer verdict gate a state its own earlier verdict judged (`kind: verified_unchanged`, below) | an answer (`ralphctl answer`, `POST /answer`, the hub panel) or the input timeout |
 | `exhausted` | the engine, when the iteration, time or approach budget is spent (`exhaustedBudget`) | `ralphctl resume` with a top-up of that budget |
 | `running` with `health: degraded` | the engine, during an infrastructure outage | recovery, or `failed` once the outage budget is spent |
 
 No other engine path parks a run, and every stop is written to `status.json`
 before the engine waits on it. `awaiting_input` carries `inputQuestion`: its
-`kind` (`findings` or `secret`), `trigger` (`incurable`, `reviewer_escalation`,
-`cure_rounds_spent`), the blocking findings, this approach's cure rounds used and
+`kind` (`findings`, `secret`, `petition_hold` or `verified_unchanged`), `trigger`
+(`incurable`, `reviewer_escalation`, `cure_rounds_spent`, `commit_secret`,
+`petition_hold`, `verified_unchanged`), the
+blocking findings, this approach's cure rounds used and
 allowed, `expiresAt` and `onTimeout`. The commit-secret park (`kind: secret`) has
 one answer, `ralphctl answer <run> --secret-handled`, once the commit scan of the
 offending range is clean, and never expires. A provider refusal ends the run
@@ -552,8 +554,85 @@ replan of the same approach, whose planning prompt names the offending edges
 `failed` with `ending: unschedulable_task_graph`; `ralphctl resume` continues it
 once the graph is repaired. Neither parks the run.
 
-A remainder held on a `petitioned` ancestor goes to review after three no-task
-passes (`petition_held_no_task_bound`).
+A remainder held on a `petitioned` ancestor is adjudicated at once: on the first
+hold the engine runs the mid-run adjudication episode before it spends any no-task
+worker iteration. CONFIRMED settles the task and REFUTED fails it with its remedy;
+if the plan moved, the loop re-selects in the same pass, so a CONFIRMED outcome
+starts the first dependent immediately. The hold means the unsettled `petitioned`
+tasks the remainder waits on: a REFUTED task now `failed` is a dead dependency,
+not a hold, so it never parks the run. If the judge returns no adjudication, or
+the hold is unchanged, the run parks in `awaiting_input` (`inputQuestion.kind:
+petition_hold`, never expires) and does not route to the final review. The
+question names each petitioned task, its petition, its dependents and the two
+operator answers, `ralphctl amend <run> --waive <task>` and `ralphctl amend <run>
+<task> --status validated|skipped`; once the ruling is recorded, `ralphctl answer
+<run>` releases the park and the worker re-reads the plan. A hold with no open
+petition to adjudicate keeps the earlier bound: three no-task passes, then review
+(`petition_held_no_task_bound`).
+
+The same state is never judged twice. Each final-review dispatch, and each retry
+attempt inside one, records a review state key in the approach's state (`status.json` `reviewStateKeys`): the workspace
+HEAD sha plus the sorted `(task id, status, settled)` triples over every task of the
+plan. A VERIFIED verdict that defers to the worker ("VERIFIED verdict deferring")
+stores, with the verdict, the key the attempt that returned it was dispatched on
+(never the first attempt's, and never a key re-read when the verdict arrives). Before any final-review dispatch on that approach, from any
+edge into `review`, the engine compares the current key with the stored one, the key
+alone (a steering message consumed without moving HEAD or a task is no change); if
+they are equal it does not dispatch. The petition-held route spends no no-task
+worker iteration on an equal key and goes straight to `review`. When nothing blocks
+terminal success any more, the remembered VERIFIED stands (`review_verdict_reused`)
+and review's verified edge is taken. Otherwise it parks in `awaiting_input`
+(`pauseReason: verified_unchanged`, `inputQuestion.kind: verified_unchanged`, never
+expires) naming the non-terminal tasks that held the earlier VERIFIED and what
+blocks each. A changed HEAD or a changed task status dispatches the review as
+before. `ralphctl answer <run>` releases the park and the run re-enters `review`,
+so a release with nothing changed parks again with no review dispatch. The key is
+compared on every `worker -> review` edge (`verdict_ready`, `blocked_with_failures`,
+`doomed_plan_unverifiable`, `petition_held_no_task_bound`,
+`unsatisfiable_and_nothing_left`) and by the final peer verdict gate against the key
+its own earlier verdict judged (`judge: verdict_gate`, re-entering `verdict_gate`).
+The phase review is not keyed.
+
+A `petitioned` task is **settled** when an applied operator waiver covers it (a
+task-level `ralphctl amend <run> <task> --waive`, or a run-level clause waiver
+whose clause matches the obligation its petition carries) or a CONFIRMED
+adjudication names that obligation. A settled task keeps the status
+`petitioned`, satisfies every `dependsOn` that names it, and never blocks
+`plan_complete` or a terminal-success verdict. One rule,
+`state.task_dependency_satisfied`, beside `TASK_DEPENDENCY_SATISFIED_STATUSES`,
+is read by the scheduler, the `taskBlockedBy` overlay, the petition-held hold
+and the plan-complete and terminal-success checks. The overlay reads it on every
+surface: `GET /tasks` uses the run's current approach, and the read-only on-disk
+paths (`ralphctl tasks` with the API unreachable, the hub's on-disk table) use
+`state.settled_petitioned_task_ids_on_disk`, which reads both waiver kinds and
+checks CONFIRMED adjudications as far as it can without the engine's MAC key.
+An unsettled petitioned dependency still blocks its dependents, and a `skipped`
+dependency never satisfies one.
+
+A CONFIRMED adjudication settles the task in place. The engine applies it in
+the same pass that records it (`petitions.apply_confirmed_petition_adjudications`):
+the task keeps the status `petitioned`, gains a note naming the adjudication,
+and every dependent keeps its `dependsOn` edge, which the settled rule reads as
+satisfied. A `replacement_task_id` naming a task in the plan is added to each
+dependent beside that edge. A REFUTED adjudication fails the task instead
+(`failed`, remedy on `validationNotes`), form remedy included: form debt is
+never validation. A petitioned task reaches `validated` or `skipped` only through
+an operator status ruling (`ralphctl amend <run> <task> --status
+validated|skipped`), which takes either move in both the base and the vigilant
+table. A hat's report of the same move is refused. An operator `--status` ruling also takes the un-reopen edge for a task
+a cure pass re-opened (`preCureStatuses`) and emits `task.un_reopened` with
+`source: "operator"`. The guard still refuses that edge from every hat.
+
+`ralphctl amend <run> <task> --status <s>` checks the ruling when it records it,
+against the task's record, through the one check the engine itself applies
+(`state.task_status_change_refusal`): an illegal move exits non-zero and records
+nothing; `--force` overrides only the check that the record holds the task id,
+never this one. When the engine later refuses a ruling
+that was legal when recorded because the task moved, it emits
+`amendment.refused`, and `ralphctl amend --list` and `ralphctl status` show the
+refusal. A record that cannot be read is never replaced by the run directory's
+mirror: the CLI asks the live engine (`GET /tasks/{id}/status-ruling`) and
+records nothing without its authoritative answer.
 
 Before dispatch, the harness claims the selected task as `in-progress` and
 records that transition. It also fixes the task's effective tier for this claim.
@@ -578,8 +657,9 @@ stateDiagram-v2
     active --> pending: deferred or re-poll backoff, with deferredUntil
     active --> superseded: forced split children accepted
     active --> skipped: unsatisfiable report
-    petitioned --> failed: REFUTED, remedy cure task inserted
-    petitioned --> skipped: CONFIRMED, dependents re-pointed
+    petitioned --> failed: REFUTED, either remedy type (substance inserts a cure task, form records debt)
+    petitioned --> validated: operator status ruling only
+    petitioned --> skipped: operator status ruling only
     active --> failed: work failure
     failed --> skipped: justified task_status relabel
 ```
@@ -1041,6 +1121,21 @@ line it writes.
   also uses; a CLI below the minimum ends the
   iteration in-band as `codex_version_too_old` and a missing one as
   `codex_cli_not_found`, both classified `refused`.
+- Both harnesses' `cli_version` tells three probe outcomes apart: a version read
+  (compared to the minimum; below it is `*_version_too_old`), no version in the
+  output (output present on stdout or stderr with no version in it:
+  `*_version_too_old`, "could not read the version"; no output at all: an
+  `EmptyProbeOutput`, which `version_gate` turns into the transient
+  `claude_code_version_probe_empty` / `codex_version_probe_empty`; a missing file
+  is `*_cli_not_found`; `*_version_too_old` and `*_cli_not_found` are `refused`),
+  and a probe that could not finish (it timed out after `PROBE_TIMEOUT_S`, 30 s, or
+  raised `OSError` while the file exists, a file found through `PATH` counting even
+  without its exec bit). The third returns a `ralphd.cli.versions.ProbeFailed` and
+  `version_gate` turns it into `claude_code_version_probe_failed` /
+  `codex_version_probe_failed`, whose message says what happened ("timed out after
+  30 s", or the OSError text) and never "too old". `*_version_probe_failed` and
+  `*_version_probe_empty` match the `cli-probe` infra signature family, so they are
+  transient infra faults under the outage ladder, never `refused`.
 
 On timeout or cancellation the group gets SIGINT, then SIGKILL after
 `SHUTDOWN_GRACE_S` (30 s). The startup watchdog detects missing traffic, and a
@@ -1111,7 +1206,7 @@ job configuration, or supported runtime overrides. Source:
 |---|---|---|
 | Iteration budget | 25 | Charged work allowance; raw iteration numbering is retained for history. Exhaustion holds the run in the resumable `exhausted` state rather than ending it. |
 | Approaches | 3 | Maximum plan/review approaches. A planning attempt that yields no usable plan retries on the same approach number; two consecutive attempts failing the same ingestion lint end the run. |
-| Input timeout | 60 minutes | How long a findings park in `awaiting_input` waits for an answer before the engine takes the park's timeout outcome. `0` means never; the `secret` park never expires. |
+| Input timeout | 60 minutes | How long a findings park in `awaiting_input` waits for an answer before the engine takes the park's timeout outcome. `0` means never; the `secret` and `petition_hold` parks never expire. |
 | Job timeout | 8 hours | Useful-work deadline; accounted infra, rate-limit and pause waits extend it. Reaching it holds the run in `exhausted`. |
 | Iteration timeout | 45 minutes | Individual invocation cap, read once per dispatch. The deadline is a boundary checked before dispatch, not a clamp on a started iteration. Reflection runs under `min(iteration timeout, 600 s)`. |
 | Startup traffic window | 150 seconds | Watchdog input, with CPU-progress discrimination. |
@@ -1386,8 +1481,8 @@ task is unfinished (`_terminal_success_blockers`). The run then defers once to
 | Operator ruling | `ralphctl rule <run> --file <f>`, `POST /rule` or the hub's parked-question textarea writes `rulings/NNN-<name>.md` under the run root. A ruling is keyed to the current rejection signature, not to a task id, so it survives a replan. It reaches both review and per-task verify. It never releases an `awaiting_input` park (only an answer does); it buys no re-park and bounds nothing on the rejection ladder. |
 | Operator amendment | A host-side `ralphctl amend` record under read-only `/config/amendments`. Three kinds: `replace` and `waive` change the effective criterion presented to review and the peer verdict gate, but not to per-task verify; `--status` is applied by the engine to `tasks.json` at load and at every worker and review step boundary. Rulings are task-scoped (stamped with an approach) or wave-scoped (`--wave`). A task-scoped ruling whose target a replan removed is reported `ORPHANED`, emits `amendment_target_not_in_plan`, and can be moved with `--repoint`. |
 | Impossibility petition | Worker declares an obligation impossible with a type and evidence. The engine files it in the run-scope `petitions.md`, never in the workspace (pre-committed workspace `artifacts/reports/*-petitions.md` files are still read), and refuses a duplicate or an out-of-vocabulary type. Independent adjudication must decide it. The types are `environmental`, `temporal`, `contradictory-clauses`, `external`, and `self-referential`. When the PRD declares a petition protocol, validation exhaustion files one too and moves the task to `petitioned` instead of `failed`. |
-| Confirmed petition | Removes the adjudicated obligation from the blocking set and accepts the matching `petitioned` task. It is persisted across approaches and episodes with MAC-backed integrity records. |
-| Refuted petition | A `substance` remedy moves the `petitioned` task to `failed` and inserts one `review-cure` task. That task's criteria come from the remedy's `Done when:`/`Cured when:` marker, and a remedy without one is refused on the review contract ladder. A `form` remedy moves the task to `validated` and records the remedy as debt instead of retrying the implementation. |
+| Confirmed petition | Removes the adjudicated obligation from the blocking set and settles the matching `petitioned` task in place: the task keeps the status `petitioned` and its dependents keep their edge to it. A confirmed petition is one of the three sources that settle a `petitioned` task for its dependents and for plan completion (see the task graph section). It is persisted across approaches and episodes with MAC-backed integrity records. |
+| Refuted petition | A `substance` remedy moves the `petitioned` task to `failed` and inserts one `review-cure` task. That task's criteria come from the remedy's `Done when:`/`Cured when:` marker, and a remedy without one is refused on the review contract ladder. A `form` remedy also moves the task to `failed`, records the remedy as debt and inserts no task; REFUTED never validates a task. A CONFIRMED adjudication, by contrast, settles the task in place (it stays `petitioned`). Only an operator status ruling moves a `petitioned` task to `validated` or `skipped`, and only an operator `--status` ruling takes the un-reopen edge for a cure-reopened task; both exits are absent from a hat's table in either variant. |
 | Verification debt | Durable notes carried forward from verification/adjudication; explicit resolution records preserve what was addressed. |
 
 When a rejection would archive the approach, an `awaiting_input` park stops it
@@ -1444,7 +1539,7 @@ make all workspace and event updates one transaction.
 |---|---|
 | Engine read API | Health/version, status, tasks, PRD/notes, iterations/output, logs, events, artifacts (paged listing and capped text view) and effective configuration ([`api.py`](../src/ralphd/engine/api.py)). |
 | Engine control API | Steering, rulings (`POST /rule`), interrupt, task undefer, pause/resume, retry, abort, shutdown and budget patching. |
-| Runtime config API | Prompt overrides, skill/credential CRUD, and LLM configuration updates. |
+| Runtime config API | Prompt overrides, skill/credential CRUD (a credential file's `.vars` entries are set and removed through `PUT`/`DELETE /config/creds/{name}` and `ralphctl creds`), and LLM configuration updates. |
 | CLI | Launch/resume/stop/remove/repair; runs list, status, watch, logs, iteration, fault, cost, tasks, docs, artifacts and router views; steer, rule, amend, interrupt, pause/unpause, retry, undefer, budget and abort; configuration, LLM profiles and `llm test`, skills/creds/prompts, suggestions and doctor checks. |
 | Web hub | Sortable runs list (including cost), run detail with started/resumed/wall/active durations, provisioning table of hat models and tiers, payer and cost tables, tasks, iteration timeline with harness/thinking/router links, a Current iteration panel beside the live log, documents, a paged artifacts browser, steering (with apply-now through `POST /interrupt`), a parked-question panel that files a ruling or unpauses, retry, undefer and eligible run deletion. It is not a full CLI replacement: abort, pause, budget, amend and resume remain CLI-only ([`ui_server.py`](../src/ralphd/cli/ui_server.py), [`app.js`](../src/ralphd/cli/web/app.js)). |
 
@@ -1579,7 +1674,13 @@ already-decided work verdict. Signal teardown marks reflection not attempted rat
 than starting more model calls while the container is stopping.
 
 After the tail, the engine emits the terminal `state` event and then publishes the
-final lifecycle state. An optional `on_complete_cmd` hook runs at the agent UID
+final lifecycle state. When the run ends
+in a terminal state or the `exhausted` hold and the job has
+docker access, the engine also removes the containers labelled both
+`ralphd.run=<run>` and `ralphd.role=sibling` (best effort, never changing the
+outcome) and emits `siblings.reaped`; `ralphctl status` of a run that is not
+running warns about any labelled container still running
+([`siblings.py`](../src/ralphd/siblings.py)). An optional `on_complete_cmd` hook runs at the agent UID
 with `RALPHD_RUN_ID`, `RALPHD_STATE` and `RALPHD_VERDICT` in its environment; hook
 failure is recorded without replacing the job outcome
 ([`engine/main.py`](../src/ralphd/engine/main.py)). `on_complete: exit` (the

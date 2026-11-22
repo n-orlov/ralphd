@@ -54,6 +54,7 @@ See docs/cli.md's "ralphctl ui" section for the exact endpoint shapes.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import mimetypes
 import socket
@@ -81,6 +82,7 @@ from ..engine.state import (
     STEERING_APPLIED,
     STEERING_PENDING,
     TASK_BLOCKED_FIELD,
+    TASK_SETTLED_FIELD,
     TASK_FAILURE_KINDS_FIELD,
     TASKS_STALE_LABEL,
     TERMINAL_STATES,
@@ -121,6 +123,7 @@ from ..engine.state import (
     prd_path,
     read_iteration_prompt,
     read_tasks_doc,
+    settled_petitioned_task_ids_on_disk,
     router_call_entries,
     run_document,
     run_document_summary_lines,
@@ -1656,7 +1659,11 @@ def _with_task_blocked_by(tasks: dict) -> dict:
     # `TasksRead.blocked_by` (the on-disk/`GET /tasks` half) shows it, with
     # the petitioned task named as its cause.
     out = {k: v for k, v in tasks.items() if k != TASK_BLOCKED_FIELD}
-    blocked = task_blocked_by(tasks.get("tasks") or [], include_petitioned=True)
+    settled = tasks.get(TASK_SETTLED_FIELD)
+    blocked = task_blocked_by(
+        tasks.get("tasks") or [], include_petitioned=True,
+        settled=frozenset(str(i) for i in settled)
+        if isinstance(settled, list) else frozenset())
     if blocked:
         out[TASK_BLOCKED_FIELD] = blocked
     return out
@@ -2095,6 +2102,26 @@ def _cached_iteration_row(run_dir: Path, run_id: str, number: int) -> dict | Non
     return detail
 
 
+def _settled_inputs_key(run_dir: Path, run_id: str) -> tuple:
+    """v0.38 (#306): the mtimes of everything the settled rule reads beside
+    tasks.json -- the waivers dir, the amendments dir and the adjudication
+    record -- so an operator waiver lands on
+    the hub's on-disk table without waiting for tasks.json to move.
+    events.jsonl and status.json are left out on purpose: both move on
+    every poll of a live run, the adjudication record moves together with
+    its witness event, and an approach change rewrites tasks.json."""
+    paths = (run_dir / "waivers", run_dir.parent.parent / "configs" / run_id
+             / "amendments", run_dir / "petition-adjudications.json")
+    out = []
+    for p in paths:
+        try:
+            st = p.stat()
+            out.append((st.st_mtime_ns, st.st_size))
+        except OSError:
+            out.append(None)
+    return tuple(out)
+
+
 def _cached_disk_tasks_block(run_dir: Path, run_id: str) -> dict:
     """Task 004 (A.2): the on-disk `tasks.json` shaping cache.
 
@@ -2112,11 +2139,20 @@ def _cached_disk_tasks_block(run_dir: Path, run_id: str) -> dict:
         mtime = path.stat().st_mtime
     except OSError:
         mtime = 0.0
+    mtime = (mtime, *_settled_inputs_key(run_dir, run_id))
     cached = _TASKS_BLOCK_CACHE.get(run_id)
     if cached is not None and cached[0] == mtime:
         _bound_run_cache(_TASKS_BLOCK_CACHE, run_id)
         return cached[1]
     tasks_read = read_tasks_doc(run_dir, persist=False)
+    # v0.38 (#306): the settled rule's on-disk reader, so a waived or
+    # CONFIRMED petitioned dependency is not drawn as a blocker. Its inputs
+    # (waivers, amendments, the adjudication record) are not tasks.json, so
+    # they join the cache key below.
+    tasks_read = dataclasses.replace(
+        tasks_read, settled=settled_petitioned_task_ids_on_disk(
+            run_dir, tasks_read.tasks,
+            config_root=run_dir.parent.parent / "configs" / run_id))
     tasks = tasks_read.payload
     tasks.setdefault("tasks", [])
     _TASKS_BLOCK_CACHE[run_id] = (mtime, tasks)

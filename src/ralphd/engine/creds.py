@@ -23,6 +23,11 @@ log = logging.getLogger("ralphd.creds")
 
 EXTRA_NAMES = ("gitconfig", "git-credentials", "netrc")
 
+# The two kinds of `<name>.<kind>` credential file: `env` holds secrets (every
+# value is scrubbed), `vars` holds non-secret values a `.env` may source (a
+# server URL, a user name) and is never value-scrubbed (#314).
+CRED_KINDS = ("env", "vars")
+
 
 def api_creds_dir() -> Path:
     """Container-local writable overlay location for runtime `PUT
@@ -35,23 +40,30 @@ def creds_deleted_dir() -> Path:
     return OVERLAY_DIR / "creds-deleted"
 
 
-def clear_creds_tombstone(name: str) -> None:
-    """Remove a delete-tombstone for env-cred `name`, if any (called by PUT
-    so a re-added cred isn't immediately suppressed again)."""
-    marker = creds_deleted_dir() / f"{name}.env"
+def clear_creds_tombstone(name: str, kind: str = "env") -> None:
+    """Remove a delete-tombstone for cred `name` of `kind` (`env` or `vars`),
+    if any (called by PUT so a re-added cred isn't immediately suppressed
+    again)."""
+    marker = creds_deleted_dir() / f"{name}.{kind}"
     if marker.exists():
         marker.unlink()
 
 
-def _deleted_env_names() -> set[str]:
+def _deleted_names(kind: str) -> set[str]:
     ddir = creds_deleted_dir()
     if not ddir.is_dir():
         return set()
-    return {p.stem for p in ddir.iterdir() if p.name.endswith(".env")}
+    return {p.stem for p in ddir.iterdir() if p.name.endswith(f".{kind}")}
 
 
-def _env_sources(config_dir: Path) -> tuple[dict[str, Path], dict[str, Path]]:
-    """Return (mounted, api) env-cred-name -> `<name>.env` path maps.
+def _deleted_env_names() -> set[str]:
+    return _deleted_names("env")
+
+
+def _env_sources(config_dir: Path, kind: str = "env"
+                 ) -> tuple[dict[str, Path], dict[str, Path]]:
+    """Return (mounted, api) cred-name -> `<name>.<kind>` path maps, `kind`
+    being `env` (secret) or `vars` (non-secret values, #314).
 
     Task 024 (#180 class, requirement E.2's own docker test surfaced this):
     `config_dir` is the same host directory `JobConfig.load()` (task 023,
@@ -65,23 +77,24 @@ def _env_sources(config_dir: Path) -> tuple[dict[str, Path], dict[str, Path]]:
     mdir = config_dir / "creds"
     with privsep.root_for_write():
         if mdir.is_dir():
-            for p in sorted(mdir.glob("*.env")):
+            for p in sorted(mdir.glob(f"*.{kind}")):
                 mounted[p.stem] = p
     api: dict[str, Path] = {}
     adir = api_creds_dir()
     if adir.is_dir():
-        for p in sorted(adir.glob("*.env")):
+        for p in sorted(adir.glob(f"*.{kind}")):
             api[p.stem] = p
     return mounted, api
 
 
-def effective_env_source(config_dir: Path, name: str) -> tuple[Path, str] | None:
-    """The `<name>.env` file + origin ("api"/"mounted") that is/would be
-    placed at `~/.creds/<name>.env`, or None if not visible (deleted or
-    never existed)."""
-    if name in _deleted_env_names():
+def effective_env_source(config_dir: Path, name: str, kind: str = "env"
+                         ) -> tuple[Path, str] | None:
+    """The `<name>.<kind>` file + origin ("api"/"mounted") that is/would be
+    placed at `~/.creds/<name>.<kind>` (`kind` is `env` or `vars`), or None
+    if not visible (deleted or never existed)."""
+    if name in _deleted_names(kind):
         return None
-    mounted, api = _env_sources(config_dir)
+    mounted, api = _env_sources(config_dir, kind)
     if name in api:
         return api[name], "api"
     if name in mounted:
@@ -89,15 +102,16 @@ def effective_env_source(config_dir: Path, name: str) -> tuple[Path, str] | None
     return None
 
 
-def list_creds(config_dir: Path) -> list[dict]:
+def list_creds(config_dir: Path, kind: str = "env") -> list[dict]:
     """Effective credential inventory for `GET /config/creds`: name, size,
-    mtime -- never values. Deterministic (sorted by name)."""
-    mounted, api = _env_sources(config_dir)
-    deleted = _deleted_env_names()
+    mtime -- never values. Deterministic (sorted by name). `kind` selects
+    the `*.env` (default) or `*.vars` inventory."""
+    mounted, api = _env_sources(config_dir, kind)
+    deleted = _deleted_names(kind)
     names = sorted((set(mounted) | set(api)) - deleted)
     out = []
     for name in names:
-        src, _origin = effective_env_source(config_dir, name)  # type: ignore[misc]
+        src, _origin = effective_env_source(config_dir, name, kind)  # type: ignore[misc]
         st = src.stat()
         out.append({"name": name, "size": st.st_size, "mtime": st.st_mtime})
     return out
@@ -123,12 +137,12 @@ def _extra_source(config_dir: Path, name: str) -> Path | None:
 
 
 def place_creds(config_dir: Path, *, home: Path) -> list[str]:
-    """Place effective `*.env` creds at `$HOME/.creds/<name>.env` (0600)
-    plus recognized extras (gitconfig, git-credentials, netrc, ssh/,
+    """Place effective `*.env` and `*.vars` creds at `$HOME/.creds/<name>.env`
+    / `<name>.vars` (0600) plus recognized extras (gitconfig, git-credentials, netrc, ssh/,
     setup.sh). Mounted (`<config_dir>/creds`) and api-added (runtime `PUT
     /config/creds/{name}`, in the writable overlay) sources are merged --
     api wins on name collision, tombstoned names (`DELETE`) are omitted.
-    `~/.creds/*.env` is fully rebuilt on every call (so a DELETE actually
+    `~/.creds/*.env` and `~/.creds/*.vars` are fully rebuilt on every call (so a DELETE actually
     removes the file, not just stops re-adding it) -- safe/cheap, mirrors
     skills.place_skills(). Returns the list of placed cred *names* (never
     values) for logging by the caller.
@@ -144,21 +158,26 @@ def place_creds(config_dir: Path, *, home: Path) -> list[str]:
     placed: list[str] = []
 
     dest_creds = home / ".creds"
-    mounted, api = _env_sources(config_dir)
-    deleted = _deleted_env_names()
-    names = sorted((set(mounted) | set(api)) - deleted)
-    if names or dest_creds.is_dir():
+    # `*.env` (secret) and `*.vars` (non-secret values, #314) are placed the
+    # same way: merged mounted + api, tombstones omitted, rebuilt in full.
+    per_kind: dict[str, tuple[list[str], dict[str, Path], dict[str, Path]]] = {}
+    for kind in CRED_KINDS:
+        mounted, api = _env_sources(config_dir, kind)
+        names = sorted((set(mounted) | set(api)) - _deleted_names(kind))
+        per_kind[kind] = (names, mounted, api)
+    if any(n for n, _m, _a in per_kind.values()) or dest_creds.is_dir():
         dest_creds.mkdir(parents=True, exist_ok=True)
-        desired_files = {f"{n}.env" for n in names}
-        for existing in dest_creds.glob("*.env"):
-            if existing.name not in desired_files:
-                existing.unlink()
-        for name in names:
-            src = api.get(name) or mounted[name]
-            dest = dest_creds / f"{name}.env"
-            dest.write_bytes(src.read_bytes())
-            dest.chmod(0o600)
-            placed.append(f"{name}.env")
+        for kind, (names, mounted, api) in per_kind.items():
+            desired_files = {f"{n}.{kind}" for n in names}
+            for existing in dest_creds.glob(f"*.{kind}"):
+                if existing.name not in desired_files:
+                    existing.unlink()
+            for name in names:
+                src = api.get(name) or mounted[name]
+                dest = dest_creds / f"{name}.{kind}"
+                dest.write_bytes(src.read_bytes())
+                dest.chmod(0o600)
+                placed.append(f"{name}.{kind}")
 
     creds_dir = config_dir / "creds"
 

@@ -1,0 +1,54 @@
+{
+  "approach": 1,
+  "approachStartHeads": {
+    "1": null
+  },
+  "createdAt": "2026-11-20T08:00:00Z",
+  "curePasses": {
+    "1": 2
+  },
+  "engineVersion": "0.37.0",
+  "firstStartedAt": "2026-11-20T08:00:05Z",
+  "health": "ok",
+  "infraWait": null,
+  "infraWaitTotalS": 0.0,
+  "inputQuestion": {
+    "approach": 1,
+    "cureRoundsAllowed": 2,
+    "cureRoundsUsed": 2,
+    "expiresAt": "2026-11-20T10:05:00Z",
+    "findings": [
+      {
+        "clause": "requirement A",
+        "curable": true,
+        "id": "F1",
+        "severity": "blocking",
+        "text": "still broken"
+      }
+    ],
+    "judge": "review",
+    "kind": "findings",
+    "maxApproaches": 2,
+    "onTimeout": "next_approach",
+    "parkedAt": "2026-11-20T09:05:00Z",
+    "trigger": "cure_rounds_spent"
+  },
+  "iteration": 3,
+  "iterationsBudget": 30,
+  "iterationsUsed": 3,
+  "maxApproaches": 2,
+  "onComplete": "exit",
+  "pauseDetail": null,
+  "pauseReason": "operator_input_needed",
+  "pausedTotalS": 0.0,
+  "phase": "paused",
+  "planPhase": null,
+  "rateLimitWait": null,
+  "runId": "legacy-037",
+  "schemaVersion": 3,
+  "startedAt": "2026-11-20T08:00:05Z",
+  "state": "awaiting_input",
+  "unconsumedSteering": [],
+  "updatedAt": "2026-11-20T09:10:00Z",
+  "verdict": null
+}

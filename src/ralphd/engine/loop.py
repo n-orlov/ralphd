@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Callable
 
 from .. import __version__
-from .. import collapse_index, render_index
+from .. import collapse_index, render_index, siblings
 from . import answer as answering
 from . import commit_scan
 from . import contract_enforcement
@@ -295,6 +295,9 @@ class LoopSupervisor:
         self.cfg = cfg
         self.run = run
         self.workspace = workspace
+        # v0.38 E.1: the docker client the terminal sibling reap uses; None
+        # means the real `docker` binary, a test sets a fake.
+        self.docker_runner = None
         # #291: the first `events.jsonl` line as this process FOUND it,
         # before it emits anything itself -- on a resume, the run's original
         # start; a line this process appends (to a fresh or a removed file)
@@ -1104,8 +1107,10 @@ class LoopSupervisor:
     # delivery attempts") calls each outer attempt through `_notify` with
     # `max_attempts=1`, which disables `hat_tools.send_notification`'s own,
     # separate, task 017/requirement A.7 retry-once-immediately-no-backoff
-    # for THIS path only (every other, non-escalation `self._notify(...)`
-    # call site keeps that retry, via `_notify`'s own default of 2) -- so
+    # for THIS path (a `self._notify(...)` call that names no attempt count
+    # keeps that retry, via `_notify`'s own default of 2; the single
+    # best-effort `_notify_input_event` park notification also passes 1 and
+    # has no outer retry at all) -- so
     # these three outer attempts are the ONLY retrying that happens, and
     # the total number of real notifier POSTs an escalation ever makes is
     # exactly this bound, never `_ESCALATION_DELIVERY_MAX_ATTEMPTS` times
@@ -1581,6 +1586,16 @@ class LoopSupervisor:
             return self._answer_secret(question, secret_handled, waive=waive,
                                        accept=accept, cure_rounds=cure_rounds,
                                        approaches=approaches)
+        if isinstance(question, dict) and question.get("kind") == (
+                state.VERIFIED_UNCHANGED_KIND):
+            return self._answer_verified_unchanged(
+                question, secret_handled, waive=waive, accept=accept,
+                cure_rounds=cure_rounds, approaches=approaches)
+        if isinstance(question, dict) and question.get("kind") == (
+                state.PETITION_HOLD_KIND):
+            return self._answer_petition_hold(
+                question, secret_handled, waive=waive, accept=accept,
+                cure_rounds=cure_rounds, approaches=approaches)
         if secret_handled:
             raise answering.AnswerRefused(
                 "--secret-handled answers a `secret` question, and this run's "
@@ -1620,6 +1635,53 @@ class LoopSupervisor:
         if isinstance(question, dict) and question.get("planPhase"):
             record["planPhase"] = question["planPhase"]
         self.run.update_status(inputAnswer=record)
+        self.run.emit("input.answered", **record)
+        self.resume()
+        return record
+
+    def _answer_petition_hold(self, question: dict, secret_handled: bool,
+                              **others) -> dict:
+        """v0.38 A.5: the park's answer is the operator's `ralphctl amend`
+        ruling (waiver or status), recorded host-side and applied by the
+        worker loop; `ralphctl answer <run>` with no option only releases
+        the park so the loop re-reads the plan. A hold the ruling did not
+        move is re-parked at once."""
+        if secret_handled or any(
+                v not in (None, [], ()) for v in others.values()):
+            raise answering.AnswerRefused(
+                "this run is parked on a held petitioned task; answer it "
+                f"with `ralphctl amend {self.cfg.run_id} <task> --waive "
+                f"<reason>` or `ralphctl amend {self.cfg.run_id} <task> "
+                "--status validated|skipped <reason>`, then "
+                f"`ralphctl answer {self.cfg.run_id}` with no options")
+        record = {"outcome": "petition_hold_released",
+                  "kind": state.PETITION_HOLD_KIND,
+                  "approach": question.get("approach"),
+                  "heldTaskIds": [e.get("taskId") for e in
+                                  question.get("heldTasks") or []]}
+        self.run.emit("input.answered", **record)
+        self.resume()
+        return record
+
+    def _answer_verified_unchanged(self, question: dict,
+                                   secret_handled: bool, **others) -> dict:
+        """v0.38 B.2: `ralphctl answer <run>` with no option releases the
+        `verified_unchanged` park. The run re-enters `review`, which
+        compares the review state key again: a changed state dispatches the
+        review, an unchanged one parks again."""
+        if secret_handled or any(
+                v not in (None, [], ()) for v in others.values()):
+            raise answering.AnswerRefused(
+                "this run is parked because the final "
+                + ("peer verdict gate already returned a verdict"
+                   if question.get("judge") == "verdict_gate" else
+                   "review already returned VERIFIED")
+                + " on this exact state; change something "
+                f"(`ralphctl amend {self.cfg.run_id} ...` or a commit), "
+                f"then `ralphctl answer {self.cfg.run_id}` with no options")
+        record = {"outcome": "verified_unchanged_released",
+                  "kind": state.VERIFIED_UNCHANGED_KIND,
+                  "approach": question.get("approach")}
         self.run.emit("input.answered", **record)
         self.resume()
         return record
@@ -4799,12 +4861,43 @@ class LoopSupervisor:
         """
         status = self.run.read_status()
         if status.get("state") == "finishing":
-            return self._promote_recorded_finishing_state(status)
-        state = await self._run_job_core()
-        if self.cfg.reflect and state != EXHAUSTED_STATE:
-            await self._run_reflection()
-        self._promote_finishing_state()
+            state = self._promote_recorded_finishing_state(status)
+        else:
+            state = await self._run_job_core()
+            if self.cfg.reflect and state != EXHAUSTED_STATE:
+                await self._run_reflection()
+            self._promote_finishing_state()
+        self._reap_siblings_at_terminal(state)
         return state
+
+    # v0.38 E.1 (#319 item 1): the states a run ends in on its own, the
+    # exhausted hold and the legacy `timed_out` spelling of it included.
+    _SIBLING_REAP_STATES = ("succeeded", "failed", "aborted",
+                            EXHAUSTED_STATE, state.LEGACY_TIMED_OUT_STATE)
+
+    def _reap_siblings_at_terminal(self, final_state: str) -> None:
+        """Remove this run's labelled sibling containers once it has ended.
+
+        Only with docker access (`siblings.engine_has_docker_access()`): a
+        run without it makes no docker call and emits nothing. Filters on
+        `ralphd.run=<run>` AND `ralphd.role=sibling`, never the run label
+        alone -- this process runs inside the job container, which carries
+        the first label too. Best effort: it emits `siblings.reaped` with the
+        count and any per-container error, and never changes the outcome.
+        `self.docker_runner` is the seam a test replaces with a fake client.
+        """
+        if final_state not in self._SIBLING_REAP_STATES:
+            return
+        if not siblings.engine_has_docker_access():
+            return
+        try:
+            runner = self.docker_runner or siblings.docker_runner()
+            result = siblings.reap_siblings(self.cfg.run_id, runner,
+                                            sibling_only=True)
+            self.run.emit("siblings.reaped", state=final_state,
+                          **result.event_fields())
+        except Exception as exc:  # never let a reap change the outcome
+            log.warning("sibling reap failed: %s", exc)
 
     def _finish_tail_unverified(self) -> str:
         """The ordinary `("tail",)`-exit terminal write from
@@ -8440,11 +8533,137 @@ class LoopSupervisor:
                                        cause=self.COMMIT_SECRET_SCAN_EVENT)
                 return
 
+    @staticmethod
+    def _unsettled_petitioned_among(
+        tasks_doc: dict, task_ids: list[str], settled,
+    ) -> list[str]:
+        """The ids in `task_ids` whose task is still `petitioned` and not
+        settled -- the petition hold proper, without the failed/skipped
+        blockers `state.task_blocked_by` also names."""
+        settled_ids = {str(x) for x in (settled or ())}
+        statuses = {str(t.get("id")): t.get("status", "pending")
+                    for t in tasks_doc.get("tasks") or []
+                    if isinstance(t, dict)}
+        return sorted(
+            tid for tid in task_ids
+            if statuses.get(tid) == state.TASK_STATUS_PETITIONED
+            and tid not in settled_ids)
+
+    def _petition_hold_entries(
+        self, tasks_doc: dict, blocked: dict, held_task_ids: list[str],
+    ) -> list[dict]:
+        """One entry per held (petitioned) task: its id, title, the petition
+        on file for it (obligation, type, evidence -- `None` when none is
+        filed) and the ids of the tasks that wait on it."""
+        by_id = {str(t.get("id")): t for t in tasks_doc.get("tasks") or []
+                 if isinstance(t, dict)}
+        entries = []
+        for tid in held_task_ids:
+            task = by_id.get(tid) or {"id": tid}
+            obligation = petitions.task_petition_obligation(task)
+            filed = petitions.filed_petition_for_obligation(
+                self.workspace, obligation, self.run)
+            entries.append({
+                "taskId": tid,
+                "title": str(task.get("title") or ""),
+                "petition": ({
+                    "obligation": filed.get("obligation"),
+                    "type": filed.get("type"),
+                    "evidence": filed.get("evidence"),
+                } if filed else None),
+                "dependents": sorted(
+                    d for d, causes in blocked.items() if tid in causes),
+            })
+        return entries
+
+    def _petition_hold_question_text(self, entries: list[dict]) -> str:
+        """The operator-facing text of a petition-hold park: each petitioned
+        task, its petition, its dependents and the two answers."""
+        run_id = self.cfg.run_id
+        lines = [
+            "The entire actionable remainder of this plan is held on "
+            "petitioned task(s), and the one prompt adjudication did not "
+            "settle them (no adjudication, or the hold is unchanged).",
+        ]
+        for e in entries:
+            pet = e["petition"] or {}
+            lines.append("")
+            lines.append(f"Petitioned task {e['taskId']}"
+                         + (f" ({e['title']})" if e["title"] else ""))
+            lines.append(
+                "  petition: " + (
+                    f"{pet.get('obligation')} [{pet.get('type')}]: "
+                    f"{pet.get('evidence')}" if pet
+                    else "(no petition text on file)"))
+            lines.append("  dependents: "
+                         + (", ".join(e["dependents"]) or "(none)"))
+        first = entries[0]["taskId"] if entries else "<task>"
+        lines += [
+            "",
+            "Answer with one of:",
+            f"  ralphctl amend {run_id} --waive {first} <reason>"
+            f"  (waive the petitioned task; its dependents are unblocked)",
+            f"  ralphctl amend {run_id} {first} --status validated|skipped "
+            "<reason>  (rule the task's status)",
+            f"then run `ralphctl answer {run_id}` so the run re-reads the "
+            "plan. A ruling recorded with `ralphctl rule` does not answer "
+            "this park.",
+        ]
+        return "\n".join(lines)
+
+    def _park_for_petition_hold(
+        self, tasks_doc: dict, blocked: dict, held_task_ids: list[str],
+    ) -> None:
+        """v0.38 A.5: the prompt adjudication of a held petitioned task
+        could not settle it, so the run parks `awaiting_input` with a
+        `petition_hold` question instead of routing to the final review on
+        that state. The question never expires; `ralphctl amend` (a waiver
+        or a status ruling) then `ralphctl answer <run>` leaves it, and the
+        worker re-reads the plan from the top of its loop. Like the secret
+        park it emits no `operator_escalation` event with an `approach`
+        field: no review verdict stands behind it."""
+        self._pause.clear()
+        self.run.emit("log", message="paused at next iteration boundary")
+        status = self.run.read_status()
+        current = status.get("state")
+        if current == "finishing" or current in TERMINAL_STATES:
+            return
+        entries = self._petition_hold_entries(
+            tasks_doc, blocked, held_task_ids)
+        approach = self._approach or 1
+        question = state.build_input_question(
+            judge=None, trigger=state.PETITION_HOLD_INPUT_TRIGGER,
+            blocking=[],
+            cure_rounds_used=self._cure_passes_for_approach(approach),
+            cure_rounds_allowed=self._cure_rounds_allowed(approach),
+            approach=approach, max_approaches=self.cfg.max_approaches,
+            parked_at_epoch=self._now_epoch(),
+            timeout_min=getattr(self.cfg, "input_timeout_min", None),
+            kind=state.PETITION_HOLD_KIND)
+        text = self._petition_hold_question_text(entries)
+        question.update({"heldTasks": entries, "text": text})
+        self.run.update_status(
+            state=AWAITING_INPUT_STATE,
+            pauseReason=state.PETITION_HOLD_INPUT_TRIGGER,
+            pauseDetail=None, inputQuestion=question)
+        self._emit_run_paused(state.PETITION_HOLD_INPUT_TRIGGER)
+        self.run.emit("input.parked", **{k: v for k, v in question.items()
+                                         if k != "parkedAt"})
+        self.run.emit("log", message=(
+            f"run state recorded `{AWAITING_INPUT_STATE}` on status.json "
+            f"(petition hold on {', '.join(held_task_ids)}); apply "
+            f"`ralphctl amend {self.cfg.run_id} ...` then `ralphctl answer "
+            f"{self.cfg.run_id}`"))
+        if self.notifier is not None:
+            self._notify_input_event(
+                f"run {self.cfg.run_id} is parked in awaiting_input\n{text}")
+
     def _park_for_commit_secret(self, base_sha: str | None,
                                 head_sha: str | None) -> None:
         """v0.36 F.6/C.5 (it replaces the 0.35 `operator_input_needed`
         pause): a secret found in a commit parks the run in `awaiting_input`
-        with `inputQuestion.kind: secret` -- the only non-findings park. The
+        with `inputQuestion.kind: secret` -- one of the two non-findings parks
+        (the other is the v0.38 `petition_hold` park). The
         question names the hit's sha, part and variable (never the value) and
         the offending commit range (`baseSha..headSha`) the answer re-scans.
         It never expires: `expiresAt` is `null` whatever `input_timeout_min`
@@ -9646,6 +9865,13 @@ class LoopSupervisor:
             self._budget_exhausted_tail = True
             return ("tail",)
         self.run.emit("phase", phase="verdict_gate", approach=approach)
+        # v0.38 B.3: the final peer gate shares the review state key with the
+        # final review. A dispatch on the key an earlier verdict of its own
+        # already judged is not made: the run parks `verified_unchanged`.
+        gate_key = self._review_state_key()
+        if self._verdict_gate_key_unchanged(approach, gate_key):
+            return self._park_for_verified_unchanged(
+                approach, gate_key, judge="verdict_gate")
         result = await self._dispatch_verdict_gate()
         while True:
             approved, payload, no_verdict = await self._verdict_gate_verdict(
@@ -9667,6 +9893,7 @@ class LoopSupervisor:
                          "verdict_gate_no_verdict")
             return ("tail",)
         self._reset_judge_fault_episode()
+        self._record_gate_judged_key(approach, gate_key)
         self._record_gate_approach_verdict(approach, approved, payload)
         self._record_verdict_gate_peek(approach)
         if approved:
@@ -10783,9 +11010,11 @@ class LoopSupervisor:
             # resumed run's very first pass through this loop does not
             # read as "progress" for the stagnation counter just because
             # the claim moved.
+            settled_petitioned = self._settled_petitioned_ids(tasks_before)
             selected = scheduler.select_next_task(
                 tasks_before.get("tasks", []),
-                phases=tasks_before.get("phases"))
+                phases=tasks_before.get("phases"),
+                settled=settled_petitioned)
             # Task 002 (#278 B.1/B.4/B.7): the router is asked for the
             # pending-step pick, and ONLY the pending-step pick -- never
             # the validation-failed or in-progress steps just above
@@ -10805,7 +11034,8 @@ class LoopSupervisor:
                     and self.cfg.route_task_selection):
                 pending_candidates = scheduler.pending_candidates(
                     tasks_before.get("tasks", []),
-                    phases=tasks_before.get("phases"))
+                    phases=tasks_before.get("phases"),
+                    settled=settled_petitioned)
                 if len(pending_candidates) >= 2:
                     selected = await self._route_task_selection(
                         pending_candidates, selected)
@@ -10967,7 +11197,8 @@ class LoopSupervisor:
                 # a fresh petition/etc.), only the STAGNATION bookkeeping
                 # is exempted.
                 blocked_incl_petitioned = state.task_blocked_by(
-                    tasks_before.get("tasks", []), include_petitioned=True)
+                    tasks_before.get("tasks", []), include_petitioned=True,
+                    settled=settled_petitioned)
                 actionable_ids = {
                     str(t["id"]) for t in tasks_before.get("tasks", [])
                     if isinstance(t, dict) and t.get("id") not in (None, "")
@@ -11010,7 +11241,51 @@ class LoopSupervisor:
                             escalation=hold_text)
                         if self.notifier is not None:
                             self._notify(hold_text)
-                    await self._maybe_run_midrun_adjudication_episode()
+                    # v0.38 A.4: the episode runs on the FIRST hold, before
+                    # any no-task worker iteration is spent.
+                    episode_ran = (
+                        await self._maybe_run_midrun_adjudication_episode())
+                    if episode_ran:
+                        after_doc = self.run.read_tasks()
+                        after_blocked = state.task_blocked_by(
+                            after_doc.get("tasks", []),
+                            include_petitioned=True,
+                            settled=self._settled_petitioned_ids(after_doc))
+                        after_actionable = {
+                            str(t["id"]) for t in after_doc.get("tasks", [])
+                            if isinstance(t, dict)
+                            and t.get("id") not in (None, "")
+                            and task_is_actionable(t)}
+                        after_held = sorted({
+                            tid for ids in after_blocked.values()
+                            for tid in ids})
+                        # The petition hold itself: the unsettled
+                        # `petitioned` blockers only. `task_blocked_by`
+                        # also names failed/skipped (doomed) blockers, so
+                        # a REFUTED adjudication that moved a petitioned
+                        # task to `failed` leaves the blocker ids alone
+                        # while the hold is gone.
+                        before_hold = self._unsettled_petitioned_among(
+                            tasks_before, held_task_ids,
+                            settled_petitioned)
+                        after_hold = self._unsettled_petitioned_among(
+                            after_doc, after_held,
+                            self._settled_petitioned_ids(after_doc))
+                        still_held = bool(after_actionable) and (
+                            after_actionable <= set(after_blocked))
+                        if (not still_held or not after_hold
+                                or after_hold != before_hold
+                                or after_held != held_task_ids):
+                            # A.4: the adjudication moved the plan (CONFIRMED
+                            # settled a task, REFUTED failed it, or part of
+                            # the hold went): re-select in THIS pass, never
+                            # through a no-task worker dispatch.
+                            continue
+                        # A.5: the judge could not settle it; ask the
+                        # operator and do not route to the final review.
+                        self._park_for_petition_hold(
+                            after_doc, after_blocked, after_hold)
+                        continue
                 # v0.20 task 022 (PRD requirement C.1, #156): the sleep-
                 # and-wake mechanism task 021's own scheduler docstring
                 # promised, "layered on top of this function's `None`
@@ -11044,7 +11319,28 @@ class LoopSupervisor:
                 petition_held_streak += 1
             else:
                 petition_held_streak = 0
-            if (petition_held_this_pass and petition_held_streak
+            # v0.38 B.2: a hold on the very state a deferred VERIFIED of
+            # this approach already judged (equal review state key) spends
+            # no no-task iteration at all -- none could change the answer
+            # -- and goes straight to `review`, whose own key check parks
+            # `verified_unchanged` without dispatching the review hat.
+            held_on_judged_state = (
+                petition_held_this_pass
+                and self._review_key_unchanged(
+                    approach, self._review_state_key()))
+            if held_on_judged_state:
+                self.run.emit(
+                    "log", level="warning",
+                    message=(
+                        "the entire actionable remainder is held on a "
+                        "petitioned dependency and the final review "
+                        "already returned VERIFIED on this HEAD and these "
+                        "task statuses -- routing to review (which parks "
+                        "verified_unchanged) instead of spending a no-task "
+                        "worker iteration (v0.38 B.2, #320)"),
+                    heldTaskIds=sorted(blocked_incl_petitioned.keys()),
+                    dependentTaskIds=sorted(actionable_ids))
+            elif (petition_held_this_pass and petition_held_streak
                     > self.PETITION_HELD_MAX_NO_TASK_ITERATIONS):
                 self.run.emit(
                     "log", level="error",
@@ -11058,6 +11354,9 @@ class LoopSupervisor:
                         "requirement C.4, #187)"),
                     heldTaskIds=sorted(blocked_incl_petitioned.keys()),
                     dependentTaskIds=sorted(actionable_ids))
+            if held_on_judged_state or (
+                    petition_held_this_pass and petition_held_streak
+                    > self.PETITION_HELD_MAX_NO_TASK_ITERATIONS):
                 if self._open_gate_before_last() is None:
                     self._advance("worker", "review",
                                   "petition_held_no_task_bound")
@@ -13882,6 +14181,12 @@ class LoopSupervisor:
             # one thinking step lower, exactly as the verdict_gate's does.
             extra = (extra + "\n\n" if extra else "") + retry_wording
         self._judge_retry_step_down = step_down
+        if self._phase_review_scope is None:
+            # v0.38 B.1: every final-review attempt records the key it is
+            # dispatched on, so the verdict this attempt returns is bound to
+            # the state this attempt saw.
+            self._record_review_dispatch_key(
+                self._approach, self._review_state_key())
         try:
             return await self.run_iteration(
                 "review", extra=extra,
@@ -14214,6 +14519,26 @@ class LoopSupervisor:
         # phase it takes effect for, which is also what lets a test pin the
         # boundary off `events.jsonl` rather than off the load site.
         self._apply_operator_status_rulings()
+        # v0.38 B.2: the final review is never dispatched twice on the state
+        # a deferred VERIFIED already judged. Every `* -> review` edge ends
+        # here, so one comparison covers them all.
+        review_key = self._review_state_key()
+        if self._review_key_unchanged(approach, review_key):
+            if not self._terminal_success_blockers():
+                # Nothing holds the remembered VERIFIED any more (the only
+                # blocker was a steering message the `steer` hat consumed
+                # without moving HEAD or a task): the verdict already
+                # returned for this exact state stands. Not dispatched, and
+                # not a park either -- a park with no blocker would name
+                # nothing an answer could change.
+                return self._reuse_verified_on_unchanged_key(
+                    approach, review_key)
+            return self._park_for_verified_unchanged(approach, review_key)
+        # The dispatch key itself is recorded per ATTEMPT, by
+        # `_run_one_review_dispatch`: a retry (an interrupted attempt, a
+        # truncated or empty reply re-asked) judges the HEAD and task
+        # statuses as they stand when IT is dispatched, and a deferred
+        # VERIFIED must name that state, never the first attempt's.
         result = await self._run_review_iteration(approach)
         while result is not None and self._review_no_verdict:
             # #300: review produced no verdict after every retry. Not a
@@ -15047,6 +15372,228 @@ class LoopSupervisor:
         self._clear_review_channel_files()
         return taken
 
+    # v0.38 B.1: where the review state keys live on `status.json`, per
+    # approach: `{"<approach>": {"dispatched": key, "verifiedDeferred":
+    # {"key": key, "verdict": "VERIFIED", "blockers": [...]}}}`.
+    REVIEW_STATE_KEYS_STATUS_KEY = "reviewStateKeys"
+
+    def _review_state_key(self) -> dict:
+        """The review state key of the plan as it stands: the workspace HEAD
+        sha plus the sorted `(task id, status, settled)` triples over every
+        task (`state.review_state_key`)."""
+        doc = self.run.read_tasks()
+        return state.review_state_key(
+            self._workspace_head_sha(), doc.get("tasks") or [],
+            self._settled_petitioned_ids(doc))
+
+    def _review_key_entry(self, approach: int) -> dict:
+        keys = self.run.read_status().get(self.REVIEW_STATE_KEYS_STATUS_KEY)
+        entry = (keys or {}).get(str(approach)) if isinstance(keys, dict) \
+            else None
+        return entry if isinstance(entry, dict) else {}
+
+    def _write_review_key_entry(self, approach: int, entry: dict) -> None:
+        keys = self.run.read_status().get(self.REVIEW_STATE_KEYS_STATUS_KEY)
+        keys = dict(keys) if isinstance(keys, dict) else {}
+        keys[str(approach)] = entry
+        self.run.update_status(**{self.REVIEW_STATE_KEYS_STATUS_KEY: keys})
+
+    def _review_key_unchanged(self, approach: int, key: dict) -> bool:
+        """True iff a deferred VERIFIED of this approach is remembered and
+        its key equals `key`: the review would judge the same state twice."""
+        deferred = self._review_key_entry(approach).get("verifiedDeferred")
+        # The key alone decides (B.2). The blockers recorded with the
+        # verdict are context for the park question, never part of the
+        # comparison: a steering message the `steer` hat consumed without
+        # moving HEAD or any task triple leaves the state the VERIFIED was
+        # returned for exactly as it was.
+        return isinstance(deferred, dict) and deferred.get("key") == key
+
+    def _record_review_dispatch_key(self, approach: int, key: dict) -> None:
+        """Record the key a final-review attempt is dispatched on (called per
+        attempt, retries included, by `_run_one_review_dispatch`). A new
+        attempt supersedes the remembered deferral: only the verdict this
+        attempt returns can set one again."""
+        self._write_review_key_entry(approach, {"dispatched": key})
+
+    def _verdict_gate_key_unchanged(self, approach: int, key: dict) -> bool:
+        """True iff the final peer gate of this approach already returned a
+        verdict on a key equal to `key` (v0.38 B.3) under the same cure-round
+        allowance. An operator top-up (`ralphctl budget --cure-passes`) since
+        that verdict changes what the same rejection leads to -- a cure
+        round instead of a park on a spent allowance -- so the gate is asked
+        again rather than held."""
+        judged = self._review_key_entry(approach).get("gateJudged")
+        if not (isinstance(judged, dict) and judged.get("key") == key):
+            return False
+        allowed = judged.get("cureRoundsAllowed")
+        return (allowed is None
+                or allowed == self._cure_rounds_allowed(approach))
+
+    def _record_gate_judged_key(self, approach: int, key: dict) -> None:
+        """The final peer gate returned a usable verdict on `key`: remember
+        it, so a later dispatch on the same key is held. A no-verdict outcome
+        records nothing -- nothing was judged."""
+        entry = dict(self._review_key_entry(approach))
+        entry["gateJudged"] = {
+            "key": key,
+            "cureRoundsAllowed": self._cure_rounds_allowed(approach),
+        }
+        self._write_review_key_entry(approach, entry)
+
+    def _record_deferred_verified_key(
+        self, approach: int, blockers: list[str],
+    ) -> None:
+        """A VERIFIED verdict is deferring to the worker: remember, with the
+        verdict and what held it, the key this dispatch was MADE on (the
+        `dispatched` key `_record_review_dispatch_key` wrote) -- the state
+        the review actually judged. Never a key re-read now: a HEAD or a
+        task status that moved while the review ran is a state the review
+        never saw, so the next dispatch on it must run."""
+        entry = dict(self._review_key_entry(approach))
+        dispatched = entry.get("dispatched")
+        if not isinstance(dispatched, dict):
+            # No dispatch key on record (a verdict reached without
+            # `_step_review`'s own dispatch): nothing judged to remember.
+            return
+        entry["verifiedDeferred"] = {
+            "key": dispatched, "verdict": "VERIFIED",
+            "blockers": list(blockers)}
+        self._write_review_key_entry(approach, entry)
+
+    def _reuse_verified_on_unchanged_key(self, approach: int,
+                                         key: dict) -> tuple:
+        """v0.38 B.2: the key equals a deferred VERIFIED's and no terminal-
+        success blocker remains. The review hat is not dispatched; the
+        remembered VERIFIED takes review's own verified edge through the
+        same ladder a fresh one climbs (a spent budget holds `exhausted`)."""
+        self.run.emit("review_verdict_reused", approach=approach,
+                      verdict="VERIFIED", reviewStateKey=key)
+        self.run.emit("log", level="info", message=(
+            "the final review already returned VERIFIED on this HEAD and "
+            "these task statuses, and nothing holds it any more -- taking "
+            "that verdict instead of dispatching the review again "
+            "(v0.38 B.2, #320)"))
+        outcome = self._run_rejection_ladder(
+            "review", approach, None, verified=True)
+        return (self._review_verified_edge(approach) if outcome is None
+                else outcome)
+
+    def _verified_unchanged_entries(self) -> list[dict]:
+        """The non-terminal tasks that held the earlier VERIFIED, and what
+        blocks each: the dead/petitioned ancestors, else its own status."""
+        doc = self.run.read_tasks()
+        tasks = doc.get("tasks") or []
+        blocked = state.task_blocked_by(
+            tasks, include_petitioned=True,
+            settled=self._settled_petitioned_ids(doc))
+        held = {str(t.get("id")): t for t in
+                (self._steering_origin_outstanding()
+                 + self._review_cure_origin_outstanding())}
+        # Every other non-terminal task is named too: it is part of the
+        # state the verdict was returned for.
+        for t in tasks:
+            if (isinstance(t, dict) and t.get("id") not in (None, "")
+                    and not state.task_is_terminal(t)):
+                held.setdefault(str(t["id"]), t)
+        return [{
+            "taskId": tid, "title": str(t.get("title") or ""),
+            "status": t.get("status"),
+            "blockedBy": sorted(blocked.get(tid, [])),
+        } for tid, t in sorted(held.items())]
+
+    def _verified_unchanged_question_text(
+            self, entries: list[dict], judge: str = "review") -> str:
+        run_id = self.cfg.run_id
+        if judge == "verdict_gate":
+            lines = [
+                "The final peer verdict gate already returned a verdict on "
+                "this exact state (same workspace HEAD, same task statuses). "
+                "Asking it again would judge the same state twice, so the "
+                "run holds here."]
+            for e in entries:
+                blockers = (", ".join(e["blockedBy"]) if e["blockedBy"]
+                            else "nothing (the task is simply not done)")
+                lines.append(f"  task {e['taskId']} [{e['status']}]"
+                             + (f" ({e['title']})" if e["title"] else "")
+                             + f": blocked by {blockers}")
+            lines += [
+                "",
+                "Change something, then answer: commit to the workspace or "
+                f"rule a task (`ralphctl amend {run_id} <task> --status "
+                f"validated|skipped <reason>`), then run "
+                f"`ralphctl answer {run_id}`. An answer with nothing "
+                "changed parks again.",
+            ]
+            return "\n".join(lines)
+        lines = [
+            "The final review already returned VERIFIED on this exact state "
+            "(same workspace HEAD, same task statuses) and the engine "
+            "deferred to the worker because these tasks are not terminal. "
+            "Asking the review again would judge the same state twice, so "
+            "the run holds here."]
+        for e in entries:
+            blockers = (", ".join(e["blockedBy"]) if e["blockedBy"]
+                        else "nothing (the task is simply not done)")
+            lines.append(f"  task {e['taskId']} [{e['status']}]"
+                         + (f" ({e['title']})" if e["title"] else "")
+                         + f": blocked by {blockers}")
+        lines += [
+            "",
+            "Change something, then answer: rule a blocking task "
+            f"(`ralphctl amend {run_id} --waive <task> <reason>` or "
+            f"`ralphctl amend {run_id} <task> --status validated|skipped "
+            f"<reason>`) or commit to the workspace, then run "
+            f"`ralphctl answer {run_id}`. An answer with nothing changed "
+            "parks again.",
+        ]
+        return "\n".join(lines)
+
+    def _park_for_verified_unchanged(self, approach: int, key: dict,
+                                     judge: str = "review") -> tuple:
+        """v0.38 B.2: do not dispatch the final review on a key a deferred
+        VERIFIED already judged. Park `awaiting_input`
+        (`pauseReason: verified_unchanged`), naming the non-terminal tasks
+        and their blockers, from `review`; a release re-enters `review`,
+        which compares the key again (an unchanged one re-parks). With
+        `judge="verdict_gate"` (v0.38 B.3) the park is the final peer gate's
+        own, from and back to `verdict_gate`."""
+        self._pause.clear()
+        self.run.emit("log", message="paused at next iteration boundary")
+        entries = self._verified_unchanged_entries()
+        question = state.build_input_question(
+            judge=judge, trigger=state.VERIFIED_UNCHANGED_INPUT_TRIGGER,
+            blocking=[],
+            cure_rounds_used=self._cure_passes_for_approach(approach),
+            cure_rounds_allowed=self._cure_rounds_allowed(approach),
+            approach=approach, max_approaches=self.cfg.max_approaches,
+            parked_at_epoch=self._now_epoch(),
+            timeout_min=getattr(self.cfg, "input_timeout_min", None),
+            kind=state.VERIFIED_UNCHANGED_KIND)
+        text = self._verified_unchanged_question_text(entries, judge)
+        question.update({"heldTasks": entries, "reviewStateKey": key,
+                         "text": text})
+        self.run.update_status(
+            state=AWAITING_INPUT_STATE,
+            pauseReason=state.VERIFIED_UNCHANGED_INPUT_TRIGGER,
+            pauseDetail=None, inputQuestion=question)
+        self._emit_run_paused(state.VERIFIED_UNCHANGED_INPUT_TRIGGER)
+        self.run.emit("input.parked", **{k: v for k, v in question.items()
+                                         if k != "parkedAt"})
+        self.run.emit("log", level="warning", message=(
+            f"run state recorded `{AWAITING_INPUT_STATE}` "
+            f"(verified_unchanged, approach {approach}): the final "
+            + ("peer verdict gate already returned a verdict"
+               if judge == "verdict_gate" else
+               "review already returned VERIFIED")
+            + " on this HEAD and these task statuses; not dispatching it "
+            "again"))
+        if self.notifier is not None:
+            self._notify_input_event(
+                f"run {self.cfg.run_id} is parked in awaiting_input\n{text}")
+        self._advance(judge, "paused", "verified_unchanged")
+        return ("advance", "paused", "verified_unchanged")
+
     def _review_verified_edge(self, approach: int) -> tuple:
         """review's `verified` edge (also taken when the ladder treats a
         rejection whose blocking findings are all waived as verified): the
@@ -15099,6 +15646,7 @@ class LoopSupervisor:
             # steering's name (PRD requirement D: reusing that name for
             # a different blocker would lie in the event log).
             guard = self._pending_at_verified_guard()
+            self._record_deferred_verified_key(approach, blockers)
             self.run.emit(
                 "log", level="warning",
                 message=("VERIFIED verdict deferring: "
@@ -15454,6 +16002,12 @@ class LoopSupervisor:
             # released with no answer: the phase is due again.
             self._advance("paused", "worker", "paused_resumed_phase_gate")
             return ("advance", "worker", "paused_resumed_phase_gate")
+        if reason == state.PETITION_HOLD_INPUT_TRIGGER:
+            # v0.38 A.5: a restarted engine over a petition-hold park carries
+            # on at the worker, which re-reads the plan and either selects a
+            # newly unblocked task or parks again.
+            self._advance("paused", "worker", "paused_resumed_petition_hold")
+            return ("advance", "worker", "paused_resumed_petition_hold")
         if reason == state.SECRET_INPUT_TRIGGER:
             # v0.36 C.5: a `secret` park (a restarted engine over one) is
             # answered by `--secret-handled` and continues at the worker.
@@ -15480,6 +16034,14 @@ class LoopSupervisor:
             self._advance("paused", "worker",
                           "paused_resumed_unresolvable_edge")
             return ("advance", "worker", "paused_resumed_unresolvable_edge")
+        if (reason == state.VERIFIED_UNCHANGED_INPUT_TRIGGER
+                and isinstance(opening.get("inputQuestion"), dict)
+                and opening["inputQuestion"].get("judge") == "verdict_gate"):
+            # v0.38 B.3: the final peer gate's own unchanged-key park
+            # re-enters `verdict_gate`, which compares the key again.
+            self._advance("paused", "verdict_gate",
+                          "paused_resumed_verdict_gate")
+            return ("advance", "verdict_gate", "paused_resumed_verdict_gate")
         if reason == "verdict_gate_operator_input_needed":
             # Task 008 (v0.27 requirement C.1): the peer verdict gate's
             # own pause -- review already spoke `verified` for this
@@ -16875,8 +17437,13 @@ class LoopSupervisor:
             "until an adjudication resolves it.\n\n"
             f"Held (petitioned) task(s): {held}\n"
             f"Dependent task(s) reaching the hold through dependsOn: {deps}\n\n"
-            "This is not a pause: worker iterations continue while the "
-            "hold stands. To answer the petition yourself, record a "
+            "The engine runs one adjudication episode on it now (v0.38 "
+            "A.4); if that does not settle the hold, the run parks "
+            "awaiting_input with a petition_hold question, left by "
+            f"`ralphctl amend {self.cfg.run_id} --waive <task> <reason>` "
+            f"(or `--status validated|skipped`) then `ralphctl answer "
+            f"{self.cfg.run_id}`. To answer the petition yourself first, "
+            "record a "
             f"ruling (`ralphctl rule {self.cfg.run_id} --file <ruling.md> "
             "--name <slug>`) -- review reads every recorded ruling when "
             "it adjudicates. If you pause the run to do so (`ralphctl "
@@ -16920,6 +17487,20 @@ class LoopSupervisor:
         reason = f"F{index}: {clause}"
         return (f"ralphctl amend {self.cfg.run_id} {slug} --waive "
                f"{shlex.quote(reason)}")
+
+    def _settled_petitioned_ids(self, tasks_doc: dict | None = None) -> frozenset[str]:
+        """v0.38 (#306, #320): the ids of every settled `petitioned` task
+        (an applied task-level waiver, a clause-bound waiver of its
+        obligation, or a CONFIRMED adjudication), through the one rule in
+        `state.settled_petitioned_task_ids`. Every reader that decides
+        whether a petitioned task still holds something -- the scheduler,
+        the blocked-by derivation, the petition-held hold, the terminal-
+        success blockers and the plan_complete check -- calls this."""
+        if tasks_doc is None:
+            tasks_doc = self.run.read_tasks()
+        return state.settled_petitioned_task_ids(
+            self.run, tasks_doc.get("tasks") or [], config_root=CONFIG_DIR,
+            approach=self._approach)
 
     def _terminal_success_blockers(self) -> list[str]:
         """Task 013 (requirement I, #98): the ONE predicate the exit-gate
@@ -17059,7 +17640,9 @@ class LoopSupervisor:
         is just the `self.run.read_tasks()` plumbing around it, matching
         every other `tasks_doc`-reading call site in this class.
         """
-        return state.steering_origin_outstanding(self.run.read_tasks())
+        tasks_doc = self.run.read_tasks()
+        return state.steering_origin_outstanding(
+            tasks_doc, settled=self._settled_petitioned_ids(tasks_doc))
 
     def _review_cure_origin_outstanding(self) -> list[dict]:
         """Task 018 (PRD requirement D.1, #220): `review-cure`-origin tasks
@@ -17074,7 +17657,9 @@ class LoopSupervisor:
         this is just the `self.run.read_tasks()` plumbing around it,
         matching `_steering_origin_outstanding`'s own shape.
         """
-        return state.review_cure_origin_outstanding(self.run.read_tasks())
+        tasks_doc = self.run.read_tasks()
+        return state.review_cure_origin_outstanding(
+            tasks_doc, settled=self._settled_petitioned_ids(tasks_doc))
 
     def _unconsumed_steering_patch(self) -> dict:
         """status.json patch (task 006) applied at every terminal-state write:
@@ -17508,15 +18093,12 @@ class LoopSupervisor:
         completion` already says.
         """
         tasks = tasks_doc.get("tasks") or []
-        confirmed: set[str] | None = None
+        settled = self._settled_petitioned_ids(tasks_doc)
         outstanding = []
         for t in tasks:
-            if isinstance(t, dict) and t.get("status") == "petitioned":
-                if confirmed is None:
-                    confirmed, tampered = petitions.confirmed_obligations(self.run)
-                    if tampered:
-                        confirmed = set()
-                if petitions.petitioned_task_accepted(t, confirmed):
+            if isinstance(t, dict) and t.get("status") == state.TASK_STATUS_PETITIONED:
+                if state.task_dependency_satisfied(
+                        t.get("id"), state.TASK_STATUS_PETITIONED, settled):
                     continue
                 outstanding.append(t)
                 continue
@@ -17529,9 +18111,10 @@ class LoopSupervisor:
         `engine.petitions.apply_refuted_petition_adjudications` -- read
         the CURRENT `tasks.json`, apply any REFUTED entries in
         `adjudications` to it (mutating any matching `petitioned` task to
-        `failed`, remedy recorded -- or, for a `remedy_type: "form"`
-        entry, task 008/A.4, #155, to `validated`, with the remedy
-        recorded as a debt item instead), and persist + announce the
+        `failed`, remedy recorded on `validationNotes` -- for a
+        `remedy_type: "form"` entry too, which ALSO records the remedy as a
+        debt item; a REFUTED petition never validates the task, v0.38
+        #306/#320), and persist + announce the
         change exactly like any other engine-driven task-status move
         (`_emit_task_changes`, the same seam `_verify_task`'s own
         exhaustion routing uses). A no-op call touches neither the file
@@ -17539,10 +18122,10 @@ class LoopSupervisor:
         entirely when nothing changed, so a review pass with no REFUTED
         entries never perturbs `tasks.json`'s mtime.
 
-        Returns the ids of every task this call moved to `failed` (the
-        `"substance"` branch only), same as the petitions-module function
-        it wraps; a `"form"`-routed task's id is never in this list --
-        read the debt ledger (`self.run.read_debt()`) for those.
+        Returns the ids of every task this call moved to `failed` (both
+        remedy types), same as the petitions-module function it wraps; a
+        `"form"`-routed task's remedy is also in the debt ledger
+        (`self.run.read_debt()`).
 
         Task 007 (requirement B, #114): ALSO calls `petitions.
         record_refuted_adjudications` -- unconditionally, before the
@@ -17562,8 +18145,8 @@ class LoopSupervisor:
         `tasks.json` is written back (so a debt entry never outlives the
         task-status write that motivated it) and counted alongside
         `changed` for whether anything needs writing/announcing at all --
-        a call with only `"form"`-routed matches and no `"substance"`
-        ones still persists `tasks.json` and still emits task changes.
+        a call with only `"form"`-routed matches still persists
+        `tasks.json` and still emits task changes.
         """
         if not adjudications:
             return []
@@ -17688,37 +18271,27 @@ class LoopSupervisor:
         return inserted
 
     def _apply_confirmed_petition_adjudications(self, adjudications) -> list[str]:
-        """Task 015 (requirement C.3, #149): the write-back half of
-        `engine.petitions.apply_confirmed_petition_adjudications` -- the
-        CONFIRMED-side sibling of `_apply_refuted_petition_adjudications`
-        immediately above, same seam: read the CURRENT `tasks.json`, apply
-        any CONFIRMED entries in `adjudications` to it (moving a matching
-        `petitioned` task to `skipped`, its own `notes` field carrying the
-        adjudication, and re-pointing every dependent's `dependsOn` off
-        it -- to the entry's `replacement_task_id` when one names a real
-        task, otherwise to nothing), and persist + announce the change
-        exactly like any other engine-driven task-status move
-        (`_emit_task_changes`). A no-op call touches neither the file nor
-        the emitted-changes machinery -- `write_tasks` is skipped entirely
-        when nothing changed, so a review pass with no matching CONFIRMED
-        entry never perturbs `tasks.json`'s mtime.
+        """The write-back half of `engine.petitions.apply_confirmed_petition_
+        adjudications` -- the CONFIRMED-side sibling of `_apply_refuted_
+        petition_adjudications`: read the CURRENT `tasks.json`, apply any
+        CONFIRMED entries in `adjudications` to it, and persist the change.
 
-        Called from `_review_verdict` in the SAME step as `record_
-        confirmed_adjudications` (the run-scope persistence, C.2's own
-        exemption) and `_apply_refuted_petition_adjudications` beside it,
-        for every settled review/mid-run-adjudication payload, verified or
-        not -- exactly the same unconditional-call discipline this
-        method's REFUTED and criteria-amendment siblings already keep.
+        v0.38 (#306, #320, PRD A.1 b): a CONFIRMED adjudication SETTLES the
+        matching `petitioned` task and never moves it -- the task keeps
+        `petitioned` (no status lies), gains a note naming the adjudication,
+        and every dependent keeps its `dependsOn` edge, which the settled
+        rule (`state.task_dependency_satisfied`, fed by the run-scope record
+        `record_confirmed_adjudications` wrote just before this call) reads
+        as satisfied. A `replacement_task_id` naming a real task is ADDED to
+        each dependent beside the settled edge (`task.dependency_repointed`,
+        `self.run` threaded through). A no-op call touches neither the file
+        nor the emitted-changes machinery.
 
-        Task 004 (requirement E.2): `self.run` is now threaded through as
-        the wrapped function's `run=` argument, so the re-point itself
-        also emits `state.DEPENDENCY_REPOINTED_EVENT` (`source=
-        "cure-insertion"`) for every dependent whose `dependsOn` actually
-        changes -- the confirmed-petition path's own counterpart to
-        `state._repoint_dependents_onto_cure_task`'s emit from task 003.
+        Called from `_review_verdict` for every settled review/mid-run-
+        adjudication payload, verified or not, beside its REFUTED and
+        criteria-amendment siblings.
 
-        Returns the ids of every task this call moved to `skipped`, same
-        as the petitions-module function it wraps.
+        Returns the ids of every task this call settled.
         """
         if not adjudications:
             return []
@@ -18455,10 +19028,22 @@ class LoopSupervisor:
             if key in self._status_ruling_refusals_reported:
                 continue
             self._status_ruling_refusals_reported.add(key)
+            # v0.38 C.2: a later operator ruling for this task already took
+            # effect, so this older one is superseded; retrying it (the task
+            # moved) is not a fresh refusal for the operator to act on.
+            if state.ruling_superseded(
+                    state.read_events(self.run.root,
+                                      types=state.RULING_APPLIED_EVENTS),
+                    r.get("file") or "", r.get("taskId")):
+                continue
             self.run.emit("log", message=(
                 f"operator status ruling {r.get('file')} REFUSED for task "
                 f"{r.get('taskId')}: {r.get('reason')} "
                 f"({r.get('previous')} -> {r.get('status')})"))
+            self.run.emit(state.AMENDMENT_REFUSED_EVENT,
+                          file=r.get("file"), taskId=r.get("taskId"),
+                          previous=r.get("previous"), status=r.get("status"),
+                          reason=r.get("reason"))
 
     def _operator_ruling_review_context(self, audience: str = "review") -> str:
         """Task 013 (v0.23 PRD requirement A.2, #224): render every recorded
@@ -18820,7 +19405,7 @@ class LoopSupervisor:
                 lines.append(render(e) + render_superseded_caveat(e, reason))
         return "".join(lines)
 
-    async def _maybe_run_midrun_adjudication_episode(self) -> None:
+    async def _maybe_run_midrun_adjudication_episode(self) -> bool:
         """Task 005 PART 2 (requirement A.2, #114): before the engine ever
         calls `_verify_task` again for any task, run exactly ONE bounded,
         OFF-BUDGET adjudication iteration on the review-hat's OWN model
@@ -18878,6 +19463,13 @@ class LoopSupervisor:
         never competes with (or is billed against)
         either the run's iteration budget or a task's own
         `validationAttempts` count.
+
+        Returns True when the judge had its shot at an open petition -- the
+        episode ran now, or an earlier pass of this process already gave the
+        same obligations theirs -- and False when there was nothing to
+        adjudicate (no open petition, or no budget left to run it). The
+        petition-held branch of `_step_worker` reads it (v0.38 A.4/A.5): a
+        hold that outlives a True episode parks the run.
         """
         if not self.budget_left():
             # Task cure-01-01-2 (v0.24 requirement A.1/B.3, DoD 1-3,
@@ -18899,18 +19491,18 @@ class LoopSupervisor:
             # end-of-body `if not self.budget_left():` check is what still
             # lands the run in the shared `exhausted`/null-verdict freeze
             # path this same pass.
-            return
+            return False
         open_petitions = petitions.open_unconfirmed_petitions(
             self.workspace, self.run,
             contract_text=self._contract_text(),
             tasks=self.run.read_tasks().get("tasks") or [])
         if not open_petitions:
-            return
+            return False
         obligations_now = {
             petitions._normalize_obligation(p["obligation"])
             for p in open_petitions}
         if obligations_now <= self._petition_adjudication_seen:
-            return
+            return True
         await self._gate()
         self.run.emit("phase", phase="review", approach=self._approach,
                       midRunAdjudication=True)
@@ -18920,9 +19512,10 @@ class LoopSupervisor:
         self._refund_iteration("adjudication")
         self._petition_adjudication_seen |= obligations_now
         if result is None:
-            return
+            return True
         result = await self._review_contract_ladder(result, mid_run=True)
         self._review_verdict(result, mid_run=True)
+        return True
 
     def _midrun_adjudication_extra(self, open_petitions: list[dict]) -> str:
         """The scoped prompt context for the mid-run adjudication episode
@@ -18964,9 +19557,10 @@ class LoopSupervisor:
             "is produced (rerun a command differently, restate something "
             "already true, adjust process); `substance` (the default if "
             "omitted) when the remedy actually requires a different "
-            "deliverable. A `form` remedy routes the task to `validated` "
-            "with the remedy recorded as a debt item, never as a retry "
-            "driver; a `substance` remedy fails the petitioned task AND "
+            "deliverable. A `form` remedy fails the petitioned task with "
+            "the remedy recorded as a debt item and builds no cure task; "
+            "a REFUTED petition never validates a task. A `substance` "
+            "remedy fails the petitioned task AND "
             "becomes ONE cure task built from your remedy text, with every "
             "dependent of the failed task re-pointed onto it -- so write a "
             "`substance` remedy as WORK whose completion is checkable (the "

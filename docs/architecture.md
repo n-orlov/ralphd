@@ -184,6 +184,7 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `review` | review | both | `finishing` | `review_findings_unusable` |
 | `review` | review | both | `review` | `review_judge_fault_retry` |
 | `review` | review | both | `paused` | `operator_input_needed` |
+| `review` | review | both | `paused` | `verified_unchanged` |
 | `review` | review | both | `finishing` | `rejected_no_approach_left` |
 | `review` | review | both | `review` | `review_interrupted` |
 | `review` | review | both | `finishing` | `review_unjudged_at_budget_end` |
@@ -203,6 +204,7 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `verdict_gate` | verdict_gate | peer verdict gate only | `finishing` | `verdict_gate_approved` |
 | `verdict_gate` | verdict_gate | peer verdict gate only | `cure` | `verdict_gate_rejected_curable_pass_available` |
 | `verdict_gate` | verdict_gate | peer verdict gate only | `paused` | `verdict_gate_operator_input_needed` |
+| `verdict_gate` | verdict_gate | peer verdict gate only | `paused` | `verified_unchanged` |
 | `verdict_gate` | verdict_gate | peer verdict gate only | `replan` | `verdict_gate_rejected_approach_left` |
 | `verdict_gate` | verdict_gate | peer verdict gate only | `finishing` | `verdict_gate_rejected_no_approach_left` |
 | `cure` | — | both | `worker` | `cure_pass_appended` |
@@ -211,6 +213,7 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `paused` | — | both | `worker` | `paused_resumed_unschedulable_cycle` |
 | `paused` | — | both | `worker` | `paused_resumed_unresolvable_edge` |
 | `paused` | — | both | `worker` | `paused_resumed_phase_gate` |
+| `paused` | — | both | `worker` | `paused_resumed_petition_hold` |
 | `paused` | — | both | `cure` | `paused_answered_cure` |
 | `paused` | — | both | `replan` | `paused_answered_next_approach` |
 | `paused` | — | peer verdict gate only | `verdict_gate` | `paused_resumed_verdict_gate` |
@@ -274,6 +277,7 @@ stateDiagram-v2
     review --> finishing : review_findings_unusable
     review --> review : review_judge_fault_retry
     review --> paused : operator_input_needed
+    review --> paused : verified_unchanged
     review --> finishing : rejected_no_approach_left
     review --> review : review_interrupted
     review --> finishing : review_unjudged_at_budget_end
@@ -291,6 +295,7 @@ stateDiagram-v2
     paused --> worker : paused_resumed_unschedulable_cycle
     paused --> worker : paused_resumed_unresolvable_edge
     paused --> worker : paused_resumed_phase_gate
+    paused --> worker : paused_resumed_petition_hold
     paused --> cure : paused_answered_cure
     paused --> replan : paused_answered_next_approach
     finishing --> reflect : reflect_enabled
@@ -3570,9 +3575,9 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   task eventually appear; formerly `test_vigilant_crash_resume.py`,
   folded by task 021, requirement C.10).
 
-### Operator-escalation notifications: one bounded digest for every pause (v0.26 requirement A, #269)
+### Operator-escalation notifications: one bounded digest for every escalation pause (v0.26 requirement A, #269)
 
-Every engine-initiated pause holds the loop first (`self.pause()`) and only
+Every operator-escalation pause holds the loop first (`self.pause()`) and only
 then notifies, through `LoopSupervisor._notify_escalation_delivery` (up to 3
 attempts with bounded backoff, then `notification.escalation_undelivered`).
 The POSTed text is never the full diagnostic: two builders produce the same
@@ -3607,6 +3612,10 @@ answer line names only `ralphctl answer <run> --secret-handled` (`POST
 `_commit_range_scan_hit` still finds a hit in the question's `baseSha..HEAD`
 range: a ruling never releases it (v0.36 requirement D.1), whether or not its approach already
 carries a rejection signature from an earlier park.
+The `petition_hold` and `verified_unchanged` parks (v0.38) and the plan-phase
+gate's park are not on this path: `_notify_input_event` sends each one ONE
+best-effort notification (`max_attempts=1`, the park's own text, no digest, no
+backoff, no retry, never `notification.escalation_undelivered`).
 Tests: `tests/test_commit_scan_escalation_digest.py`,
 `tests/test_escalation_delivery.py`, `tests/test_pause_ruling_release_
 sequence.py`. SPEC.md §4.6.

@@ -964,8 +964,94 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.37 cure C.4: +14 tests / +0 modules (tests/test_phase_gate_peer_
     # and_resume.py), in both tiers -> fast 8960/563, smoke 7181/436 (the
     # prior ceiling plus the added tests).
-    "fast": {"tests": 8960, "modules": 563},
-    "smoke": {"tests": 7181, "modules": 436},
+    # v0.38 task 001: +42 tests / +1 module (tests/test_petitioned_settled.py),
+    # in both tiers -> fast 9002/564, smoke 7223/437 (the prior ceiling plus
+    # the added tests).
+    # v0.38 task 006: +18 tests / +1 module in fast (tests/test_cli_version_
+    # probe_outcomes.py, 16, and the two `cli-probe` INFRA_SIGNATURES rows'
+    # parametrized nodes in tests/test_cli_fault_explanation.py), +16 tests /
+    # +1 module in smoke -> fast 9020/565, smoke 7239/438 (the prior ceiling
+    # plus the added tests).
+    # v0.38 CI cure (fast lane red at ca76ee9b0): +2 tests in
+    # tests/test_stub_env_marker_atomic.py, in both tiers -> fast 9022,
+    # smoke 7241.
+    # v0.38 task 006 retry: +18 tests in tests/test_cli_version_probe_
+    # outcomes.py (empty probe output, stderr-only output, a non-executable
+    # CLI on PATH, the live wrappers end to end), in both tiers -> fast
+    # 9040, smoke 7259.
+    # v0.38 task 007: +20 tests / +1 module (tests/test_terminal_sibling_
+    # reap.py), in both tiers -> fast 9060/566, smoke 7279/439 (the prior
+    # ceiling plus the added tests).
+    # v0.38 task 008: +9 tests / +1 module (tests/test_creds_vars.py), in both
+    # tiers -> fast 9069/567, smoke 7288/440.
+    # v0.38 task 008 retry: +3 tests in tests/test_creds_vars.py (template
+    # default `creds/` without job.yaml) -> fast 9072, smoke 7291.
+    # v0.38 task 009: +8 tests / +1 module (tests/test_creds_vars_api_cli.py),
+    # in both tiers -> fast 9080/568, smoke 7299/441.
+    # v0.38 cure-01-01 (REFUTED form remedy fails the task): +4 tests (2 in
+    # tests/test_refuted_remedy_form_vs_substance.py, 2 in tests/test_midrun_
+    # refuted_continues.py), in both tiers -> fast 9084, smoke 7303.
+    # v0.38 cure-01-01 retry: +2 tests in tests/test_midrun_refuted_continues.py
+    # (mid-run form remedy; CONFIRMED and REFUTED in one reply), in both
+    # tiers -> fast 9086, smoke 7305.
+    # v0.38 task 002: +6 tests / +1 module (tests/test_petition_hold_prompt_
+    # adjudication.py), in both tiers -> fast 9092/569, smoke 7311/442.
+    # v0.38 task 002 retry: +1 test in tests/test_petition_hold_prompt_
+    # adjudication.py (a REFUTED outcome fails the task and does not park),
+    # in both tiers -> fast 9093, smoke 7312.
+    # v0.38 task 003: +7 tests / +1 module (tests/test_review_state_key.py),
+    # in both tiers -> fast 9100/570, smoke 7319/443.
+    # v0.38 task 003 retry: +2 tests in tests/test_review_state_key.py (the
+    # deferral stores the dispatch key; an equal key with nothing holding
+    # the VERIFIED reuses it), in both tiers -> fast 9102, smoke 7321.
+    # v0.38 task 003 second retry: +4 tests in tests/test_review_state_key.py
+    # (a retried review binds its VERIFIED to the retry's HEAD; the first
+    # attempt's unjudged HEAD is a changed key, two reply shapes each), in
+    # both tiers -> fast 9106, smoke 7325.
+    # v0.38 task 004: +11 tests / +1 module (tests/test_review_state_key_
+    # edges.py: 8 tests; 3 control nodes added to tests/test_review_state_
+    # key.py), in both tiers -> fast 9117/571, smoke 7336/444.
+    # v0.38 task 004 retry: +1 test in tests/test_review_state_key.py (a
+    # cure-round top-up since the gate's verdict dispatches the gate again),
+    # in both tiers -> fast 9118, smoke 7337.
+    # v0.38 task 005: +24 tests / +1 module (tests/test_amend_status_at_
+    # the_door.py), in both tiers -> fast 9142/572, smoke 7361/445.
+    # v0.38 task 005 retry: +4 tests in tests/test_amend_status_at_the_door.py
+    # (a later ruling ends the status warning for good, by ruling order, and
+    # a later cure-reopen ruling counts), in both tiers -> fast 9146, smoke
+    # 7365.
+    # v0.38 task 005 second retry: +4 tests in tests/test_amend_status_at_
+    # the_door.py (an unreadable record never lets the mirror refuse, x2
+    # ways each for a legal and an illegal ruling; one fallback node became
+    # a degrade-layout node), in both tiers -> fast 9150, smoke 7369.
+    # v0.38 task cure-01-01-2: net +7 tests in tests/test_amend_status_at_
+    # the_door.py (an unreadable record asks the live engine; no engine
+    # answer records nothing; the engine's status-ruling route; the four
+    # unchecked-recording nodes were rewritten), in both tiers -> fast 9157,
+    # smoke 7376.
+    # v0.38 task cure-01-01-2 retry: +15 tests in tests/test_amend_status_
+    # at_the_door.py (an engine that cannot read its own record current --
+    # unparseable, wrong shape, no task list, EACCES, with or without a
+    # last-good cache -- supplies no decision; an answer not marked
+    # authoritative records nothing; the route's 503), in both tiers ->
+    # fast 9172, smoke 7391.
+    # v0.38 task cure-01-01-2 second retry: +31 tests in tests/test_amend_
+    # status_at_the_door.py (a null or non-string status is a task the door
+    # and the applier refuse, never an unknown id; an id only the mirror
+    # names needs --force; the route's 503 on a non-UTF-8 record and its
+    # cache-free read), in both tiers -> fast 9203, smoke 7422.
+    # v0.38 task 010: +10 tests / +2 modules (tests/test_no_petition_run_
+    # unchanged.py, tests/test_compat_037_run_dirs.py), in both tiers ->
+    # fast 9213/574, smoke 7432/447.
+    # v0.38 task cure-01-01-3: +62 tests / +1 module (tests/test_non_
+    # findings_park_contracts.py: the petition_hold and verified_unchanged
+    # answer, event and notification contracts), in both tiers -> fast
+    # 9275/575, smoke 7494/448.
+    # v0.38 task cure-01-01-3 retry: +10 tests in that same module (the
+    # configured-notifier POST counts and the doc overclaim guards), in both
+    # tiers -> fast 9285/575, smoke 7504/448.
+    "fast": {"tests": 9285, "modules": 575},
+    "smoke": {"tests": 7504, "modules": 448},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

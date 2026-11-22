@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import os
 import shutil
@@ -19,6 +20,7 @@ from .answer import AnswerRefused
 from .config import (CONFIG_DIR, PROMPT_NAMES, JobConfig, classify_method,
                      list_prompts, overlay_write_path)
 from .creds import (
+    CRED_KINDS,
     api_creds_dir,
     clear_creds_tombstone,
     creds_deleted_dir,
@@ -42,7 +44,10 @@ from .skills import (
     tar_dir,
     verify_placement_and_report,
 )
+from .transitions import OPERATOR_RULEABLE_TASK_STATUSES
 from .state import (
+    operator_status_ruling_decision,
+    settled_petitioned_task_ids,
     unpause_refusal,
     STEERING_GLOB,
     AWAITING_INPUT_STATE,
@@ -247,7 +252,33 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         # `failureKind` label. Shaped by `TasksRead.payload`, shared with the
         # CLI's on-disk path and the hub.
         res = run.read_tasks_result()
-        return res.payload
+        return dataclasses.replace(
+            res, settled=settled_petitioned_task_ids(
+                run, res.tasks, config_root=CONFIG_DIR,
+                approach=run.current_approach())).payload
+
+    @app.get("/tasks/{task_id}/status-ruling")
+    async def task_status_ruling(task_id: str, status: str,
+                                 reason: str = ""):
+        # v0.38 C.1: the engine's authoritative answer to "would this
+        # operator status ruling be refused?", for `ralphctl amend --status`
+        # when the record is held root-owned and unreadable from the host.
+        # Read-only: nothing is written or emitted, and the same
+        # `task_status_change_refusal` the applier uses decides it.
+        if status not in OPERATOR_RULEABLE_TASK_STATUSES:
+            raise problem(422, "invalid status",
+                          f"{status!r} is not an operator-ruleable status")
+        # An id the record does not hold answers 200 with `found: false`
+        # (`ralphctl amend --force` records a ruling for such an id). A
+        # record the engine cannot read current (unparseable, not UTF-8,
+        # unreadable, or only a last-good cache) is no decision at all:
+        # 503, never a 200 built from stale or missing data. The read
+        # writes nothing, not even the reader's last-good cache.
+        decision = operator_status_ruling_decision(
+            run, task_id, status, bool(cfg.vigilant), reason)
+        if not decision["authoritative"]:
+            raise problem(503, "task record unreadable", decision["reason"])
+        return decision
 
     @app.get("/prd")
     async def prd(original: bool = False):
@@ -741,45 +772,55 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         return Response(status_code=204)
 
     # -- creds CRUD (PRD req 10) --------------------------------------------
+    def _cred_kind(kind: str) -> str:
+        if kind not in CRED_KINDS:
+            raise problem(422, "invalid kind",
+                          f"kind must be one of: {', '.join(CRED_KINDS)}")
+        return kind
+
     @app.get("/config/creds")
-    async def creds_list():
-        return list_creds(CONFIG_DIR)
+    async def creds_list(kind: str = "env"):
+        return list_creds(CONFIG_DIR, _cred_kind(kind))
 
     @app.get("/config/creds/{name}")
-    async def creds_get(name: str):
-        found = effective_env_source(CONFIG_DIR, name)
+    async def creds_get(name: str, kind: str = "env"):
+        found = effective_env_source(CONFIG_DIR, name, _cred_kind(kind))
         if not found:
             raise problem(404, "no such credential")
         src, _origin = found
         return PlainTextResponse(src.read_text())
 
     @app.put("/config/creds/{name}", status_code=204)
-    async def creds_put(name: str, request: Request):
+    async def creds_put(name: str, request: Request, kind: str = "env"):
+        kind = _cred_kind(kind)
         body = await request.body()
         if not body.strip():
             raise problem(422, "empty body")
-        dest = api_creds_dir() / f"{name}.env"
+        dest = api_creds_dir() / f"{name}.{kind}"
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(body)
-        clear_creds_tombstone(name)
+        clear_creds_tombstone(name, kind)
         place_creds(CONFIG_DIR, home=ambient_home())
         refresh_redaction_map(home=ambient_home())
-        run.emit("log", message=f"credential added via API: {name}")
+        run.emit("log", message=f"credential added via API: {name}.{kind}"
+                 if kind != "env" else f"credential added via API: {name}")
         return Response(status_code=204)
 
     @app.delete("/config/creds/{name}", status_code=204)
-    async def creds_delete(name: str):
-        if not effective_env_source(CONFIG_DIR, name):
+    async def creds_delete(name: str, kind: str = "env"):
+        kind = _cred_kind(kind)
+        if not effective_env_source(CONFIG_DIR, name, kind):
             raise problem(404, "no such credential")
-        api_file = api_creds_dir() / f"{name}.env"
+        api_file = api_creds_dir() / f"{name}.{kind}"
         if api_file.exists():
             api_file.unlink()
         ddir = creds_deleted_dir()
         ddir.mkdir(parents=True, exist_ok=True)
-        (ddir / f"{name}.env").touch()
+        (ddir / f"{name}.{kind}").touch()
         place_creds(CONFIG_DIR, home=ambient_home())
         refresh_redaction_map(home=ambient_home())
-        run.emit("log", message=f"credential removed via API: {name}")
+        run.emit("log", message=f"credential removed via API: {name}.{kind}"
+                 if kind != "env" else f"credential removed via API: {name}")
         return Response(status_code=204)
 
     # -- llm env + pi fragment (PRD req 10) ---------------------------------

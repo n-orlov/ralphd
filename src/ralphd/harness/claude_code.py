@@ -65,7 +65,9 @@ from claude_agent_sdk import (
     tool as sdk_tool,
 )
 
-from ..cli.versions import compare_versions
+from ..cli.versions import (
+    EmptyProbeOutput, ProbeFailed, cli_file_exists, compare_versions,
+)
 from ..engine import hat_tools as hat_tools_mod
 from ..engine.config import CLAUDE_CODE_MIN_VERSION
 from .normalise import RAW_ENVELOPE_TYPE, Normaliser
@@ -104,6 +106,14 @@ STRIPPED_ENV_PREFIXES = ("ANTHROPIC_BEDROCK_", "ANTHROPIC_VERTEX_")
 
 VERSION_TOO_OLD = "claude_code_version_too_old"
 CLI_NOT_FOUND = "claude_code_cli_not_found"
+# The `<cli> -v` probe could not finish (timeout, or the file exists and could
+# not be run): transient, never "too old".
+PROBE_FAILED = "claude_code_version_probe_failed"
+# The `<cli> -v` probe finished and printed nothing at all: no evidence of
+# the version either way, so transient like PROBE_FAILED, never "too old".
+PROBE_EMPTY = "claude_code_version_probe_empty"
+# Seconds the `<cli> -v` probe may take.
+PROBE_TIMEOUT_S = 30
 
 # The skills index goes in the system prompt. Flip to False to send an empty
 # system prompt and put the index at the head of the user prompt instead.
@@ -163,22 +173,49 @@ def resolve_cli_path() -> str:
 
 
 def cli_version(cli: str) -> str | None:
-    """`<cli> -v`'s `x.y.z`, or None when the CLI cannot be run or prints
-    no version."""
+    """`<cli> -v`'s `x.y.z`. Four distinguishable results: a version read (a
+    plain `str`); `None` when the CLI ran and printed output with no version
+    in it, or is not there at all; an `EmptyProbeOutput` when it ran and
+    printed nothing; a `ProbeFailed` (a `str` naming what happened) when the
+    probe could not finish -- it timed out, or the file exists and could not
+    be run."""
     try:
         out = subprocess.run([cli, "-v"], capture_output=True, text=True,
-                             timeout=30, check=False)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return read_version(out.stdout)
+                             timeout=PROBE_TIMEOUT_S, check=False)
+    except subprocess.TimeoutExpired:
+        return ProbeFailed(f"{cli} -v timed out after {PROBE_TIMEOUT_S:g} s")
+    except OSError as e:
+        if not cli_file_exists(cli):
+            return None
+        return ProbeFailed(f"{cli} -v could not be run: {e}")
+    except subprocess.SubprocessError as e:
+        return ProbeFailed(f"{cli} -v could not be run: {e}")
+    version = read_version(out.stdout)
+    if version is None and not (out.stdout or "").strip() \
+            and not (out.stderr or "").strip():
+        return EmptyProbeOutput(
+            f"{cli} -v exited {out.returncode} and printed nothing")
+    return version
 
 
 def version_gate(cli: str, version: str | None) -> dict | None:
     """None when `version` meets the minimum, else the in-band error. The
     comparison is `ralphd.cli.versions.compare_versions`, the helper the
-    `codex` gate shares; a version it cannot parse is refused."""
+    `codex` gate shares. The probe outcomes: a `ProbeFailed` is the
+    transient `PROBE_FAILED` and an `EmptyProbeOutput` the transient
+    `PROBE_EMPTY` (never "too old"); `None` is `CLI_NOT_FOUND` for a missing
+    file, else `VERSION_TOO_OLD` (output present, no version in it); a
+    version below the minimum, or one it cannot parse, is
+    `VERSION_TOO_OLD`."""
+    if isinstance(version, ProbeFailed):
+        return {"type": PROBE_FAILED,
+                "message": f"could not finish the Claude Code version probe: {version}"}
+    if isinstance(version, EmptyProbeOutput):
+        return {"type": PROBE_EMPTY,
+                "message": f"the Claude Code version probe printed nothing ({version}); "
+                           f"its version is unknown, not too old"}
     if version is None:
-        if not os.path.exists(cli):
+        if not cli_file_exists(cli):
             return {"type": CLI_NOT_FOUND,
                     "message": f"Claude Code CLI not found at {cli}"}
         return {"type": VERSION_TOO_OLD,
@@ -193,11 +230,18 @@ def version_gate(cli: str, version: str | None) -> dict | None:
 
 def probe() -> dict:
     """`--probe-version`: the SDK version, the CLI's version and path, and
-    whether that CLI meets the minimum."""
+    whether that CLI meets the minimum. A probe that could not finish, or
+    printed nothing, reports no `cli` and carries the reason as `error`."""
     cli = resolve_cli_path()
     version = cli_version(cli)
-    return {"sdk": claude_agent_sdk.__version__, "cli": version, "cliPath": cli,
-            "ok": version_gate(cli, version) is None}
+    gate = version_gate(cli, version)
+    doc = {"sdk": claude_agent_sdk.__version__,
+           "cli": None if isinstance(version, (ProbeFailed, EmptyProbeOutput))
+           else version,
+           "cliPath": cli, "ok": gate is None}
+    if isinstance(version, (ProbeFailed, EmptyProbeOutput)):
+        doc["error"] = gate["message"]
+    return doc
 
 
 def system_prompt(skills: list[dict], hat_tools: list[str]) -> str:

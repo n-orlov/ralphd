@@ -733,6 +733,22 @@ def unpause_refusal(run_id: str, status: dict) -> str | None:
                 "this run is awaiting input on a `secret` question (a secret "
                 f"in a commit): run `ralphctl answer {run_id} --secret-handled` "
                 "once the commit scan of the offending range is clean")
+        if question.get("kind") == VERIFIED_UNCHANGED_KIND:
+            return (
+                "this run is awaiting input because the final review already "
+                "returned VERIFIED on this exact state (same HEAD, same task "
+                "statuses) and the engine deferred to the worker: change "
+                f"something first (`ralphctl amend {run_id} ...` on a "
+                "blocking task, or a commit), then run "
+                f"`ralphctl answer {run_id}`; an answer with nothing changed "
+                "parks again")
+        if question.get("kind") == PETITION_HOLD_KIND:
+            return (
+                "this run is awaiting input on a held petitioned task: apply "
+                f"an operator ruling first (`ralphctl amend {run_id} <task> "
+                "--waive <reason>` or `ralphctl amend "
+                f"{run_id} <task> --status validated|skipped <reason>`), then "
+                f"run `ralphctl answer {run_id}` so the run re-reads the plan")
         return (
             "an `awaiting_input` run is answered, not unpaused: run "
             f"`ralphctl answer {run_id}` (add `--cure-rounds 0` to carry on "
@@ -770,9 +786,10 @@ LEGACY_TIMED_OUT_STATE = "timed_out"
 # `paused` for a park; `paused` is the operator's alone. Non-terminal for the
 # same liveness reason `paused` is: a live engine owns the position.
 AWAITING_INPUT_STATE = "awaiting_input"
-INPUT_QUESTION_KINDS = ("findings", "secret")
+INPUT_QUESTION_KINDS = ("findings", "secret", "petition_hold",
+                        "verified_unchanged")
 INPUT_TRIGGERS = ("incurable", "reviewer_escalation", "cure_rounds_spent",
-                  "commit_secret")
+                  "commit_secret", "petition_hold", "verified_unchanged")
 INPUT_JUDGES = ("review", "verdict_gate")
 # What the engine does when `expiresAt` passes with no answer (PRD E.3).
 INPUT_ON_TIMEOUT_CURE_NOW = "cure_now"
@@ -781,6 +798,20 @@ INPUT_ON_TIMEOUT_EXHAUSTED = "exhausted_approaches"
 # A `secret` question never expires (E.3): nothing happens on its own.
 INPUT_ON_TIMEOUT_NEVER = "never"
 SECRET_INPUT_TRIGGER = "commit_secret"
+# v0.38 A.5: the park a held petitioned task lands in when the one prompt
+# adjudication could not settle it. Like a `secret` question it never expires:
+# only the operator's `amend` rulings (then `ralphctl answer`) leave it.
+PETITION_HOLD_KIND = "petition_hold"
+PETITION_HOLD_INPUT_TRIGGER = "petition_hold"
+# v0.38 B.2: the park a final-review dispatch lands in when the review state
+# key (workspace HEAD plus the sorted `(task id, status, settled)` triples) is
+# the one a deferred VERIFIED already judged. It never expires either: only a
+# change of state (an operator ruling, a commit, a task status) leaves it, and
+# `ralphctl answer` with no change re-parks.
+VERIFIED_UNCHANGED_KIND = "verified_unchanged"
+VERIFIED_UNCHANGED_INPUT_TRIGGER = "verified_unchanged"
+NEVER_EXPIRING_INPUT_KINDS = ("secret", PETITION_HOLD_KIND,
+                              VERIFIED_UNCHANGED_KIND)
 # The default input timeout in minutes (`input_timeout_min`, E.1); `0` = never.
 DEFAULT_INPUT_TIMEOUT_MIN = 60
 NONTERMINAL_STATES = ("starting", "running", PAUSED_STATE,
@@ -1131,7 +1162,7 @@ def input_expires_at(question: dict, timeout_min: float | None) -> str | None:
     """`question`'s `expiresAt` for an input timeout of `timeout_min`
     minutes: `parkedAt` plus the timeout, absolute; `None` for `0`/negative
     and always for a `secret` question, which never expires (PRD E.3)."""
-    if question.get("kind") == "secret":
+    if question.get("kind") in NEVER_EXPIRING_INPUT_KINDS:
         return None
     minutes = DEFAULT_INPUT_TIMEOUT_MIN if timeout_min is None else timeout_min
     parked = question.get("parkedAt")
@@ -1144,7 +1175,8 @@ def input_expiry_epoch(question: dict | None) -> float | None:
     """The absolute UTC epoch a parked `inputQuestion` expires at, read from
     its persisted `expiresAt`; `None` when it never expires (or the value is
     unreadable, which must never be mistaken for "already expired")."""
-    if not isinstance(question, dict) or question.get("kind") == "secret":
+    if not isinstance(question, dict) or (
+            question.get("kind") in NEVER_EXPIRING_INPUT_KINDS):
         return None
     raw = question.get("expiresAt")
     if not raw:
@@ -1171,7 +1203,7 @@ def build_input_question(
     key."""
     minutes = DEFAULT_INPUT_TIMEOUT_MIN if timeout_min is None else timeout_min
     expires_at = None
-    if kind != "secret" and minutes and minutes > 0:
+    if kind not in NEVER_EXPIRING_INPUT_KINDS and minutes and minutes > 0:
         expires_at = utc_from_epoch(parked_at_epoch + minutes * 60)
     question = {
         "kind": kind,
@@ -1184,7 +1216,8 @@ def build_input_question(
         "maxApproaches": max_approaches,
         "parkedAt": utc_from_epoch(parked_at_epoch),
         "expiresAt": expires_at,
-        "onTimeout": (INPUT_ON_TIMEOUT_NEVER if kind == "secret"
+        "onTimeout": (INPUT_ON_TIMEOUT_NEVER
+                      if kind in NEVER_EXPIRING_INPUT_KINDS
                       else input_on_timeout(
                           trigger, cure_rounds_allowed - cure_rounds_used,
                           approach, max_approaches,
@@ -1194,6 +1227,22 @@ def build_input_question(
     if plan_phase is not None:
         question["planPhase"] = plan_phase
     return question
+
+
+def review_state_key(head: str | None, tasks: list, settled=()) -> dict:
+    """v0.38 B.1: the key a final-review dispatch is recorded under. The
+    workspace HEAD sha plus the sorted `(task id, status, settled)` triples
+    over every task of the plan; `settled` is True for a `petitioned` task
+    the settled rule covers (a waiver or a CONFIRMED adjudication) and False
+    for every other task. JSON-shaped (lists, not tuples) so a key read back
+    from `status.json` compares equal to a freshly computed one."""
+    settled_ids = {str(i) for i in settled}
+    triples = sorted(
+        [str(t.get("id")), str(t.get("status")),
+         bool(t.get("status") == TASK_STATUS_PETITIONED
+              and str(t.get("id")) in settled_ids)]
+        for t in tasks if isinstance(t, dict))
+    return {"head": head, "tasks": triples}
 
 
 def parked_question(run_root: Path, status: dict) -> dict | None:
@@ -2788,6 +2837,184 @@ def amendment_entries(config_root: Path) -> list[dict]:
 # it, exactly as `amendment_status_applied` already does.
 UN_REOPEN_EVENT = "task.un_reopened"
 
+# v0.38 C.2: emitted when the engine refuses an operator status ruling at
+# apply time (the task's status moved after `ralphctl amend --status` recorded
+# it). Carries `file` (the ruling file), `taskId`, `previous`, `status` and
+# `reason` (the engine's own refusal reason).
+AMENDMENT_REFUSED_EVENT = "amendment.refused"
+
+
+# The events that record an operator status ruling taking effect: the generic
+# audit event, and `task.un_reopened` for the one ruling that restores a
+# cure-reopened task's pre-reopen status (PRD A.3). Both carry `file`.
+RULING_APPLIED_EVENTS = ("amendment_status_applied", UN_REOPEN_EVENT)
+
+
+def _operator_ruling_applied(ev: dict) -> bool:
+    return (ev.get("type") in RULING_APPLIED_EVENTS
+            and ev.get("source") == "operator")
+
+
+def refused_amendment_rulings(run_root: Path) -> dict[str, dict]:
+    """The status rulings the engine currently refuses, keyed by ruling file
+    name, read from `events.jsonl` (no live engine needed): a file's latest
+    `amendment.refused` event, unless that same file took effect after it
+    (`amendment_status_applied` or `task.un_reopened` naming the file: the
+    refusal later became legal and the ruling took effect). Each value is
+    the refusal event.
+    """
+    refused: dict[str, dict] = {}
+    for ev in read_events(run_root, types=(
+            AMENDMENT_REFUSED_EVENT, *RULING_APPLIED_EVENTS)):
+        fname = ev.get("file")
+        if not fname:
+            continue
+        if ev.get("type") == AMENDMENT_REFUSED_EVENT:
+            refused[fname] = ev
+        else:
+            refused.pop(fname, None)
+    return refused
+
+
+def ruling_superseded(events: list[dict], fname: str, task_id) -> bool:
+    """True when an operator ruling for `task_id` recorded AFTER `fname`
+    (its ruling file sorts later, the order `amendment_entries` applies
+    them in) has taken effect -- `amendment_status_applied` or
+    `task.un_reopened` with `source: "operator"`. v0.38 C.2: such a later
+    ruling ends `ralphctl status`'s warning about `fname` for good, even
+    when the engine retries `fname` at a later boundary and refuses it
+    again."""
+    return any(_operator_ruling_applied(ev) and ev.get("taskId") == task_id
+               and (ev.get("file") or "") > fname for ev in events)
+
+
+def outstanding_refused_rulings(run_root: Path) -> list[dict]:
+    """`refused_amendment_rulings` minus every refusal superseded by a later
+    operator ruling for the same task that took effect (v0.38 C.2:
+    `ralphctl status` names a refused ruling "until a later ruling for that
+    task is applied"). "Later" is the ruling's own order (its file name,
+    `ruling_superseded`); an applied operator event with no `file` (written
+    before rulings carried one) counts as later when it comes after the
+    refusal in the event stream. Oldest refusal first."""
+    events = read_events(run_root, types=(
+        AMENDMENT_REFUSED_EVENT, *RULING_APPLIED_EVENTS))
+    live: dict[str, dict] = {}
+    for ev in events:
+        if ev.get("type") == AMENDMENT_REFUSED_EVENT:
+            if ev.get("file"):
+                live.pop(ev["file"], None)
+                live[ev["file"]] = ev
+        elif _operator_ruling_applied(ev):
+            for f in [f for f, r in live.items()
+                      if r.get("taskId") == ev.get("taskId")
+                      and (not ev.get("file") or ev.get("file") == f)]:
+                live.pop(f)
+    return [r for f, r in live.items()
+            if not ruling_superseded(events, f, r.get("taskId"))]
+
+
+def task_status_change_refusal(current: str, target_status: str,
+                               vigilant: bool, *, source: str,
+                               justification: str = "",
+                               cure_reopened: bool = False) -> str | None:
+    """v0.38 C.1: the ONE legality check for moving a task from `current` to
+    `target_status`, returning the refusal's own reason or `None` when the
+    move is allowed. `apply_task_status_change` (the engine, at apply time)
+    and `ralphctl amend --status` (the host, at record time) both ask this
+    function, so a ruling refused at the door carries the exact reason the
+    engine would later give.
+
+    Checks, in order: the declared transition table (the base or vigilant
+    one, with the operator-ruling exits when `source == "operator"`,
+    PRD A.2), then `transitions.task_status_report_errors` (the
+    `failed -> skipped` justification rule, the un-reopen guard, and --
+    for an operator ruling on a cure-reopened task, PRD A.3 -- the one
+    exemption from that guard). A move to the status the task already holds
+    is not a refusal here; the engine treats it as a silent no-op.
+    `source == "cure-reconciliation"` alone may restore a pre-reopen status.
+    A `current` that is not a status string (a row's `"status": null`, a
+    number, a list) is refused as `"illegal transition"`.
+    """
+    if current == target_status:
+        return None
+    if not isinstance(current, str):
+        # A record row whose `status` is null, a number, a list...: no
+        # declared transition leaves it, and an unhashable value must be a
+        # refusal here, not a TypeError out of the table lookup.
+        return "illegal transition"
+    operator_ruling = source == "operator"
+    if not transitions.is_legal_task_status_transition(
+            current, target_status, vigilant, operator_ruling=operator_ruling):
+        return "illegal transition"
+    errors = transitions.task_status_report_errors(
+        {"task_status": target_status, "justification": justification},
+        current, vigilant,
+        allow_un_reopen_restore=(source == "cure-reconciliation"),
+        operator_ruling=operator_ruling,
+        cure_reopened=cure_reopened)
+    return errors[0] if errors else None
+
+
+def operator_status_ruling_decision(run: "RunDir", task_id: str,
+                                    target_status: str, vigilant: bool,
+                                    justification: str = "") -> dict:
+    """v0.38 C.1: the engine's authoritative answer to "would an operator
+    status ruling moving `task_id` to `target_status` be refused right now?",
+    read from the engine's own record (never the run dir mirror) and asked of
+    the same `task_status_change_refusal` `apply_task_status_change` applies.
+    Writes nothing and emits nothing. `GET /tasks/{id}/status-ruling` serves
+    it so `ralphctl amend --status` can ask a live engine when the record is
+    held root-owned and unreadable from the host.
+
+    Returns `{"taskId", "status", "authoritative", "found", "current",
+    "allowed", "reason"}`. `authoritative` is True only when the record was
+    read current off disk (`TasksRead.source == "file"`, holding a task
+    list) or genuinely does not exist yet (`"absent"`: no plan). A record
+    that would not parse or could not be read -- whether the reader fell
+    back to a last-good payload (`"last-good"`, possibly stale), had nothing
+    at all (`"unreadable"`), or raised -- answers `authoritative: False`,
+    `found: False`, `current: None`, `allowed: False` and a reason naming
+    the read: no decision, never a decision from stale or missing data. The
+    read passes `persist=False`, so not even the reader's last-good cache is
+    written. For an authoritative read, `found` says whether the record
+    holds the id; an id it does not hold answers `found: False`, `current:
+    None`, `allowed: False` (reason `"no matching task"`). `current` is the
+    record's own `status` value verbatim for a found task -- `None` too when
+    the row carries `"status": null`, which is why "unknown id" is `found`,
+    never `current is None`. A ruling to the status the task already holds
+    is allowed (the applier's silent no-op)."""
+    out = {"taskId": task_id, "status": target_status}
+
+    def _no_decision(detail: str) -> dict:
+        return {**out, "authoritative": False, "found": False,
+                "current": None, "allowed": False,
+                "reason": f"task record unreadable ({detail})"}
+
+    try:
+        res = run.read_tasks_result(persist=False)
+    except (OSError, ValueError) as exc:
+        return _no_decision(f"{type(exc).__name__}: {exc}")
+    rows = res.doc.get("tasks") if isinstance(res.doc, dict) else None
+    if not (res.source == "absent"
+            or (res.source == "file" and isinstance(rows, list))):
+        return _no_decision(
+            f"{res.source}: {res.error or 'the record holds no task list'}")
+    task = next((t for t in rows or [] if isinstance(t, dict)
+                 and str(t.get("id")) == str(task_id)), None)
+    out["authoritative"] = True
+    if task is None:
+        return {**out, "found": False, "current": None, "allowed": False,
+                "reason": "no matching task"}
+    out["found"] = True
+    current = task.get("status", "pending")
+    refusal = task_status_change_refusal(
+        current, target_status, vigilant, source="operator",
+        justification=justification,
+        cure_reopened=str(task_id) in (
+            run.read_status().get("preCureStatuses") or {}))
+    return {**out, "current": current, "allowed": refusal is None,
+            "reason": refusal or ""}
+
 
 def apply_task_status_change(run: "RunDir", task_id: str, target_status: str,
                              vigilant: bool, *, source: str,
@@ -2868,37 +3095,24 @@ def apply_task_status_change(run: "RunDir", task_id: str, target_status: str,
     if current == target_status:
         record.update(applied=False, reason="already at that status")
         return record
-    if not transitions.is_legal_task_status_transition(current, target_status, vigilant):
-        record.update(applied=False, reason="illegal transition")
-        return record
+    operator_ruling = source == "operator"
     effective_justification = justification or reason
-    # Cure-01-05 (PRD requirement B.3/B.4, F05, #221): the ONE source
-    # allowed to take the un-reopen RESTORE through this channel is this
-    # function's own reconciliation branch
-    # (`LoopSupervisor._reconcile_pre_cure_heads`, `source="cure-
-    # reconciliation"`) -- restoring the exact status the engine itself
-    # persisted (`preCureStatuses`) before the reopen, never a hat's
-    # free-form claim. That is what lets the declared edge be
-    # variant-independent (`transitions.UN_REOPEN_TASK_STATUS_TARGETS`,
-    # all six targets in the BASE table) without widening what anyone
-    # else may ask for: every other caller (an operator amendment ruling,
-    # the steer hat's `task-update`, a hat's contract report) keeps the
-    # ordinary refusals -- `superseded` out of any status, and the OTHER
-    # variant's claim terminal out of `pending`.
-    status_errors = transitions.task_status_report_errors(
-        {"task_status": target_status, "justification": effective_justification},
-        current, vigilant,
-        allow_un_reopen_restore=(source == "cure-reconciliation"))
-    if status_errors:
-        record.update(applied=False, reason=status_errors[0])
+    refusal = task_status_change_refusal(
+        current, target_status, vigilant, source=source,
+        justification=effective_justification,
+        cure_reopened=(operator_ruling and task_id in (
+            run.read_status().get("preCureStatuses") or {})))
+    if refusal:
+        record.update(applied=False, reason=refusal)
         return record
     task["status"] = target_status
     if current == "failed" and target_status == "skipped":
         task["notes"] = effective_justification
     run.write_tasks(data)
     if transitions.is_un_reopen_transition(current, target_status):
+        extra = {"file": file} if file else {}
         run.emit(UN_REOPEN_EVENT, taskId=task_id, previous=current,
-                 status=target_status, source=source, reason=reason)
+                 status=target_status, source=source, reason=reason, **extra)
     else:
         run.emit("amendment_status_applied", taskId=task_id, field="status",
                 previous=current, status=target_status, source=source,
@@ -4424,6 +4638,10 @@ class TasksRead:
     source: str
     stale: bool
     error: str | None = None
+    # v0.38 (#306): the ids of this read's settled `petitioned` tasks
+    # (`settled_petitioned_task_ids`), filled in by a reader that holds the
+    # run's waivers and adjudications (the engine API); empty elsewhere.
+    settled: frozenset = frozenset()
 
     @property
     def tasks(self) -> list:
@@ -4468,7 +4686,8 @@ class TasksRead:
         dependent of a `petitioned` task shows up here (and, through
         `payload` below, in `GET /tasks` and `ralphctl tasks`) with the
         petitioned task named as its cause, same map, same field."""
-        return task_blocked_by(self.tasks, include_petitioned=True)
+        return task_blocked_by(self.tasks, include_petitioned=True,
+                               settled=self.settled)
 
     @property
     def payload(self) -> dict:
@@ -4491,6 +4710,9 @@ class TasksRead:
         blocked = self.blocked_by
         if blocked:
             out[TASK_BLOCKED_FIELD] = blocked
+        out.pop(TASK_SETTLED_FIELD, None)
+        if self.settled:
+            out[TASK_SETTLED_FIELD] = sorted(self.settled)
         return out
 
     @property
@@ -4616,16 +4838,19 @@ def read_tasks_doc(
     last_error: str | None = None
     for attempt in range(max(1, attempts)):
         try:
-            text = path.read_text()
+            raw = path.read_bytes()
         except FileNotFoundError:
             return TasksRead(doc={}, source="absent", stale=False)
         except OSError as exc:  # unreadable for some other reason
             last_error = f"{type(exc).__name__}: {exc}"
             break
         try:
-            doc = json.loads(text)
-        except json.JSONDecodeError as exc:
-            last_error = f"JSONDecodeError: {exc}"
+            # Bytes that are not UTF-8 text are as unparseable as a
+            # truncated file (v0.38 C.1): a ValueError, never an exception
+            # out of the reader.
+            doc = json.loads(raw.decode("utf-8"))
+        except ValueError as exc:   # JSONDecodeError, UnicodeDecodeError
+            last_error = f"{type(exc).__name__}: {exc}"
         else:
             if isinstance(doc, dict):
                 _remember_tasks(key, doc)
@@ -5031,6 +5256,123 @@ TASK_COUNT_OVERLAY_KEYS = TASK_COUNT_SUBKEYS + ("blocked",)
 # tasks` just inserted (`_apply_forced_split_report`, `engine/loop.py`).
 TASK_DEPENDENCY_SATISFIED_STATUSES = ("completed", "validated", "superseded")
 TASK_DEPENDENCY_DEAD_STATUSES = ("failed", "skipped")
+
+# v0.38 (#306, #320): the ONE settled-dependency rule. A `petitioned` task
+# keeps its status -- no status lies -- but it is SETTLED, and then reads as
+# a satisfied dependency and never blocks plan completion, when an operator
+# waiver covers it (`ralphctl amend --waive` naming the task, or a
+# clause-bound waiver whose clause matches the petition's obligation) or a
+# CONFIRMED adjudication names its obligation. `skipped` keeps its meaning
+# ("dead") and still satisfies nothing. The scheduler, the blocked-by
+# overlay, the petition-held hold and the terminal-success / plan-complete
+# checks all read `task_dependency_satisfied` and `settled_petitioned_
+# task_ids` below; nothing re-derives either.
+TASK_STATUS_PETITIONED = "petitioned"
+
+
+def task_dependency_satisfied(task_id, status, settled=()) -> bool:
+    """True iff a `dependsOn` entry naming `task_id`, whose record holds
+    `status`, is satisfied: `status` is in `TASK_DEPENDENCY_SATISFIED_
+    STATUSES`, or the task is `petitioned` and its id is in `settled` (the
+    set `settled_petitioned_task_ids` derives). `status` may be `None` for
+    an id absent from the plan, which is never satisfied."""
+    if status in TASK_DEPENDENCY_SATISFIED_STATUSES:
+        return True
+    return (status == TASK_STATUS_PETITIONED and task_id is not None
+            and str(task_id) in settled)
+
+
+def _settled_ids(petitioned, *, confirmed, amendments, waivers,
+                 approach) -> frozenset[str]:
+    """The settled-rule core shared by the engine reader and the on-disk
+    reader below: which of the `petitioned` task dicts are settled, given
+    the CONFIRMED obligations, the operator's amendment entries, the
+    stored clause waivers and the approach the reader is on."""
+    from . import petitions
+    latest: dict[str, dict] = {}
+    for e in amendments:
+        if e.get("scope") != "task":
+            continue
+        latest[str(e.get("taskId"))] = e
+    waived_ids = {
+        tid for tid, e in latest.items()
+        if e.get("waive") and (e.get("approach") is None
+                               or e.get("approach") == approach)}
+    clauses = {petitions._normalize_obligation(w["clause"])
+               for w in waivers if w.get("clause")}
+    out = set()
+    for t in petitioned:
+        tid = str(t["id"])
+        if (tid in waived_ids
+                or petitions.petitioned_task_accepted(t, confirmed)
+                or petitions._obligation_confirmed(
+                    petitions.task_petition_obligation(t), clauses)):
+            out.add(tid)
+    return frozenset(out)
+
+
+def _petitioned_tasks(tasks) -> list:
+    return [t for t in (tasks or []) if isinstance(t, dict)
+            and t.get("status") == TASK_STATUS_PETITIONED
+            and t.get("id") not in (None, "")]
+
+
+def settled_petitioned_task_ids(run: "RunDir", tasks, *, config_root: Path,
+                                approach: int | None = None) -> frozenset[str]:
+    """The ids of every `petitioned` task in `tasks` that is settled, read
+    from the three settling sources:
+
+    - an applied task-level operator waiver (`<config_root>/amendments/`,
+      `mode: waive`, `taskId` naming the task; the LAST ruling recorded
+      against that task is the operator's current word, and a ruling pinned
+      to another approach does not bind this one). `approach` defaults to
+      the run's own (`RunDir.current_approach`, status.json), so a reader
+      that does not hold the supervisor (`GET /tasks`) judges the pin the
+      way the loop does;
+    - a run-level clause-bound waiver (`run.waiver_entries()`) whose clause
+      matches the task's own petition obligation (`petitions.task_petition_
+      obligation`, the same substring-either-direction match a CONFIRMED
+      adjudication uses);
+    - a CONFIRMED adjudication (`petitions.petitioned_task_accepted`); a
+      tampered record counts as an empty set, failing towards blocking.
+    """
+    from . import petitions
+    petitioned = _petitioned_tasks(tasks)
+    if not petitioned:
+        return frozenset()
+    if approach is None:
+        approach = run.current_approach()
+    confirmed, tampered = petitions.confirmed_obligations(run)
+    if tampered:
+        confirmed = set()
+    return _settled_ids(petitioned, confirmed=confirmed,
+                        amendments=amendment_entries(config_root),
+                        waivers=run.waiver_entries(), approach=approach)
+
+
+def settled_petitioned_task_ids_on_disk(run_root: Path, tasks, *,
+                                        config_root: Path) -> frozenset[str]:
+    """The same rule for a READ-ONLY viewer of a run dir that holds no
+    `RunDir` and no MAC key -- the CLI's `ralphctl tasks` fallback and the
+    hub's on-disk path. Both waiver kinds are read exactly as the engine
+    reads them; the approach is status.json's; CONFIRMED adjudications go
+    through `petitions.confirmed_obligations_on_disk` (every unkeyed check,
+    no writes). It feeds the blocked-by display only."""
+    from . import petitions
+    petitioned = _petitioned_tasks(tasks)
+    if not petitioned:
+        return frozenset()
+    root = Path(run_root)
+    status = read_json(root / "status.json", {})
+    try:
+        approach = int((status if isinstance(status, dict) else {})
+                       .get("approach") or 1)
+    except (TypeError, ValueError):
+        approach = 1
+    return _settled_ids(petitioned,
+                        confirmed=petitions.confirmed_obligations_on_disk(root),
+                        amendments=amendment_entries(config_root),
+                        waivers=waiver_entries(root), approach=approach)
 
 # The one spelling of the status itself, so a caller outside this module
 # (`LoopSupervisor._all_tasks_completed`) names it rather than re-typing
@@ -6926,7 +7268,16 @@ def task_is_terminal(task: dict) -> bool:
     return isinstance(task, dict) and task.get("status") in TASK_TERMINAL_STATUSES
 
 
-def steering_origin_outstanding(tasks_doc, phase: str | None = None) -> list:
+def _settled_petitioned(task: dict, settled) -> bool:
+    """True iff `task` is a `petitioned` task the settled rule covers: done,
+    never outstanding (`task_dependency_satisfied`)."""
+    return (isinstance(task, dict) and task.get("status") == TASK_STATUS_PETITIONED
+            and task_dependency_satisfied(task.get("id"), TASK_STATUS_PETITIONED,
+                                          settled))
+
+
+def steering_origin_outstanding(tasks_doc, phase: str | None = None,
+                                settled=()) -> list:
     """Every steering-origin task (`is_steering_origin`) that is NOT yet
     terminal (`task_is_terminal`), in plan order.
 
@@ -6956,10 +7307,12 @@ def steering_origin_outstanding(tasks_doc, phase: str | None = None) -> list:
              else tasks_doc)
     return [t for t in (tasks or [])
             if is_steering_origin(t) and not task_is_terminal(t)
+            and not _settled_petitioned(t, settled)
             and (phase is None or t.get("phase") == phase)]
 
 
-def review_cure_origin_outstanding(tasks_doc, phase: str | None = None) -> list:
+def review_cure_origin_outstanding(tasks_doc, phase: str | None = None,
+                                   settled=()) -> list:
     """Every `review-cure`-origin task (`is_review_cure_origin`) that is NOT
     yet terminal (`task_is_terminal`), in plan order -- the sibling of
     `steering_origin_outstanding` just above, for `_terminal_success_
@@ -6980,11 +7333,13 @@ def review_cure_origin_outstanding(tasks_doc, phase: str | None = None) -> list:
              else tasks_doc)
     return [t for t in (tasks or [])
             if is_review_cure_origin(t) and not task_is_terminal(t)
+            and not _settled_petitioned(t, settled)
             and (phase is None or t.get("phase") == phase)]
 
 
 def task_blocked_by(tasks: list, *,
-                     include_petitioned: bool = False) -> dict[str, list[str]]:
+                     include_petitioned: bool = False,
+                     settled=()) -> dict[str, list[str]]:
     """Task 021 (#60 pillar 3): `{task id: [dead/doomed ancestor ids]}` for
     every task that can never be completed because a `dependsOn` entry --
     directly, or transitively through another doomed task -- reached
@@ -6999,8 +7354,8 @@ def task_blocked_by(tasks: list, *,
     through the fixpoint below) is included too, with that ancestor as its
     cause. `petitioned` is deliberately never added to `dead`/`doomed`
     itself: a petition can still resolve (REFUTED keeps it exactly where it
-    is; CONFIRMED moves it to `skipped` and re-points dependents, C.3's
-    scope) so treating it as permanently dead here would make
+    is; CONFIRMED settles it in place, v0.38's `settled` argument below)
+    so treating it as permanently dead here would make
     `_doomed_plan_fault`'s "nothing can ever move this plan again" verdict
     fire on a plan that is merely holding for an adjudication -- the one
     reason this is opt-in, `False` by default, so every existing caller
@@ -7021,6 +7376,10 @@ def task_blocked_by(tasks: list, *,
     being blocked oneself). Everything else -- `pending`, `in-progress`,
     `validation-failed`, `awaiting-validation` -- is still in flight and can
     be doomed.
+
+    `settled` (v0.38, #306): the ids `settled_petitioned_task_ids` derives.
+    A settled petitioned task satisfies its dependents, so it is no cause
+    for any of them and never a member of the `include_petitioned` hold.
 
     Fixpoint over the dependency graph, so a chain of several doomed tasks
     (task 004 dead -> 005 doomed -> 006 doomed) is caught, not just direct
@@ -7051,8 +7410,11 @@ def task_blocked_by(tasks: list, *,
             if t.get("status", "pending") in TASK_DEPENDENCY_DEAD_STATUSES}
     held: set[str] = set()
     if include_petitioned:
+        # a SETTLED petitioned task (`settled_petitioned_task_ids`) satisfies
+        # its dependents, so it holds none of them
         held = {tid for tid, t in by_id.items()
-                if t.get("status", "pending") == "petitioned"}
+                if t.get("status", "pending") == "petitioned"
+                and not task_dependency_satisfied(tid, "petitioned", settled)}
     doomed = set(dead)
     changed = True
     while changed:
@@ -7061,7 +7423,7 @@ def task_blocked_by(tasks: list, *,
             if tid in doomed:
                 continue
             status = by_id[tid].get("status", "pending")
-            if status in TASK_DEPENDENCY_SATISFIED_STATUSES:
+            if task_dependency_satisfied(tid, status, settled):
                 continue  # a sink: done regardless of what it depended on
             if any(dep in doomed for dep in depends_on.get(tid, [])):
                 doomed.add(tid)
@@ -7072,7 +7434,7 @@ def task_blocked_by(tasks: list, *,
         if tid in dead or tid in held:
             continue
         status = by_id[tid].get("status", "pending")
-        if status in TASK_DEPENDENCY_SATISFIED_STATUSES:
+        if task_dependency_satisfied(tid, status, settled):
             continue  # a sink: done regardless of what it depended on
         causes = sorted(dep for dep in depends_on.get(tid, [])
                          if dep in doomed or dep in held)
@@ -7086,6 +7448,11 @@ def task_blocked_by(tasks: list, *,
 # reasoning: `GET /tasks`, `ralphctl tasks --json` and the hub's run-detail
 # payload all serve `{task id: [ancestor ids]}`, never a copy.
 TASK_BLOCKED_FIELD = "taskBlockedBy"
+
+# v0.38 (#306): the settled `petitioned` task ids a live `GET /tasks`
+# payload carries (absent when none is settled), so the hub's own
+# blocked-by re-derivation reads the same settled rule the engine does.
+TASK_SETTLED_FIELD = "taskSettledPetitioned"
 
 
 def task_failure_kind(task: dict) -> str | None:
@@ -11119,10 +11486,12 @@ class RunDir:
         a mid-write file yields the last-good payload, never `{}`."""
         return self.read_tasks_result().doc
 
-    def read_tasks_result(self) -> TasksRead:
+    def read_tasks_result(self, *, persist: bool = True) -> TasksRead:
         """Full three-way `TasksRead` (absent / file / last-good / unreadable)
         for callers that must render the stale flag -- `GET /tasks`, the
         `/status` task counts, `ralphctl tasks`, the hub table.
+        `persist=False` makes the read write nothing, not even the
+        last-good cache (`read_tasks_doc`): what a read-only route passes.
 
         Task 004 (requirement B): reads the protected, authoritative copy
         (`self.protected_tasks_dir`) once it exists -- never
@@ -11169,8 +11538,8 @@ class RunDir:
 
         if privsep.separated():
             with privsep.root_for_write():
-                return read_tasks_doc(_pick_source_dir())
-        return read_tasks_doc(_pick_source_dir())
+                return read_tasks_doc(_pick_source_dir(), persist=persist)
+        return read_tasks_doc(_pick_source_dir(), persist=persist)
 
     # -- vigilant-mode verification: task record, not a sidecar (task 020) -
     # Through v0.8 this was a separate file, engine-owned and never touched

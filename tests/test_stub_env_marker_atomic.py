@@ -193,3 +193,31 @@ def test_the_reader_returns_an_empty_document_on_timeout(tmp_path, state) -> Non
     elif state == "truncated":
         marker.write_text('{"PARTIAL": "va')
     assert wait_for_env_marker(marker, timeout=0.4) == {}
+
+
+# --- the hold-entered markers ----------------------------------------------
+#
+# Same defect class, different marker: the fast lane at ca76ee9b0 failed
+# tests/test_e2e.py::test_open_events_reader_does_not_hold_an_exhausted_engine_up
+# with `assert '' == 'worker'` -- `wait_hold_entered` saw
+# `<hold>.stub-hold-entered` exist and read it before the stub's plain
+# `open(path, "w")` had written the phase name.
+
+def test_the_hold_entered_markers_are_never_written_in_place() -> None:
+    src = _source()
+    assert 'open(f"{hold_file}.stub-hold-entered", "w")' not in src
+    assert 'open(f"{hold_file}.stub-tool-hold-entered", "w")' not in src
+    body = src.split("def _write_hold_marker(", 1)[1].split("\ndef ", 1)[0]
+    assert "os.replace(tmp, path)" in body
+    assert 'tmp = f"{path}.tmp.{os.getpid()}"' in body
+
+
+def test_a_real_hold_leaves_the_phase_name_in_the_marker_and_no_temp(
+        tmp_path) -> None:
+    hold = tmp_path / "hold"
+    hold.write_text("")  # released already: the stub returns at once
+    _run_stub(tmp_path, {"STUB_HOLD_FILE": str(hold),
+                         "STUB_HOLD_TIMEOUT_S": "5"})
+    marker = tmp_path / "hold.stub-hold-entered"
+    assert marker.read_text() == "*"  # no STUB_HOLD_PHASE: every phase
+    assert not list(tmp_path.glob("hold.stub-hold-entered.tmp.*"))

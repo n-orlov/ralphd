@@ -135,6 +135,29 @@ every process. Recognized extras (`gitconfig`, `git-credentials`, `netrc`,
 `ssh/`) are placed conventionally; an executable `setup.sh` runs once before the
 first iteration. Nothing from this directory is copied into the run dir or logged.
 
+**Non-secret values: `<name>.vars`.** Every value in a `*.env` file is treated as
+a secret and masked in transcripts, notes and review evidence, so a server URL or
+a user name kept there becomes unreadable. Put such values in a companion
+`<name>.vars` file (`KEY=value` lines) beside the `.env` and have the `.env`
+source `~/.creds/<name>.vars`. A `*.vars` file is copied by `--creds` (and from a
+template's `creds/`), placed by the engine at `~/.creds/<name>.vars` (mode 0600)
+and rebuilt on every placement, so deleting one takes effect — exactly like a
+`.env` — with one difference: **its values are never scrubbed**. The name-based
+masking still applies to the variable *names* (`*TOKEN*`, `*KEY*`, `*SECRET*`,
+`*PASSWORD*`), so a token pasted into a `.vars` file by mistake is still
+treated as secret by name, but it is not a place to keep one.
+
+Exactly these are copied from the directory: `*.env`, `*.vars`, `gitconfig`,
+`git-credentials`, `netrc`, `setup.sh` (files) and `ssh/` (a directory). **Nothing
+else is dropped silently**: `start` names every other file and directory on
+stderr, one line each, e.g. ``--creds: ignored `foo.txt` (not `*.env`, `*.vars`
+or a recognized extra)`` (a directory reads ``ignored directory `extras/` ...``).
+`ralphctl doctor` reports the same for the registry's default creds directory
+(`<registry>/creds`) and for every template's creds directory (the `creds:` name
+in its `job.yaml`, default `creds/`): a `! creds files `--creds` would not copy`
+block in the human report and a `credsSkipped` list (`source`, `path`, `name`,
+`directory`) in `--json`. Report-only: it never changes `ok`.
+
 The job image (`--image <ref>`) — by default `start` **builds it**, keyed by the
 content of its inputs: `container/` (the Dockerfile and its entrypoint),
 `pyproject.toml` and `src/ralphd/`. Those hash to a short digest, the image is
@@ -300,7 +323,7 @@ Job templates (`--template <name>`, PRD req 25): a directory
 templates/<name>/
 ├── job.yaml     # optional: scalar job defaults (see below)
 ├── prd.md       # optional: PRD skeleton, used when --prd is omitted
-├── creds/       # optional: default --creds directory (same env-file convention)
+├── creds/       # optional: default --creds directory (same convention: *.env, *.vars, recognized extras)
 └── <skill-dir>/ # optional: default skill(s), referenced by job.yaml's `skills:` list
 ```
 
@@ -309,7 +332,8 @@ templates/<name>/
 `llm`, `model`, `thinking`, `notifier_url` (task 010, requirement B.2 --
 the `--notifier-url` endpoint), `skills` (a list of directory names
 relative to the template dir), `creds` (a directory name relative to the
-template dir), and `prd` (a filename relative to the template dir, default
+template dir, default `creds`: a template's `creds/` directory is copied even
+when it has no `job.yaml` or its `job.yaml` names no `creds`), and `prd` (a filename relative to the template dir, default
 `prd.md`). Every one of these has a corresponding `start` flag; **an explicit
 flag on the command line always overrides the template's value** for that
 field (`--skills`/`--creds` override wholesale, not merge). For `image`,
@@ -369,7 +393,11 @@ you should know):
   label plus `--label ralphd.role=job` so the two can be told apart; the job
   also gets `RALPHD_SELF_CONTAINER_ID` naming its own container) —
   `ralphctl stop`/`rm` reap everything with the run label,
-  best-effort. `ralphctl doctor` lists stray labeled containers whose run no
+  best-effort, and (v0.38) the engine itself removes the containers carrying
+  both `ralphd.run=<run>` and `ralphd.role=sibling` once the run reaches a
+  terminal state (`succeeded`, `failed`, `aborted`, `exhausted`),
+  when the job has docker access, emitting `siblings.reaped` with the count and
+  any per-container error. `ralphctl doctor` lists stray labeled containers whose run no
   longer exists.
 - **Never clean up by the run label alone** — and the agent is told so in
   every prompt. From inside
@@ -613,6 +641,12 @@ refuses until --allow-docker or --no-allow-docker)`. `--json` carries
 `dockerAccess: {enabled, setBy, at, line}`, `enabled` `null` when nothing is
 recorded, plus `unreadable: true` when a record exists but cannot be read; the hub's run header shows the same
 line as its `docker` row.
+
+A `warning:` line (v0.38 E.2, #319) appears when the run is not running
+(terminal, or `exhausted`) but docker still lists running containers labelled
+`ralphd.run=<run>`: it names the count, and `ralphctl stop <run>` removes them.
+`--json` carries the count as `liveSiblings` (`0` when none remain, `null` while
+the run is running or docker could not answer).
 
 Task 032 (F.6): the running engine's own version (task 030's `status.json`
 `engineVersion`) rides beside the content-hash tag on this same line, tag
@@ -1716,7 +1750,7 @@ reached `finishing` (task 006, B.1) -- absent before that, same
   anything matching `TOKEN|KEY|SECRET|PASSWORD`) is replaced with
   `***REDACTED***`, and every **value** this host knows to be a secret — from
   its own environment, `~/.creds`, and the run's own staged config dir
-  (`creds/*.env`, `llm-wiring.json`, `env-wiring.json`, `pi/models.json`) — is
+  (`creds/*.env` — never `creds/*.vars` —, `llm-wiring.json`, `env-wiring.json`, `pi/models.json`) — is
   scrubbed as `[REDACTED:<label>]` wherever it appears, including inside an
   innocently-named key like `on_complete_cmd`. Key order, structure and every
   non-secret value survive verbatim, so the output is still the file. Output of
@@ -1958,13 +1992,40 @@ fix it -- waive that finding, or take `K = 0` (or `--approaches +N` when none is
 left).
 
 A **`secret` question** (`inputQuestion.kind: secret`, `trigger: commit_secret`)
-is what a secret found in a commit parks the run on -- the only non-findings
-park. It never expires (`expiresAt` is `null` whatever `input_timeout_min` is)
+is what a secret found in a commit parks the run on -- one of three non-findings parks
+(the petition hold and the unchanged-review park below are the other two). It never expires (`expiresAt` is `null` whatever `input_timeout_min` is)
 and has one answer:
 
 | Option | Meaning |
 |--------|---------|
 | `--secret-handled` | the secret is out of the history. Refused (exit `5`, naming the commit, part and variable, never the value) while the commit scan of the offending range -- the question's `baseSha` up to the workspace's current HEAD -- still hits; once the range scans clean the park is released and the run continues at the worker. Combined with any other option it is refused |
+
+A **`petition_hold` question** (`inputQuestion.kind: petition_hold`, `trigger:
+petition_hold`; v0.38 A.5) is what a held petitioned task parks the run on when
+the one prompt adjudication of it returned no adjudication or left the hold
+unchanged. It never expires, and its `inputQuestion.text` names each petitioned
+task, its petition, its dependents and the two answers: `ralphctl amend <run>
+--waive <task> <reason>` or `ralphctl amend <run> <task> --status
+validated|skipped <reason>`. `amend` writes the ruling file on the host and never applies
+it (its only engine call is the read-only legality check a `--status` ruling
+makes while the record is unreadable, below), so record it first and then run `ralphctl answer <run>` with no options: the park is
+released and the worker re-reads the plan (a hold the ruling did not move parks
+again). On `answer`, `--waive`, `--accept`, `--cure-rounds` (`0` included), `--approaches` and `--secret-handled` are refused (exit `5`, nothing written); `--note-file` and `--name` are accepted and ignored -- the note is NOT recorded as a ruling on this park, so record rulings with `amend`. A bare `ralphctl unpause` is refused.
+
+A **`verified_unchanged` question** (`inputQuestion.kind: verified_unchanged`,
+`trigger: verified_unchanged`; v0.38 B.2) is what the final review parks the run
+on when it would be dispatched on the review state key (workspace HEAD plus the
+sorted `(task id, status, settled)` triples) a deferred VERIFIED already judged,
+whichever of the five `worker -> review` edges (`verdict_ready`,
+`blocked_with_failures`, `doomed_plan_unverifiable`, `petition_held_no_task_bound`,
+`unsatisfiable_and_nothing_left`) entered it. The final peer verdict gate parks the
+same way (`judge: verdict_gate`) when it would be dispatched on the key its own
+earlier verdict judged; a phase review is never parked.
+It never expires, and `inputQuestion.heldTasks` and `inputQuestion.text` name the
+non-terminal tasks that held that VERIFIED and what blocks each. Change something
+first (an `amend` ruling on a blocking task, or a commit), then run `ralphctl
+answer <run>` with no options: a changed key dispatches the review, an unchanged
+one parks again. On `answer`, `--waive`, `--accept`, `--cure-rounds` (`0` included), `--approaches` and `--secret-handled` are refused (exit `5`, nothing written); `--note-file` and `--name` are accepted and ignored -- the note is NOT recorded as a ruling on this park. A bare `ralphctl unpause` is refused.
 
 Posts through the run's live API (`POST /answer`, docs/api.md), the same route
 the hub panel's `POST /api/runs/<id>/answer` proxies to; all three reach the one
@@ -2168,9 +2229,64 @@ so a ruling recorded while the container is up takes effect without a restart
 once per episode and a ruling on a live run changed nothing at all, since
 `mode: status` entries are deliberately kept out of review's prompt context
 too). It is checked against the same declared task-status transition table
-every other status move is checked against; an illegal transition for the
-CURRENT status is refused there, not here, since this command has no way to
-know the task's current status at write time. `ralphctl amend <run-id> --list`
+every other status move is checked against.
+
+**The record-time check (v0.38 C.1).** Before it writes anything, `--status`
+loads the run's authoritative task record and asks the engine's own legality
+check (`engine.state.task_status_change_refusal`, the same function the
+engine applies at apply time): the transition table, the operator-ruling exits
+(`petitioned -> validated` and `petitioned -> skipped`, legal in both the base
+and the vigilant table only as an operator ruling), the `failed -> skipped`
+justification rule, and the un-reopen guard, which an operator ruling on a task
+a cure pass re-opened (`preCureStatuses` in `status.json`) is exempt from
+(`pending -> validated`). An illegal ruling exits `2` with the engine's own
+reason and the task's current status, and **no ruling file is written**. A
+ruling to the status the task already holds is recorded (the engine treats it
+as a no-op). `--force` overrides only the plan-membership check, never this
+one.
+
+**Where task status lives.** Task status is authoritative in
+`~/.ralphd/configs/<run>/record/tasks.json` (the `record/` directory of the
+run's config dir, the engine's protected copy). The run dir's `tasks.json` is a
+**mirror** of that record, kept in sync on every write and what `ralphctl
+tasks`, the hub and the agents read. The check reads the record, never the
+mirror: the mirror is agent-writable and can lag the record, so it never decides
+a refusal. While a live container holds `record/` unreadable from the host
+(root-owned 0700 until the container exits), the host has no authoritative
+status to check against, so it asks the live engine
+(`GET /tasks/<id>/status-ruling`, read-only): the engine reads its own record,
+applies the same legality check, and an illegal ruling exits `2` with the
+engine's reason and no ruling file, exactly as when the host reads the record.
+If the engine cannot supply that decision (no API recorded, unreachable, an
+older engine without the route, an engine that cannot read its own record
+current and answers `503`, or an answer not marked `authoritative`) `amend` fails with a
+non-zero exit (`4` unreachable) and records **nothing**. A task the record holds
+with a `null` (or otherwise non-string) status is refused as `illegal
+transition`, never mistaken for an unknown id; an id the record does not hold
+exits `2` unless `--force`, even when the run dir's mirror still names it; retry once the engine
+answers or the container has exited and released `record/`. A run with no `record/` mount (started before the mount
+existed) is checked against the record the engine keeps in the run dir's
+`.tasks-protected/`, or against the run dir's `tasks.json` when that is the
+only record the run has.
+
+**A refusal the engine makes later (v0.38 C.2).** If the task's status moved
+after the ruling was recorded, the engine refuses the ruling when it applies
+it and emits `amendment.refused` (the ruling `file`, the `taskId` and the
+`reason`; once per distinct refusal). `ralphctl amend <run-id> --list` then
+shows that ruling with `refused: <reason>` ahead of its text in the `RULING`
+column (and `"refused": "<reason>"` in `--json`, `null` otherwise), and
+`ralphctl status` prints one `warning:` line per such ruling (and
+`refusedRulings` in `--json`) until a later ruling for that task is applied.
+"Later" is the order rulings are recorded in (the ruling file's sequence
+number): a later ruling that takes effect, whether as `amendment_status_applied`
+or, for a cure-reopened task, as `task.un_reopened` (both carry the ruling
+`file`), ends the warning for good. The engine still re-attempts the older
+ruling at every boundary, but refusing it again from the task's new status is
+not reported and does not bring the warning back; an older ruling applied
+after a later one was refused does not end the later one's warning. A refused
+ruling whose move later becomes legal is applied and stops showing as refused.
+
+`ralphctl amend <run-id> --list`
 shows a recorded status ruling as `status  -> <status> (<reason>)` in the
 table (and `mode: "status"` / `status: "<status>"` in `--json`), the same
 reader as every other ruling kind.
@@ -2210,8 +2326,8 @@ criteria text untouched and emitting an `amendment_status_applied` event with
 all — a status ruling is not a claim the criteria were met and must not be
 able to read like one.
 
-`--list` has no live half at all: `ralphctl amend` never talks to the engine,
-so there is nothing for a live container to answer differently than the file
+`--list` has no live half at all: `ralphctl amend --list` never talks to the
+engine (only a `--status` ruling asks it, read-only, below), so there is nothing for a live container to answer differently than the file
 on disk — it always reads `config_root(run_id)/amendments/` directly, live or
 dead run, with a `(no operator rulings recorded)` notice when there are none.
 Unknown run id is exit `3`; combining `--list` with a task id, text, `--file`,
@@ -2287,13 +2403,19 @@ The rate-limit ceiling ends the run `failed` with the rate-limit-ceiling `ending
 continues, and `ralphctl budget <run-id> --rate-limit-wait +N` raises it on a
 live run.
 
-With a notifier configured (`--notifier-url`), every engine-recorded pause
+With a notifier configured (`--notifier-url`), every operator-escalation pause
+(review's and the peer gate's findings parks, the commit-secret park)
 also POSTs the operator a bounded digest (at most `MAX_NOTIFY_CHARS`) instead
 of the raw diagnostic text: run id, `pauseReason`, `approach n of m`,
 blocking/residual counts, tasks reopened/inserted, spend this approach, the
 hub URL when `hub_base_url` is configured, and the exact answer command(s)
-for that reason, phrased the way the paragraph above describes. That covers
-every park reason, including the commit-secret park (`pauseReason:
+for that reason, phrased the way the paragraph above describes, retried up to
+3 times with 60/120 s backoff and recorded `notification.escalation_undelivered`
+after the last failure. The `petition_hold` and `verified_unchanged` parks
+(and the plan-phase gate's park) are not escalations: each sends ONE
+best-effort notification, its own question text rather than a digest, in a
+single POST with no retry; a failure is one `notification.failed` and leaves
+the park in place. The digest covers every escalation reason, including the commit-secret park (`pauseReason:
 commit_secret`, `state: awaiting_input`, raised from `worker`, which
 continues at `worker`, not `review`): its digest names the offending
 commit's `sha`, the `part` and the variable NAME, never the matched value,
@@ -2962,7 +3084,7 @@ ralphctl skills install --force            # overwrite a locally-modified instal
   `ralphctl`'s own; report-only, like the job-image staleness line, so it
   never flips the overall verdict.
 
-### `ralphctl creds <run-id> [ls|get <name>|add <file>.env|rm <name>]`
+### `ralphctl creds <run-id> [ls|get <name>|add <file>.env|rm <name>] [--kind env|vars]`
 
 Runtime credential management (API-backed, env-file convention).
 
@@ -2971,11 +3093,21 @@ ralphctl creds <run-id> ls                # name, size, mtime -- never values
 ralphctl creds <run-id> get <name>        # prints the file contents to stdout
 ralphctl creds <run-id> add <file>.env    # uploads/replaces; name is <file>'s stem
 ralphctl creds <run-id> rm <name>
+ralphctl creds <run-id> add <file>.vars   # a non-secret .vars entry (see --kind)
+ralphctl creds <run-id> rm <name> --kind vars
 ```
 
-`add` requires a `*.env` file (exit `2` otherwise, naming the file); the
+`--kind env|vars` (every action; default `env`) selects the credential kind
+(the API's `kind` field, see `docs/api.md`): `env` is a secret file, `vars` a
+non-secret `<name>.vars` file whose values are never scrubbed. `add` takes the
+kind from the file's suffix when `--kind` is not given; a `--kind` that
+contradicts the suffix exits `2` (`--kind vars` with `ci.env`). `rm`, `get` and
+`ls` need `--kind vars` to act on a `.vars` entry, and `--json` on `add`/`rm`
+reports the `kind`. `ci.env` and `ci.vars` are independent entries.
+
+`add` requires a `*.env` or `*.vars` file (exit `2` otherwise, naming the file); the
 credential's name is the file's stem (`github.env` -> `github`), and it lands
-at `~/.creds/<name>.env` (mode 0600) in the container immediately, no restart
+at `~/.creds/<name>.<kind>` (mode 0600) in the container immediately, no restart
 needed. `get` prints the file (read-back is by design — the API token *is*
 the cred boundary); `rm` deletes. `--json` on `ls` emits the raw
 `GET /config/creds` list (never a `value` field). Exit `3` if `<run-id>` has

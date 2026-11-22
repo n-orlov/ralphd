@@ -117,6 +117,9 @@ def test_gate_off_by_default_table_is_byte_identical_to_today(vigilant):
         # gate-off is byte-identical to TODAY's table (now including this
         # edge), not to a pre-task-014 snapshot of it.
         tr.T("paused", "operator_input_needed"),
+        # v0.38 B.2: the unchanged-review-key park, declared in both table
+        # variants; covered by tests/test_review_state_key.py.
+        tr.T("paused", "verified_unchanged"),
         tr.T("finishing", "rejected_no_approach_left"),
         tr.T("review", "review_interrupted"),
         tr.T("finishing", "review_unjudged_at_budget_end"),
@@ -202,12 +205,15 @@ def test_verdict_gate_has_exactly_the_three_declared_edges(vigilant):
     three this test originally pinned; task 008 (v0.27 requirement C.1)
     adds a FIFTH (`verdict_gate_operator_input_needed` -> `paused`) --
     kept under its original name (this module's own node-id-in-commit-
-    message discipline) with its assertion widened to match."""
+    message discipline) with its assertion widened to match; v0.38 B.3 adds
+    a SIXTH (`verified_unchanged` -> `paused`, the unchanged-review-state-key
+    hold; covered by tests/test_review_state_key_edges.py)."""
     edges = tr.successors("verdict_gate", vigilant, peer_verdict_gate=True)
     assert edges == (
         tr.T("finishing", "verdict_gate_approved"),
         tr.T("cure", "verdict_gate_rejected_curable_pass_available"),
         tr.T("paused", "verdict_gate_operator_input_needed"),
+        tr.T("paused", "verified_unchanged"),
         tr.T("replan", "verdict_gate_rejected_approach_left"),
         tr.T("finishing", "verdict_gate_rejected_no_approach_left"),
     )
@@ -981,6 +987,8 @@ def test_the_gate_cure_pass_edge_is_declared_only_under_the_peer_delta():
         # added beside the four edges above under the same peer-verdict-
         # gate delta.
         assert by_guard["verdict_gate_operator_input_needed"] == "paused"
+        # v0.38 B.3: the unchanged review state key hold.
+        assert by_guard["verified_unchanged"] == "paused"
         assert by_guard["verdict_gate_rejected_approach_left"] == "replan"
         assert by_guard["verdict_gate_rejected_no_approach_left"] == "finishing"
-        assert len(edges) == 5
+        assert len(edges) == 6

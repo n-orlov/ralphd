@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import contextlib
+import dataclasses
 import functools
 import hashlib
 import io
@@ -39,6 +40,7 @@ from typing import Self
 import yaml
 
 from .. import __version__
+from .. import siblings as siblings_mod
 from ..engine.config import (
     BILLING_BASES,
     CODEX_MIN_VERSION,
@@ -86,6 +88,9 @@ from ..engine.state import (
     EXHAUSTED_STATE,
     LEGACY_TIMED_OUT_STATE,
     amendment_entries,
+    outstanding_refused_rulings,
+    refused_amendment_rulings,
+    task_status_change_refusal,
     archived_approach_dir,
     archived_approach_numbers,
     archived_approaches_dir,
@@ -137,6 +142,7 @@ from ..engine.state import (
     read_iteration_prompt,
     read_operator_termination,
     read_tasks_doc,
+    settled_petitioned_task_ids_on_disk,
     record_operator_termination,
     repoint_amendment,
     router_call_entries,
@@ -648,13 +654,11 @@ def _reap_siblings(run_id: str) -> None:
     --filter label=ralphd.role=sibling, since the same query run from there
     would destroy the container it is running in (task 035, #7).
 
-    Never fails the caller.
+    The logic lives in `ralphd.siblings`, which the engine imports too (it
+    reaps with `sibling_only=True` when its run ends). Never fails the caller.
     """
-    res = sh([DOCKER, "ps", "-aq", "--filter", f"label=ralphd.run={run_id}"])
-    if res.returncode != 0:
-        return
-    for cid in res.stdout.split():
-        sh([DOCKER, "rm", "-f", cid])
+    siblings_mod.reap_siblings(run_id, lambda argv: sh([DOCKER, *argv]),
+                               sibling_only=False)
 
 
 def _resolve_pi_apikeys(models_json: Path) -> None:
@@ -1084,24 +1088,52 @@ def _read_extra_env_wiring(cdir: Path) -> list[str]:
     return list(doc.get("extra_env") or [])
 
 
-# recognized creds extras copied verbatim alongside *.env files
+# recognized creds extras copied verbatim alongside *.env and *.vars files
 _CREDS_EXTRA_FILES = ("gitconfig", "git-credentials", "netrc", "setup.sh")
+_CREDS_SKIP_REASON = "not `*.env`, `*.vars` or a recognized extra"
+
+
+def _creds_skipped(src: Path) -> list[tuple[str, bool]]:
+    """`(name, is_dir)` for every entry of the creds directory `src` that
+    `_copy_creds` would NOT copy, sorted by name: anything that is not a
+    `*.env`/`*.vars` file, a recognized extra file or the `ssh/` directory.
+    Hidden entries count -- nothing is dropped without being named."""
+    copied_globs = {p for pat in ("*.env", "*.vars") for p in src.glob(pat)
+                    if p.is_file()}
+    out: list[tuple[str, bool]] = []
+    for entry in sorted(src.iterdir(), key=lambda p: p.name):
+        if entry in copied_globs:
+            continue
+        if entry.name in _CREDS_EXTRA_FILES and entry.is_file():
+            continue
+        if entry.name == "ssh" and entry.is_dir():
+            continue
+        out.append((entry.name, entry.is_dir()))
+    return out
+
+
+def _creds_skipped_line(name: str, is_dir: bool) -> str:
+    kind = "directory " if is_dir else ""
+    return f"ignored {kind}`{name}{'/' if is_dir else ''}` ({_CREDS_SKIP_REASON})"
 
 
 def _copy_creds(src: Path, cdir: Path) -> None:
-    """Copy `*.env` plus recognized extras (gitconfig, git-credentials,
-    netrc, ssh/, setup.sh) from `src` into the job config dir's `creds/`.
-    Anything else in `src` is ignored. The engine (not this CLI) places
-    these under $HOME/.creds etc. at container startup -- this only stages
-    the config-dir copy that gets mounted read-only at /config.
+    """Copy `*.env`, `*.vars` (non-secret values, #314) plus recognized
+    extras (gitconfig, git-credentials, netrc, ssh/, setup.sh) from `src`
+    into the job config dir's `creds/`. Anything else in `src` is not copied,
+    and every such file or directory is named on stderr. The engine (not this
+    CLI) places these under $HOME/.creds etc. at container startup -- this
+    only stages the config-dir copy that gets mounted read-only at /config.
     """
     src = src.expanduser().resolve()
     if not src.is_dir():
         die(2, f"--creds: {src} is not a directory")
     dest = cdir / "creds"
     dest.mkdir(exist_ok=True)
-    for env_file in sorted(src.glob("*.env")):
-        shutil.copy2(env_file, dest / env_file.name)
+    for pattern in ("*.env", "*.vars"):
+        for cred_file in sorted(src.glob(pattern)):
+            if cred_file.is_file():
+                shutil.copy2(cred_file, dest / cred_file.name)
     for name in _CREDS_EXTRA_FILES:
         f = src / name
         if f.is_file():
@@ -1111,6 +1143,41 @@ def _copy_creds(src: Path, cdir: Path) -> None:
     ssh_src = src / "ssh"
     if ssh_src.is_dir():
         shutil.copytree(ssh_src, dest / "ssh", dirs_exist_ok=True)
+    for name, is_dir in _creds_skipped(src):
+        print(f"--creds: {_creds_skipped_line(name, is_dir)}", file=sys.stderr)
+
+
+def _doctor_creds_skipped(reg: Path) -> list[dict]:
+    """What `--creds` would skip, for `ralphctl doctor`: the registry's
+    default creds directory (`<registry>/creds`) and every template's creds
+    directory (the `creds:` name in its `job.yaml`, default `creds`). Only
+    directories that exist are reported; one entry per skipped file or
+    directory: `{source, name, directory}`."""
+    sources: list[tuple[str, Path]] = [("registry creds", reg / "creds")]
+    tdir_root = reg / "templates"
+    if tdir_root.is_dir():
+        for tdir in sorted(p for p in tdir_root.iterdir() if p.is_dir()):
+            cname = "creds"
+            cfg_file = tdir / "job.yaml"
+            try:
+                cfg = yaml.safe_load(cfg_file.read_text()) if cfg_file.is_file() else None
+            except (OSError, yaml.YAMLError):
+                cfg = None
+            if isinstance(cfg, dict) and cfg.get("creds"):
+                cname = str(cfg["creds"])
+            sources.append((f"template {tdir.name}", tdir / cname))
+    found: list[dict] = []
+    for label, d in sources:
+        try:
+            if not d.is_dir():
+                continue
+            skipped = _creds_skipped(d)
+        except OSError:
+            continue
+        for name, is_dir in skipped:
+            found.append({"source": label, "path": str(d), "name": name,
+                          "directory": is_dir})
+    return found
 
 
 def _copy_skills(sdir: str, cdir: Path) -> None:
@@ -2164,8 +2231,15 @@ def _apply_template(args) -> Path | None:
     if not args.skills:
         skill_names = cfg.get("skills") or []
         args.skills = [str(tdir / s) for s in skill_names] or None
-    if not args.creds and cfg.get("creds"):
-        args.creds = str(tdir / cfg["creds"])
+    # A template's creds directory is the `creds:` name in its job.yaml,
+    # default `creds/` -- so a template with no job.yaml (or one that does
+    # not name a creds directory) still contributes its `creds/` when it
+    # has one (#314; the same default `ralphctl doctor` reports against).
+    if not args.creds and tdir is not None:
+        if cfg.get("creds"):
+            args.creds = str(tdir / cfg["creds"])
+        elif (tdir / "creds").is_dir():
+            args.creds = str(tdir / "creds")
     if args.prd is None and tdir is not None:
         prd_name = cfg.get("prd", "prd.md")
         prd_path = tdir / prd_name
@@ -4164,6 +4238,12 @@ def _summarize_usage(usage: dict) -> str:
     return summary
 
 
+# v0.38 E.2: the run states in which `ralphctl status` looks for containers
+# that should no longer be there (terminal outcomes and the exhausted hold).
+_SIBLING_WARNING_STATES = (*TERMINAL_STATES, EXHAUSTED_STATE,
+                           LEGACY_TIMED_OUT_STATE)
+
+
 def cmd_status(args):
     live = True
     try:
@@ -4325,6 +4405,21 @@ def cmd_status(args):
         container_gone is not None
         and container_gone["liveness"] == CONTAINER_ABSENT)
 
+    status["refusedRulings"] = [
+        {k: ev.get(k) for k in ("file", "taskId", "previous", "status",
+                                "reason")}
+        for ev in outstanding_refused_rulings(run_root(args.run_id))]
+
+    # v0.38 E.2 (#319 item 3): a run that is not running should have no
+    # containers left. Ask docker only then (a running run's own siblings are
+    # expected), and say so on the status itself: the count of RUNNING
+    # `ralphd.run=<run>` containers, `null` while the run is still going or
+    # docker could not answer.
+    status["liveSiblings"] = (
+        siblings_mod.live_container_count(
+            args.run_id, lambda argv: sh([DOCKER, *argv]))
+        if status.get("state") in _SIBLING_WARNING_STATES else None)
+
     # Duration fields (PRD steering 051): a single `durationSeconds` covers
     # both "elapsed so far" (state still running, no endedAt yet) and "total
     # run time" (terminal state, endedAt set) -- same measurement, the only
@@ -4469,6 +4564,19 @@ def cmd_status(args):
     # config dir alone) so a run that lost its socket says so.
     if isinstance(status.get("dockerAccess"), dict):
         lines.append(f"docker:    {status['dockerAccess'].get('line')}")
+    # v0.38 C.2: one line per operator status ruling the engine refused,
+    # until a later ruling for that task is applied.
+    for _ref in status.get("refusedRulings") or []:
+        lines.append(
+            f"warning:   operator status ruling {_ref.get('file')} for task "
+            f"{_ref.get('taskId')} (-> {_ref.get('status')}) was refused: "
+            f"{_ref.get('reason')}")
+    # v0.38 E.2: containers still running for a run that is not running.
+    if status.get("liveSiblings"):
+        lines.append(
+            f"warning:   {status['liveSiblings']} container(s) labelled "
+            f"ralphd.run={args.run_id} still running although the run is "
+            f"{state_display}; `ralphctl stop {args.run_id}` removes them")
     # Task 010 (#79, PRD requirement O): the resolved hat -> model mapping
     # (`provisioningLines`, computed above from job.yaml through the ONE
     # shared `state.format_provisioning_lines` formatter) -- printed
@@ -4674,7 +4782,11 @@ def _tasks_doc(run_id: str) -> tuple[bool, dict]:
     res = read_tasks_doc(run_root(run_id), persist=False)
     # Task 025 (#33): `TasksRead.payload`, the same shaping `GET /tasks` serves
     # -- so the on-disk answer carries the derived `taskFailureKinds` too and
-    # `--json` reads the same either way.
+    # `--json` reads the same either way. v0.38 (#306): and the same settled
+    # rule, so a waived or CONFIRMED petitioned dependency is not shown as a
+    # blocker here while the engine has already scheduled past it.
+    res = dataclasses.replace(res, settled=settled_petitioned_task_ids_on_disk(
+        run_root(run_id), res.tasks, config_root=config_root(run_id)))
     return False, res.payload
 
 
@@ -5643,10 +5755,27 @@ def cmd_skills(args):
 
 
 # ---------------------------------------------------------------- creds
+def _creds_kind_path(name: str, kind: str) -> str:
+    """`/config/creds/<name>` plus `?kind=vars` for a `.vars` entry (the env
+    kind is the engine's default, so its URL is unchanged)."""
+    return f"/config/creds/{name}" + ("" if kind == "env" else f"?kind={kind}")
+
+
 def cmd_creds(args):
     _require_run(args.run_id)
+    kind = getattr(args, "kind", None)
+    if args.action == "add":
+        src = Path(args.file).expanduser().resolve()
+        suffix_kind = src.suffix[1:] if src.suffix in (".env", ".vars") else None
+        if suffix_kind is None:
+            die(2, f"creds add: {src} is not a *.env or *.vars file")
+        if kind and kind != suffix_kind:
+            die(2, f"creds add: --kind {kind} does not match {src.name}")
+        kind = suffix_kind
+    kind = kind or "env"
     if args.action == "ls":
-        creds = api(args.run_id, "GET", "/config/creds")
+        creds = api(args.run_id, "GET",
+                    "/config/creds" + ("" if kind == "env" else f"?kind={kind}"))
         if args.json:
             print(json.dumps(creds, indent=2))
         else:
@@ -5655,21 +5784,20 @@ def cmd_creds(args):
             if not creds:
                 print("(no creds)")
     elif args.action == "get":
-        body = api(args.run_id, "GET", f"/config/creds/{args.name}", raw=True)
+        body = api(args.run_id, "GET", _creds_kind_path(args.name, kind), raw=True)
         print(body, end="" if body.endswith("\n") else "\n")
     elif args.action == "add":
-        src = Path(args.file).expanduser().resolve()
-        if src.suffix != ".env":
-            die(2, f"creds add: {src} is not a *.env file")
         if not src.is_file():
             die(2, f"creds add: {src} does not exist")
         name = src.stem
-        api(args.run_id, "PUT", f"/config/creds/{name}", data=src.read_bytes(),
+        api(args.run_id, "PUT", _creds_kind_path(name, kind), data=src.read_bytes(),
            content_type="text/plain")
-        out(args, {"added": name}, f"credential '{name}' uploaded")
+        out(args, {"added": name, "kind": kind},
+            f"credential '{name}' ({kind}) uploaded")
     elif args.action == "rm":
-        api(args.run_id, "DELETE", f"/config/creds/{args.name}")
-        out(args, {"removed": args.name}, f"credential '{args.name}' removed")
+        api(args.run_id, "DELETE", _creds_kind_path(args.name, kind))
+        out(args, {"removed": args.name, "kind": kind},
+            f"credential '{args.name}' ({kind}) removed")
 
 
 # ---------------------------------------------------------------- prompts
@@ -6253,6 +6381,16 @@ def cmd_answer(args):
         out(args, res, "answered: secret handled (the commit scan of the "
             "offending range is clean; the worker carries on)")
         return
+    if res.get("kind") == "verified_unchanged":
+        out(args, res, "answered: the verified_unchanged park is released "
+            "(the run compares the review state key again: a changed state "
+            "dispatches the final review, an unchanged one parks again)")
+        return
+    if res.get("kind") == "petition_hold":
+        out(args, res, "answered: the petition-hold park is released (the "
+            "run re-reads the plan; a hold your `amend` ruling did not move "
+            "parks again)")
+        return
     out(args, res, f"answered: {res.get('outcome')} (waived "
         f"{res.get('waived') or 'none'}, accepted "
         f"{res.get('accepted') or 'none'}, cure rounds "
@@ -6300,6 +6438,151 @@ def _amend_echo_target_or_die(args) -> None:
         return
     die(2, f"task {args.task_id!r} is not in this run's current plan "
            f"(tasks.json); pass --force to record the ruling anyway")
+
+
+def _amend_authoritative_task(run_id: str, task_id: str) -> tuple[str, dict | None]:
+    """The authoritative task row an operator status ruling is checked
+    against. The record is `record/tasks.json` under the run's config dir
+    (`task_record_dir`); the run dir's `tasks.json` is only a mirror of it,
+    agent-writable and possibly stale, so it never decides a refusal.
+
+    Returns `("ok", row)` when the record was read (`row` is None when the
+    record does not name the task: `--force` on an unknown id), `("absent",
+    None)` when no record exists yet (no plan), and `("unreadable", None)`
+    when one exists but cannot be read or parsed -- the live case: a running
+    engine holds `record/` root-owned 0700 (#202), unreadable to the host
+    user until the container exits and releases it. An `os.stat` denied
+    with EACCES (the file behind that 0700 directory) lands there too: it is
+    called directly because `Path.exists()` swallows that error on 3.14.
+    Only when no record mount exists is the record looked for where the
+    engine then keeps it (`privsep.protected_tasks_dir`'s degrade).
+    """
+    if task_record_dir(run_id).is_dir():
+        # The mount exists, so the engine keeps the record there and nowhere
+        # else (`privsep.protected_tasks_dir`).
+        candidates = [task_record_dir(run_id) / "tasks.json"]
+    else:
+        candidates = [
+            # No record mount (a run started before #202's mount, or the
+            # unprivileged degrade): the engine keeps it in the run dir.
+            privsep.legacy_protected_tasks_dir(run_root(run_id))
+            / privsep.TASK_RECORD_FILENAME,
+            # No protected record at all: the pre-#60 layout, whose run-dir
+            # `tasks.json` is itself the record.
+            run_root(run_id) / "tasks.json",
+        ]
+    rec = None
+    for c in candidates:
+        try:
+            os.stat(c)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except OSError:   # EACCES: present behind a root-owned 0700 dir
+            return "unreadable", None
+        rec = c
+        break
+    if rec is None:
+        return "absent", None
+    try:
+        doc = json.loads(rec.read_text())
+    except (OSError, ValueError):
+        return "unreadable", None
+    rows = doc.get("tasks") if isinstance(doc, dict) else None
+    if not isinstance(rows, list):
+        return "unreadable", None
+    for t in rows:
+        if isinstance(t, dict) and str(t.get("id")) == str(task_id):
+            return "ok", t
+    return "ok", None
+
+
+def _amend_engine_decision(args, reason: str) -> tuple[bool, object, str]:
+    """The live engine's own answer to "is this status ruling refused?",
+    via the read-only `GET /tasks/<id>/status-ruling` (the engine reads its
+    own record and asks `state.task_status_change_refusal`). Returns
+    `(found, current_status, refusal)`: `found` False when the engine's
+    record holds no such task, else the record's `status` value verbatim
+    (possibly `None`: a row with `"status": null` is a task, not an unknown
+    id) and `refusal == ""` when allowed. Any way of not getting that answer
+    (no recorded API, unreachable, an engine without the route, a body not
+    marked authoritative or missing `found`/`allowed`) exits non-zero with
+    nothing recorded: a ruling is never accepted on a decision nobody
+    authoritative made."""
+    path = (f"/tasks/{urllib.parse.quote(str(args.task_id), safe='')}"
+            f"/status-ruling?status={urllib.parse.quote(args.status, safe='')}"
+            f"&reason={urllib.parse.quote(reason or '', safe='')}")
+    unavailable = (
+        f"the authoritative task record "
+        f"({task_record_dir(args.run_id) / 'tasks.json'}) cannot be read from "
+        "this host user (a live run holds record/ root-owned until its "
+        "container exits) and the run's engine did not supply a decision "
+        "for this status ruling; nothing was recorded. Retry once the "
+        "engine is reachable, or after the run has exited and released the "
+        "record")
+    try:
+        res = api(args.run_id, "GET", path, timeout=10)
+    except SystemExit as e:
+        die(e.code if isinstance(e.code, int) and e.code else 4, unavailable)
+    # Only an answer the engine itself marks authoritative (read current
+    # off its own record) decides; anything else -- a body without the
+    # flags, or one built from a stale or unreadable record -- is no answer.
+    if (not isinstance(res, dict) or res.get("authoritative") is not True
+            or not isinstance(res.get("found"), bool)
+            or not isinstance(res.get("allowed"), bool)):
+        die(4, unavailable)
+    if not res["found"]:
+        return False, None, ""
+    return True, res.get("current"), "" if res["allowed"] else str(
+        res.get("reason") or "refused by the engine")
+
+
+def _amend_status_door_check(args, reason: str) -> None:
+    """v0.38 C.1: refuse an operator status ruling the engine would refuse
+    when it applies it, before any ruling file is written. Asks the engine's
+    own `state.task_status_change_refusal` (the transition table, the
+    operator-ruling exits and the cure-reopened guard) against the
+    authoritative task record, so the refusal carries the engine's reason.
+    A ruling to the status the task already holds is not refused (the engine
+    treats it as a no-op).
+
+    When the record exists but cannot be read (a live container holds it
+    root-owned), the decision is the live engine's: it is asked through
+    `GET /tasks/<id>/status-ruling` and its reason is shown on a refusal. If
+    the engine cannot answer, the command fails and records nothing. The run
+    dir's mirror is never consulted -- it is agent-writable and may be stale
+    -- so an id the authoritative record does not hold is refused (exit 2)
+    unless `--force`, even when the mirror names it."""
+    state, task = _amend_authoritative_task(args.run_id, args.task_id)
+    if state == "absent":
+        return
+    if state == "unreadable":
+        found, current, refusal = _amend_engine_decision(args, reason)
+        where = "the engine's record"
+    else:
+        found = task is not None
+        current = task.get("status", "pending") if found else None
+        where = "record/tasks.json"
+        refusal = ""
+        if found:
+            cfg_path = config_root(args.run_id) / "job.yaml"
+            vigilant = (JobConfig.load(cfg_path).vigilant
+                        if cfg_path.is_file() else False)
+            status = _read_json(run_root(args.run_id) / "status.json", {}) or {}
+            refusal = task_status_change_refusal(
+                current, args.status, vigilant, source="operator",
+                justification=reason,
+                cure_reopened=str(args.task_id) in (
+                    status.get("preCureStatuses") or {})) or ""
+    if not found:
+        if args.force:
+            return
+        die(2, f"task {args.task_id!r} is not in the authoritative task "
+               f"record ({where}); pass --force to record the ruling anyway; "
+               "nothing was recorded")
+    if refusal:
+        die(2, f"status ruling refused: task {args.task_id} is {current!r} "
+               f"({where}); {current!r} -> {args.status!r} is not allowed: "
+               f"{refusal}; nothing was recorded")
 
 
 def _amend_resolve_approach(args) -> int | None:
@@ -6370,11 +6653,14 @@ def cmd_amend_list(args) -> None:
     _require_run(args.run_id)
     entries = amendment_entries(config_root(args.run_id))
     plan_ids = _amend_orphaned_task_ids(args)
+    refused = refused_amendment_rulings(run_root(args.run_id))
     if args.json:
         out_entries = []
         for e in entries:
             e = dict(e)
             e["orphaned"] = _amend_entry_is_orphaned(e, plan_ids)
+            r = refused.get(e.get("file"))
+            e["refused"] = r.get("reason") if r else None
             out_entries.append(e)
         print(json.dumps({"entries": out_entries}, indent=2))
         return
@@ -6408,6 +6694,10 @@ def cmd_amend_list(args) -> None:
             else str(e.get("taskId") or "-")
         state_col = "ORPHANED" if _amend_entry_is_orphaned(e, plan_ids) \
             else "-"
+        # v0.38 C.2: a status ruling the engine refused when it applied it.
+        _ref = refused.get(e.get("file"))
+        if _ref:
+            preview = f"refused: {_ref.get('reason')}  [{preview}]"
         print(f"{(str(seq) if isinstance(seq, int) else '-'):>3}  {mode:<7}  "
               f"{scope:<5}  {str(e.get('ts') or '-'):<25}  {task_col:<8}  "
               f"{state_col:<9}  {preview}")
@@ -6592,6 +6882,7 @@ def cmd_amend(args):
             die(2, f"unknown status {args.status!r}; must be one of "
                    f"{', '.join(OPERATOR_RULEABLE_TASK_STATUSES)}{extra}")
         reason = args.text or (Path(args.file).read_text() if args.file else "")
+        _amend_status_door_check(args, reason)
         fname = write_amendment(cdir, target, reason,
                                 status=args.status, approach=approach)
         out(args, {"file": fname, "taskId": target,
@@ -8493,6 +8784,9 @@ def cmd_doctor(args):
 
     registry_issues = _registry_schema_issues(reg)
     checks["registry_schema"] = not registry_issues
+    # #314: report-only, like strays -- a stray file in a creds directory is
+    # news, not a broken install.
+    creds_skipped = _doctor_creds_skipped(reg)
 
     strays = _stray_sibling_containers()
     dangling = _dangling_registry_entries()
@@ -8559,6 +8853,12 @@ def cmd_doctor(args):
         report += "\n! registry schema issues:"
         for issue in registry_issues:
             report += f"\n    {issue}"
+    if creds_skipped:
+        report += ("\n! creds files `--creds` would not copy (only `*.env`, "
+                   "`*.vars`, recognized extras and `ssh/` are):")
+        for c in creds_skipped:
+            report += (f"\n    {c['source']}: "
+                       f"{_creds_skipped_line(c['name'], c['directory'])}")
     if strays:
         report += "\n! stray ralphd.run containers (no matching run dir):"
         for s in strays:
@@ -8638,6 +8938,7 @@ def cmd_doctor(args):
     out(args, {"ok": ok, "checks": checks, "strayContainers": strays,
                "imageStaleness": image_verdict, "runImageStaleness": run_images,
                "danglingRegistryEntries": dangling, "registryIssues": registry_issues,
+               "credsSkipped": creds_skipped,
                "defaultLlmProfile": default_profile_name,
                "defaultLlmProfileError": default_llm_profile_error,
                "hostNetworkApiBindNote": host_network_note,
@@ -9123,7 +9424,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--env", action="append", metavar="KEY=VAL")
     s.add_argument("--skills", action="append", metavar="DIR")
     s.add_argument("--creds", metavar="DIR",
-                   help="copy *.env + recognized extras from DIR into the job's"
+                   help="copy *.env, *.vars + recognized extras from DIR into the job's"
                         " config dir creds/")
     s.add_argument("--allow-docker", action="store_true",
                    help="mount the host docker socket into the job container "
@@ -9354,13 +9655,20 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("creds", help="inspect or hot-swap credentials on a running job")
     s.add_argument("run_id")
     crsub = s.add_subparsers(dest="action", required=True)
-    crsub.add_parser("ls", help="list credential names (no values)")
+    kind_help = ("credential kind: env (secret, default) or vars "
+                 "(non-secret values, never value-scrubbed)")
+    ls_ = crsub.add_parser("ls", help="list credential names (no values)")
+    ls_.add_argument("--kind", choices=("env", "vars"), help=kind_help)
     g = crsub.add_parser("get", help="print a credential file's contents")
     g.add_argument("name")
-    a = crsub.add_parser("add", help="upload/replace a *.env credential file")
+    g.add_argument("--kind", choices=("env", "vars"), help=kind_help)
+    a = crsub.add_parser("add", help="upload/replace a *.env or *.vars credential file")
     a.add_argument("file")
+    a.add_argument("--kind", choices=("env", "vars"),
+                   help=kind_help + "; default: from the file's suffix")
     r = crsub.add_parser("rm", help="delete a credential")
     r.add_argument("name")
+    r.add_argument("--kind", choices=("env", "vars"), help=kind_help)
     s.set_defaults(func=cmd_creds)
 
     s = sub.add_parser("prompts", help="inspect or hot-swap phase prompts on a running job")

@@ -1001,6 +1001,27 @@ def _chunks(s, n=6):
     return [s[i:i + size] for i in range(0, len(s), size)]
 
 
+def _write_hold_marker(path, text):
+    """Publish a hold-entered marker ATOMICALLY (temp file + os.replace in
+    the same directory). `wait_hold_entered` returns the marker's text the
+    moment the path exists; a plain `open(path, "w")` creates the path
+    before its first byte, so a poller on a loaded runner read '' instead
+    of the phase name (the fast lane's
+    test_open_events_reader_does_not_hold_an_exhausted_engine_up).
+    Same discipline as the `.stub-env.json` marker above."""
+    tmp = f"{path}.tmp.{os.getpid()}"
+    try:
+        with open(tmp, "w") as _f:
+            _f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def _apply_tool_hold():
     """Approach-4 task 010: hold the gap between `tool_execution_start` and
     `tool_execution_end` open until the reader releases it, instead of
@@ -1024,8 +1045,8 @@ def _apply_tool_hold():
     poll_s = float(os.environ.get("STUB_HOLD_POLL_S", "0.02"))
     start = time.monotonic()
     timed_out = False
-    with open(f"{hold_file}.stub-tool-hold-entered", "w") as _f:
-        _f.write("tool_execution_start")
+    _write_hold_marker(f"{hold_file}.stub-tool-hold-entered",
+                       "tool_execution_start")
     while not os.path.exists(hold_file):
         if time.monotonic() - start >= timeout_s:
             timed_out = True
@@ -1238,8 +1259,7 @@ def _apply_hold(phase=None):
     # `test_abort_via_api` posted /abort before the worker child existed,
     # so nothing was there to interrupt, and `test_durations`' 3.5s sleep
     # started before the run's own `startedAt`.
-    with open(f"{hold_file}.stub-hold-entered", "w") as _f:
-        _f.write(phase or "*")
+    _write_hold_marker(f"{hold_file}.stub-hold-entered", phase or "*")
     while not os.path.exists(hold_file):
         if time.monotonic() - start >= timeout_s:
             timed_out = True

@@ -407,7 +407,14 @@ def test_episode_answering_adjudicated_settles_with_no_agent_fault(tmp_path):
 # current `tasks.json` and no requirement of the contract as history, and
 # history is never surfaced to review at all -- so an obligation invented
 # out of thin air would make this scenario un-adjudicable rather than held.
-HELD_OBLIGATION = "Task A: the criterion names its own not-yet-existing sha"
+#
+# v0.38 (A.4/A.5): the obligation is exactly `petitions.task_petition_
+# obligation` of task `A` ("Task <id>: <title>"), so a CONFIRMED adjudication
+# of it SETTLES the held task. Before, this text named task `A` without
+# matching its title, so the adjudication settled nothing and the pass fell
+# through to a no-task worker dispatch -- a fruitless episode now parks the
+# run instead (`tests/test_petition_hold_prompt_adjudication.py`).
+HELD_OBLIGATION = "Task A: the petitioned task"
 
 
 def _confirming_review(sup, prompt=""):
@@ -471,6 +478,11 @@ def test_a_held_pass_runs_the_episode_and_still_dispatches_the_worker(tmp_path):
     # a held plan still gets its normal chance to reply.
     assert agent.calls.get("worker") == 1
 
+    # v0.38 A.4: the CONFIRMED outcome settled `A`, so the one worker
+    # dispatch of this pass worked its dependent `B` (claimed in-progress by
+    # the harness) rather than idling on a no-task iteration; the same-pass
+    # unblocking is pinned in tests/test_petition_hold_prompt_adjudication.py
+    # (test_a_confirmed_outcome_unblocks_the_dependents_in_the_same_pass).
     # Off-budget: the episode never competed with the run's own iteration
     # budget (iterations=1 covered exactly the one worker dispatch).
     # Task 015 (requirement E.1, #169) renamed this refund bucket from the
@@ -481,10 +493,10 @@ def test_a_held_pass_runs_the_episode_and_still_dispatches_the_worker(tmp_path):
               - sup._steer_refunded - sup._adjudication_refunded)
     assert charged == 1
 
-    # tasks.json is untouched by the hold itself -- A is still `petitioned`
-    # (closing it on a CONFIRMED adjudication is a later task's scope).
+    # A settled by CONFIRMED keeps the status `petitioned` (no status lie);
+    # its dependent is the task the worker was dispatched on.
     tasks = {t["id"]: t["status"] for t in sup.run.read_tasks()["tasks"]}
-    assert tasks == {"A": "petitioned", "B": "pending"}
+    assert tasks == {"A": "petitioned", "B": "in-progress"}
 
 
 def test_repeated_held_passes_never_trip_the_stagnation_counter(tmp_path):
@@ -505,7 +517,9 @@ def test_repeated_held_passes_never_trip_the_stagnation_counter(tmp_path):
     longer hold off."""
     sup, run, workspace = _episode_worker_supervisor(
         tmp_path, iterations=3, max_approaches=2)
-    _episode_petitions_file(workspace, HELD_OBLIGATION)
+    # No petition is on file: the episode has nothing to adjudicate, so the
+    # hold is the bare no-task-iteration shape (v0.38 A.5: with an open
+    # petition a fruitless episode parks the run instead).
     atomic_write_json(sup.run.tasks_file,
                       {"version": 1, "tasks": _held_plan()})
 
@@ -529,11 +543,10 @@ def test_repeated_held_passes_never_trip_the_stagnation_counter(tmp_path):
     assert agent.calls.get("worker") == 3
     assert outcome == ("tail",)
 
-    # The bounded episode ran exactly ONCE for this obligation -- calling
-    # it again on every later held pass is a no-op, never a repeat LLM
-    # call (`self._petition_adjudication_seen` dedup, unchanged by this
-    # task).
-    assert agent.calls.get("review") == 1
+    # No open petition, so no episode ran at all; the once-per-obligation
+    # dedupe is pinned in tests/test_petition_hold_prompt_adjudication.py
+    # (test_the_park_is_released_by_an_answer_and_the_loop_reparks_an_unmoved_hold).
+    assert agent.calls.get("review") is None
 
     # A held run never gets silently failed/replanned: `self._approach`
     # is exactly where it started (a `stagnation_exhausted` outcome would
@@ -573,7 +586,9 @@ def _write_plan(sup: LoopSupervisor, tasks: list[dict]) -> None:
     atomic_write_json(sup.run.tasks_file, {"version": 1, "tasks": tasks})
 
 
-def test_apply_confirmed_petition_adjudications_moves_the_task_to_skipped():
+def test_apply_confirmed_petition_adjudications_settles_the_task_in_place():
+    """v0.38 (PRD A.1 b, decision 1 "no status lies"): CONFIRMED settles a
+    petitioned task without rewriting its status."""
     tasks_doc = {"version": 1, "tasks": [_task()]}
     changed = petitions.apply_confirmed_petition_adjudications(tasks_doc, [
         {"obligation": CLOSES_OBLIGATION, "adjudication": "CONFIRMED"},
@@ -581,7 +596,7 @@ def test_apply_confirmed_petition_adjudications_moves_the_task_to_skipped():
 
     assert changed == [TASK_ID]
     task = tasks_doc["tasks"][0]
-    assert task["status"] == "skipped"
+    assert task["status"] == "petitioned"
     assert "CONFIRMED" in task["notes"]
     assert CLOSES_OBLIGATION in task["notes"]
 
@@ -626,7 +641,7 @@ def test_apply_confirmed_petition_adjudications_is_a_noop_with_no_adjudications(
     assert tasks_doc["tasks"][0]["status"] == "petitioned"
 
 
-def test_a_dependents_dependson_loses_the_confirmed_task_with_no_replacement():
+def test_a_dependents_dependson_keeps_the_settled_edge_with_no_replacement():
     tasks_doc = {"version": 1, "tasks": [
         _task(),
         {"id": DEPENDENT_ID, "title": "depends on it",
@@ -638,7 +653,7 @@ def test_a_dependents_dependson_loses_the_confirmed_task_with_no_replacement():
     ])
 
     dependent = next(t for t in tasks_doc["tasks"] if t["id"] == DEPENDENT_ID)
-    assert dependent["dependsOn"] == []
+    assert dependent["dependsOn"] == [TASK_ID]
 
 
 def test_a_dependents_dependson_gains_the_named_replacement_task():
@@ -656,10 +671,10 @@ def test_a_dependents_dependson_gains_the_named_replacement_task():
     ])
 
     dependent = next(t for t in tasks_doc["tasks"] if t["id"] == DEPENDENT_ID)
-    assert dependent["dependsOn"] == [REPLACEMENT_ID]
+    assert dependent["dependsOn"] == [TASK_ID, REPLACEMENT_ID]
 
 
-def test_a_replacement_task_id_naming_no_real_task_repoints_to_nothing():
+def test_a_replacement_task_id_naming_no_real_task_adds_nothing():
     tasks_doc = {"version": 1, "tasks": [
         _task(),
         {"id": DEPENDENT_ID, "title": "depends on it",
@@ -672,7 +687,7 @@ def test_a_replacement_task_id_naming_no_real_task_repoints_to_nothing():
     ])
 
     dependent = next(t for t in tasks_doc["tasks"] if t["id"] == DEPENDENT_ID)
-    assert dependent["dependsOn"] == []
+    assert dependent["dependsOn"] == [TASK_ID]
 
 
 def test_a_dependent_naming_both_the_task_and_its_replacement_has_no_duplicate():
@@ -690,7 +705,7 @@ def test_a_dependent_naming_both_the_task_and_its_replacement_has_no_duplicate()
     ])
 
     dependent = next(t for t in tasks_doc["tasks"] if t["id"] == DEPENDENT_ID)
-    assert dependent["dependsOn"] == [REPLACEMENT_ID]
+    assert dependent["dependsOn"] == [TASK_ID, REPLACEMENT_ID]
 
 
 def test_a_dependent_with_no_dependson_at_all_is_left_alone():
@@ -711,8 +726,9 @@ def test_a_repoint_with_run_threaded_emits_dependency_repointed_event(tmp_path):
     """Task 004 (PRD requirement E.2): once `run` is threaded through,
     `apply_confirmed_petition_adjudications` emits `DEPENDENCY_REPOINTED_
     EVENT` (`source="cure-insertion"`) for the dependent whose `dependsOn`
-    the CONFIRMED re-point actually rewrites -- naming the removed and
-    added ids and the resulting list, mirroring `state._repoint_
+    the CONFIRMED adjudication's named replacement actually extends (v0.38:
+    the settled edge stays, so nothing is removed) -- naming the added id
+    and the resulting list, mirroring `state._repoint_
     dependents_onto_cure_task`'s own emit from task 003 (requirement E.1).
     """
     run = RunDir(root=tmp_path / "run")
@@ -735,9 +751,9 @@ def test_a_repoint_with_run_threaded_emits_dependency_repointed_event(tmp_path):
     repoints = [e for e in events if e["type"] == DEPENDENCY_REPOINTED_EVENT]
     assert len(repoints) == 1
     assert repoints[0]["taskId"] == DEPENDENT_ID
-    assert repoints[0]["removed"] == [TASK_ID]
+    assert repoints[0]["removed"] == []
     assert repoints[0]["added"] == [REPLACEMENT_ID]
-    assert repoints[0]["dependsOn"] == [REPLACEMENT_ID]
+    assert repoints[0]["dependsOn"] == [TASK_ID, REPLACEMENT_ID]
     assert repoints[0]["source"] == "cure-insertion"
     assert repoints[0]["reason"]
 
@@ -765,7 +781,7 @@ def test_a_repoint_that_touches_nothing_emits_no_event(tmp_path):
     assert not (run.root / "events.jsonl").exists()
 
 
-def test_supervisor_write_back_persists_the_confirmed_transition(tmp_path):
+def test_supervisor_write_back_persists_the_confirmed_settlement(tmp_path):
     sup = _supervisor_closes_task(tmp_path / "run")
     _write_plan(sup, [
         _task(),
@@ -779,21 +795,15 @@ def test_supervisor_write_back_persists_the_confirmed_transition(tmp_path):
 
     assert changed == [TASK_ID]
     on_disk = {t["id"]: t for t in sup.run.read_tasks()["tasks"]}
-    assert on_disk[TASK_ID]["status"] == "skipped"
+    # v0.38 (PRD A.1 b): the task stays petitioned and the dependent keeps
+    # its edge -- the settled rule, not a re-point, unblocks it.
+    assert on_disk[TASK_ID]["status"] == "petitioned"
     assert "CONFIRMED" in on_disk[TASK_ID]["notes"]
-    assert on_disk[DEPENDENT_ID]["dependsOn"] == []
-    # Task 004 (requirement E.2): the wrapper threads `self.run` through,
-    # so this same write-back also lands a `task.dependency_repointed`
-    # event on the run's own `events.jsonl`.
-    events = [json.loads(x) for x in
-              (sup.run.root / "events.jsonl").read_text().splitlines()]
-    repoints = [e for e in events if e["type"] == DEPENDENCY_REPOINTED_EVENT]
-    assert len(repoints) == 1
-    assert repoints[0]["taskId"] == DEPENDENT_ID
-    assert repoints[0]["removed"] == [TASK_ID]
-    assert repoints[0]["added"] == []
-    assert repoints[0]["dependsOn"] == []
-    assert repoints[0]["source"] == "cure-insertion"
+    assert on_disk[DEPENDENT_ID]["dependsOn"] == [TASK_ID]
+    events_file = sup.run.root / "events.jsonl"
+    events = ([json.loads(x) for x in events_file.read_text().splitlines()]
+              if events_file.exists() else [])
+    assert not [e for e in events if e["type"] == DEPENDENCY_REPOINTED_EVENT]
 
 
 def test_supervisor_write_back_is_a_noop_with_no_adjudications(tmp_path):

@@ -576,7 +576,9 @@ def test_verified_review_refused_while_steering_pending(engine_factory, tmp_path
     what would otherwise be the final VERIFIED verdict must not be silently
     stranded by a terminal-succeeded run. The engine must discard that verdict,
     route back so the steering is actually settled, then re-review -- only
-    succeeding once no steering is left pending.
+    succeeding once no steering is left pending (v0.38 B.2: on the state the
+    deferred VERIFIED already judged, that verdict is reused rather than the
+    review re-dispatched).
 
     Task 013 (requirement I, #98) strengthens WHAT settles it. The old claim
     was `phases == [planning, worker, review, worker, review]` with the file
@@ -626,9 +628,12 @@ def test_verified_review_refused_while_steering_pending(engine_factory, tmp_path
     metas = [json.loads((d / "meta.json").read_text()) for d in iters]
     phases = [m["phase"] for m in metas]
     # The engine must NOT go terminal after the first review: it defers and
-    # the dispatch loop routes to `steer` (task 012/013) before re-reviewing.
-    assert phases == ["planning", "worker", "review",
-                     "steer", "worker", "review"]
+    # the dispatch loop routes to `steer` (task 012/013). v0.38 B.2 (#320):
+    # the steer settled the message without moving HEAD or any task, so the
+    # state is the one the deferred VERIFIED already judged -- the review is
+    # not dispatched a second time; its remembered verdict stands
+    # (`review_verdict_reused`) once nothing holds it.
+    assert phases == ["planning", "worker", "review", "steer", "worker"]
 
     review1_meta = metas[2]
     assert review1_meta["steeringConsumed"] == []
@@ -653,6 +658,9 @@ def test_verified_review_refused_while_steering_pending(engine_factory, tmp_path
                 and "deferring" in ev.get("message", "")]
     assert warnings, "expected a deferred-VERIFIED warning log event"
     assert "001-lastcall.md" in warnings[0]["message"]
+    reused = [ev for ev in events if ev.get("type") == "review_verdict_reused"]
+    assert len(reused) == 1 and reused[0]["verdict"] == "VERIFIED"
+    assert events.index(reused[0]) > events.index(warnings[0])
 
 
 def test_vigilant_verify_fail_then_recovery(engine_factory):

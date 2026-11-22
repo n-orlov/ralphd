@@ -81,7 +81,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from ralphd.engine import petitions
+from ralphd.engine import petitions, scheduler, transitions
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
@@ -603,3 +603,155 @@ def test_the_deferral_still_names_steering_when_steering_is_what_is_unsettled(
             if t.get("origin") == "review-cure"] == ["review-cure"]
     assert outcome == ("advance", "worker", "steering_pending_at_verified")
     assert run.read_status().get("state") != "succeeded"
+
+
+def _form_refuting_review(obligation: str, remedy: str = "Rerun the "
+                          "migration with the --dry-run flag first."):
+    return _ok("adjudicating the open petition\n" + json.dumps({
+        "verdict": "rejected",
+        "reason": "the petition is refuted: the obligation can be met",
+        "petition_adjudications": [{
+            "obligation": obligation, "adjudication": "REFUTED",
+            "remedy": remedy, "remedy_type": "form",
+        }],
+    }))
+
+
+def test_a_form_remedy_through_the_filed_petition_path_fails_the_task(tmp_path):
+    """v0.38 (#306, #320): a contract-valid REFUTED adjudication of a filed
+    petition fails the `petitioned` task with its remedy for a `form`
+    remedy too. It never validates the task (form debt is not validation),
+    it builds no remedy task, and the dependent of the failed task stays
+    blocked rather than becoming eligible."""
+    obligation = petitions.task_petition_obligation(
+        {"id": "1", "title": "make the impossible thing work"})
+    petitioned_task = _task_record(
+        status="petitioned", title="make the impossible thing work")
+    dependent = {"id": "2", "title": "needs task 1", "status": "pending",
+                 "successCriteria": "depends on task 1", "dependsOn": ["1"],
+                 "tier": "hard"}
+    sup, run, workspace = _worker_supervisor(
+        tmp_path, petitioned_task, extra_tasks=[dependent])
+    _make_petitions_file(workspace, obligation)
+    review = _form_refuting_review(obligation)
+
+    assert transitions.review_remedy_errors(
+        json.loads(review.final_text.split("\n", 1)[1])) == []
+    verified, payload, contract_errors = sup._review_verdict(
+        review, mid_run=False)
+
+    # the reply is contract-valid: the engine accepted it with no error,
+    # so the write below is the review path's own, not a refused reply's.
+    assert contract_errors == []
+    assert verified is False and payload["verdict"] == "rejected"
+
+    tasks = run.read_tasks()["tasks"]
+    by_id = {t["id"]: t for t in tasks}
+    assert by_id["1"]["status"] == "failed"
+    assert by_id["1"]["validationNotes"] == (
+        "Rerun the migration with the --dry-run flag first.")
+    assert not [t for t in tasks if t.get("origin") == "review-cure"]
+    assert by_id["2"]["dependsOn"] == ["1"]
+    assert scheduler.select_next_task(tasks) is None
+    debt = run.read_debt()
+    assert [d["taskId"] for d in debt] == ["1"]
+
+
+def test_a_form_remedy_fails_every_matching_petitioned_task_not_just_one(
+        tmp_path):
+    """The same rule for a second, unlisted shape: two independently
+    petitioned tasks, one REFUTED as form and one as substance in the same
+    review reply, both end `failed`; neither is validated."""
+    ob1 = petitions.task_petition_obligation({"id": "1", "title": "first thing"})
+    ob3 = petitions.task_petition_obligation({"id": "3", "title": "third thing"})
+    t1 = _task_record(status="petitioned", title="first thing")
+    t3 = _task_record(id="3", status="petitioned", title="third thing")
+    sup, run, workspace = _worker_supervisor(tmp_path, t1, extra_tasks=[t3])
+    reports = workspace / "artifacts" / "reports"
+    reports.mkdir(parents=True)
+    (reports / "v0.16-petitions.md").write_text(
+        "# petitions\n\n"
+        + "".join(f"## Petition: {o}\n\n**Obligation**: {o}\n"
+                  "**Type**: self-referential\n**Evidence**: names its sha\n\n"
+                  for o in (ob1, ob3)))
+    review = _ok("x\n" + json.dumps({"verdict": "rejected",
+        "reason": "both petitions are refuted",
+        "petition_adjudications": [
+            {"obligation": ob1, "adjudication": "REFUTED",
+             "remedy": "Restate the already-true criterion.",
+             "remedy_type": "form"},
+            {"obligation": ob3, "adjudication": "REFUTED", "remedy": REMEDY},
+        ]}))
+    _verified, _payload, contract_errors = sup._review_verdict(
+        review, mid_run=False)
+
+    assert contract_errors == []
+
+    by_id = {t["id"]: t for t in run.read_tasks()["tasks"]}
+    assert by_id["1"]["status"] == "failed"
+    assert by_id["3"]["status"] == "failed"
+    assert by_id["1"]["validationNotes"] == "Restate the already-true criterion."
+
+
+def test_a_form_remedy_on_the_mid_run_episode_also_fails_the_task(tmp_path):
+    """The same rule on the mid-run adjudication episode
+    (`_review_verdict(mid_run=True)`): a contract-valid REFUTED form remedy
+    fails the petitioned task with its remedy and never validates it."""
+    obligation = petitions.task_petition_obligation(
+        {"id": "1", "title": "make the impossible thing work"})
+    sup, run, workspace = _worker_supervisor(
+        tmp_path, _task_record(status="petitioned",
+                               title="make the impossible thing work"))
+    _make_petitions_file(workspace, obligation)
+
+    _verified, _payload, contract_errors = sup._review_verdict(
+        _form_refuting_review(obligation, remedy="Restate it."), mid_run=True)
+
+    assert contract_errors == []
+    task = run.read_tasks()["tasks"][0]
+    assert task["status"] == "failed"
+    assert task["status"] != "validated"
+    assert task["validationNotes"] == "Restate it."
+
+
+def test_confirmed_settles_in_place_while_refuted_fails_in_one_reply(tmp_path):
+    """One contract-valid reply carrying both outcomes: the CONFIRMED task
+    stays `petitioned` (settled, its dependent's edge intact and the
+    dependent schedulable), the REFUTED task goes `failed`; neither moves
+    to `validated` or `skipped`."""
+    ob1 = petitions.task_petition_obligation({"id": "1", "title": "first thing"})
+    ob3 = petitions.task_petition_obligation({"id": "3", "title": "third thing"})
+    t1 = _task_record(status="petitioned", title="first thing")
+    t3 = _task_record(id="3", status="petitioned", title="third thing")
+    dependent = {"id": "2", "title": "needs task 1", "status": "pending",
+                 "successCriteria": "depends on task 1", "dependsOn": ["1"],
+                 "tier": "hard"}
+    sup, run, workspace = _worker_supervisor(
+        tmp_path, t1, extra_tasks=[dependent, t3])
+    reports = workspace / "artifacts" / "reports"
+    reports.mkdir(parents=True)
+    (reports / "v0.16-petitions.md").write_text(
+        "# petitions\n\n"
+        + "".join(f"## Petition: {o}\n\n**Obligation**: {o}\n"
+                  "**Type**: self-referential\n**Evidence**: names its sha\n\n"
+                  for o in (ob1, ob3)))
+    review = _ok("x\n" + json.dumps({"verdict": "rejected",
+        "reason": "one petition holds, one does not",
+        "petition_adjudications": [
+            {"obligation": ob1, "adjudication": "CONFIRMED"},
+            {"obligation": ob3, "adjudication": "REFUTED",
+             "remedy": "Restate it.", "remedy_type": "form"},
+        ]}))
+    _verified, _payload, contract_errors = sup._review_verdict(
+        review, mid_run=False)
+
+    assert contract_errors == []
+    tasks = run.read_tasks()["tasks"]
+    by_id = {t["id"]: t for t in tasks}
+    assert by_id["1"]["status"] == "petitioned"
+    assert by_id["3"]["status"] == "failed"
+    assert by_id["2"]["dependsOn"] == ["1"]
+    settled = sup._settled_petitioned_ids()
+    assert "1" in settled and "3" not in settled
+    picked = scheduler.select_next_task(tasks, settled=settled)
+    assert picked is not None and picked["id"] == "2"

@@ -8,10 +8,12 @@ including every REFUTED entry that predates this task and never supplied
   `petitioned` task moves to `failed`, carrying the remedy on
   `validationNotes` (the retry driver `tests/test_petitioned_plan_
   complete.py` already pins byte-for-byte, untouched by this task).
-- `"form"` instead moves the task to `validated` and records the remedy
-  as a debt item (`state.record_debt_entries`'s own shape, task 006's ONE
-  write path) -- `validationNotes` is never touched, so it drives no
-  retry.
+- `"form"` ALSO moves the task to `failed`, carrying the remedy on
+  `validationNotes`, and additionally records the remedy as a debt item
+  (`state.record_debt_entries`'s own shape, task 006's ONE write path).
+  v0.38 (#306, #320): a REFUTED petition never validates a task and form
+  debt is never validation -- only an operator status ruling moves a
+  `petitioned` task to `validated`.
 
 Two tiers: `engine.petitions.apply_refuted_petition_adjudications` at the
 pure-function level (both branches, plus the `form_debt` output channel),
@@ -26,7 +28,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ralphd.engine import petitions
-from ralphd.engine import state
+from ralphd.engine import scheduler, state
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.state import RunDir, atomic_write_json
@@ -112,7 +114,7 @@ def test_supervisor_write_back_substance_persists_failed_and_no_debt(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_form_remedy_type_validates_the_task_instead_of_failing_it():
+def test_form_remedy_type_fails_the_task_and_never_validates_it():
     tasks_doc = {"version": 1, "tasks": [_task()]}
     form_debt: dict = {}
     changed = petitions.apply_refuted_petition_adjudications(tasks_doc, [
@@ -121,12 +123,12 @@ def test_form_remedy_type_validates_the_task_instead_of_failing_it():
     ], form_debt=form_debt)
 
     task = tasks_doc["tasks"][0]
-    assert changed == []
-    assert task["status"] == "validated"
-    assert "failureKind" not in task
+    assert changed == [TASK_ID]
+    assert task["status"] == "failed"
+    assert task["failureKind"] == state.TASK_FAILURE_VALIDATION_EXHAUSTED
 
 
-def test_form_remedy_type_leaves_validation_notes_untouched():
+def test_form_remedy_type_records_the_remedy_on_validation_notes():
     tasks_doc = {"version": 1, "tasks": [_task()]}
     petitions.apply_refuted_petition_adjudications(tasks_doc, [
         {"obligation": OBLIGATION, "adjudication": "REFUTED",
@@ -134,8 +136,7 @@ def test_form_remedy_type_leaves_validation_notes_untouched():
     ])
 
     task = tasks_doc["tasks"][0]
-    # The whole point: no validationNotes retry driver.
-    assert task["validationNotes"] == ORIGINAL_NOTES
+    assert task["validationNotes"] == REMEDY_TEXT
 
 
 def test_form_remedy_type_is_case_and_whitespace_tolerant():
@@ -143,9 +144,10 @@ def test_form_remedy_type_is_case_and_whitespace_tolerant():
     petitions.apply_refuted_petition_adjudications(tasks_doc, [
         {"obligation": OBLIGATION, "adjudication": "REFUTED",
          "remedy": REMEDY_TEXT, "remedy_type": "  Form  "},
-    ])
+    ], form_debt=(form_debt := {}))
 
-    assert tasks_doc["tasks"][0]["status"] == "validated"
+    assert tasks_doc["tasks"][0]["status"] == "failed"
+    assert list(form_debt) == [TASK_ID]
 
 
 def test_form_remedy_type_populates_form_debt_with_the_remedy():
@@ -164,15 +166,15 @@ def test_form_remedy_type_populates_form_debt_with_the_remedy():
     assert "form" in notes[0]["observed"].lower()
 
 
-def test_form_remedy_type_without_form_debt_sink_still_routes_to_validated():
+def test_form_remedy_type_without_form_debt_sink_still_fails_the_task():
     tasks_doc = {"version": 1, "tasks": [_task()]}
     changed = petitions.apply_refuted_petition_adjudications(tasks_doc, [
         {"obligation": OBLIGATION, "adjudication": "REFUTED",
          "remedy": REMEDY_TEXT, "remedy_type": "form"},
     ])
 
-    assert changed == []
-    assert tasks_doc["tasks"][0]["status"] == "validated"
+    assert changed == [TASK_ID]
+    assert tasks_doc["tasks"][0]["status"] == "failed"
 
 
 def test_form_remedy_leaves_non_matching_tasks_alone():
@@ -187,7 +189,7 @@ def test_form_remedy_leaves_non_matching_tasks_alone():
     assert other["status"] == "petitioned"
 
 
-def test_supervisor_write_back_form_persists_validated_and_records_debt(tmp_path):
+def test_supervisor_write_back_form_persists_failed_and_records_debt(tmp_path):
     sup = _supervisor(tmp_path / "run")
     _write_plan(sup, [_task()])
 
@@ -196,10 +198,10 @@ def test_supervisor_write_back_form_persists_validated_and_records_debt(tmp_path
          "remedy": REMEDY_TEXT, "remedy_type": "form"},
     ])
 
-    assert changed == []
+    assert changed == [TASK_ID]
     on_disk = sup.run.read_tasks()["tasks"][0]
-    assert on_disk["status"] == "validated"
-    assert on_disk["validationNotes"] == ORIGINAL_NOTES
+    assert on_disk["status"] == "failed"
+    assert on_disk["validationNotes"] == REMEDY_TEXT
 
     debt = sup.run.read_debt()
     assert len(debt) == 1
@@ -211,7 +213,7 @@ def test_supervisor_write_back_form_persists_validated_and_records_debt(tmp_path
     assert sup.run.debt_file.exists()
 
 
-def test_form_validated_task_is_not_outstanding_for_completion(tmp_path):
+def test_form_failed_task_is_still_outstanding_for_completion(tmp_path):
     sup = _supervisor(tmp_path / "run")
     _write_plan(sup, [_task()])
     sup._apply_refuted_petition_adjudications([
@@ -220,4 +222,33 @@ def test_form_validated_task_is_not_outstanding_for_completion(tmp_path):
     ])
 
     doc = sup.run.read_tasks()
-    assert sup._outstanding_for_completion(doc) == []
+    assert [t["id"] for t in sup._outstanding_for_completion(doc)] == [TASK_ID]
+
+
+def test_form_remedy_does_not_unblock_a_dependent_of_the_refuted_task(tmp_path):
+    """A REFUTED form remedy fails the task, so a dependent stays blocked:
+    nothing a REFUTED call does makes the dependency satisfied."""
+    sup = _supervisor(tmp_path / "run")
+    _write_plan(sup, [_task(), _task(id_=OTHER_TASK_ID, status="pending",
+                                     dependsOn=[TASK_ID], title="dependent")])
+    sup._apply_refuted_petition_adjudications([
+        {"obligation": OBLIGATION, "adjudication": "REFUTED",
+         "remedy": REMEDY_TEXT, "remedy_type": "form"},
+    ])
+
+    tasks = sup.run.read_tasks()["tasks"]
+    assert tasks[0]["status"] == "failed"
+    assert scheduler.select_next_task(tasks) is None
+
+
+def test_form_remedy_blank_text_still_records_a_remedy_and_fails(tmp_path):
+    tasks_doc = {"version": 1, "tasks": [_task()]}
+    changed = petitions.apply_refuted_petition_adjudications(tasks_doc, [
+        {"obligation": OBLIGATION, "adjudication": "REFUTED",
+         "remedy": "  ", "remedy_type": "form"},
+    ])
+
+    assert changed == [TASK_ID]
+    task = tasks_doc["tasks"][0]
+    assert task["status"] == "failed"
+    assert task["validationNotes"] == "Petition REFUTED with no remedy stated."
