@@ -2024,7 +2024,11 @@ whichever of the five `worker -> review` edges (`verdict_ready`,
 `blocked_with_failures`, `doomed_plan_unverifiable`, `petition_held_no_task_bound`,
 `unsatisfiable_and_nothing_left`) entered it. The final peer verdict gate parks the
 same way (`judge: verdict_gate`) when it would be dispatched on the key its own
-earlier verdict judged; a phase review is never parked.
+earlier verdict judged, whatever the budget now allows: the key is compared
+before the budget, so a cure-round top-up, `ralphctl budget <run> --iterations`
+lowered to the iterations already used, or a passed deadline still parks it
+rather than holding `exhausted` (an abort still ends the run); a phase review is
+never parked.
 The key alone decides: a blocker that went away without changing the key (a
 steering message since consumed, a review-cure or steering origin marker cleared)
 still parks, and the remembered VERIFIED is never taken in place of a review.

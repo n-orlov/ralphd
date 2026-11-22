@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 import pytest
 
@@ -655,3 +656,94 @@ def test_a_gate_judgement_belongs_to_its_approach(tmp_path):
 
     assert sup._verdict_gate_key_unchanged(1, key)
     assert not sup._verdict_gate_key_unchanged(2, key)
+
+
+# ---------------------------------------------------------------------------
+# cure-01-05 retry: the key is compared before the budget -- an exhausted
+# iteration budget or a passed deadline never turns an equal key into an
+# `exhausted` tail
+# ---------------------------------------------------------------------------
+
+def _spend_budget(sup, how: str) -> None:
+    """Leave no budget: the iteration limit lowered to what is used (the
+    `PATCH /config/budget` path, `set_iteration_budget`), lowered below it,
+    or the job deadline passed."""
+    if how == "deadline_passed":
+        sup.deadline = time.monotonic() - 1.0
+    else:
+        sup.iterations_used = max(sup.iterations_used, 1)
+        target = (sup.iterations_used if how == "iterations_to_used"
+                  else sup.iterations_used - 1)
+        sup.set_iteration_budget(target)
+    assert not sup.budget_left()
+
+
+@pytest.mark.parametrize(
+    "how", ["iterations_to_used", "iterations_below_used", "deadline_passed"])
+def test_an_equal_gate_key_parks_with_no_budget_left(tmp_path, how):
+    """The verifier's probe and its siblings: after the gate judged the key
+    and its park was released with nothing changed, the budget is spent
+    (iteration limit lowered to the iterations used, lowered below them, or
+    the deadline passed). Re-entering the gate on the same HEAD and task
+    triples parks `verified_unchanged` -- no gate dispatch, and no
+    `exhausted` hold."""
+    sup, runner = edges._gate_supervisor(tmp_path)
+    _judge_then_release(sup)
+    _spend_budget(sup, how)
+
+    out = edges._bounded(sup._step_verdict_gate())
+
+    assert out == ("advance", "paused", "verified_unchanged")
+    assert runner.calls["verdict_gate"] == 1, "the gate hat was dispatched"
+    assert not sup._budget_exhausted_tail
+    status = sup.run.read_status()
+    assert status["state"] == "awaiting_input"
+    assert status["pauseReason"] == "verified_unchanged"
+    assert status.get("exhaustedBudget") is None
+    assert status["inputQuestion"]["judge"] == "verdict_gate"
+
+
+def test_an_approved_gate_key_parks_after_the_deadline_passed(tmp_path):
+    """The same rule for a key an APPROVING verdict judged: a passed deadline
+    is not a change of the judged state."""
+    sup, runner = edges._supervisor(
+        tmp_path, [edges._task("001", "completed")],
+        {"verdict_gate": [edges._reply(verdict="verified")]},
+        peer_verdict_gate=True)
+    assert edges._bounded(sup._step_verdict_gate()) == ("done", "succeeded")
+    _spend_budget(sup, "deadline_passed")
+
+    out = edges._bounded(sup._step_verdict_gate())
+
+    assert out == ("advance", "paused", "verified_unchanged")
+    assert runner.calls["verdict_gate"] == 1
+
+
+def test_a_changed_gate_key_with_no_budget_left_takes_the_budget_tail(
+        tmp_path):
+    """The budget still governs a DISPATCH: a changed key with no budget left
+    is not parked and not dispatched; it takes the out-of-budget tail."""
+    sup, runner = edges._gate_supervisor(tmp_path)
+    _judge_then_release(sup)
+    sup._workspace_head_sha = lambda: "b" * 40
+    _spend_budget(sup, "iterations_to_used")
+
+    out = edges._bounded(sup._step_verdict_gate())
+
+    assert out == ("tail",)
+    assert sup._budget_exhausted_tail
+    assert runner.calls["verdict_gate"] == 1
+
+
+def test_an_operator_abort_on_an_equal_gate_key_still_ends_the_run(tmp_path):
+    """An abort is not a budget change: on an equal key the gate does not
+    park over it, it takes the tail the abort ends the run through."""
+    sup, runner = edges._gate_supervisor(tmp_path)
+    _judge_then_release(sup)
+    sup._abort_reason = "operator abort"
+
+    out = edges._bounded(sup._step_verdict_gate())
+
+    assert out == ("tail",)
+    assert runner.calls["verdict_gate"] == 1
+    assert sup.run.read_status().get("pauseReason") != "verified_unchanged"

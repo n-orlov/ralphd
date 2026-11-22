@@ -9860,18 +9860,25 @@ class LoopSupervisor:
         with no bespoke re-invocation mechanism needed.
         """
         approach = self._approach
+        # v0.38 B.3: the final peer gate shares the review state key with the
+        # final review. A dispatch on the key an earlier verdict of its own
+        # already judged is not made: the run parks `verified_unchanged`.
+        # Compared BEFORE the budget: the park dispatches nothing and charges
+        # nothing, and the key alone decides, so neither an iteration budget
+        # lowered to what is already used nor a passed deadline turns an
+        # equal key into an `exhausted` tail. An operator abort is not a
+        # budget change: it still ends the run through the tail below.
+        gate_key = self._review_state_key()
+        if (self._abort_reason is None
+                and self._verdict_gate_key_unchanged(approach, gate_key)):
+            self.run.emit("phase", phase="verdict_gate", approach=approach)
+            return self._park_for_verified_unchanged(
+                approach, gate_key, judge="verdict_gate")
         if not self.budget_left():
             # Task 011 (requirement C.1, #169): plain out-of-budget.
             self._budget_exhausted_tail = True
             return ("tail",)
         self.run.emit("phase", phase="verdict_gate", approach=approach)
-        # v0.38 B.3: the final peer gate shares the review state key with the
-        # final review. A dispatch on the key an earlier verdict of its own
-        # already judged is not made: the run parks `verified_unchanged`.
-        gate_key = self._review_state_key()
-        if self._verdict_gate_key_unchanged(approach, gate_key):
-            return self._park_for_verified_unchanged(
-                approach, gate_key, judge="verdict_gate")
         result = await self._dispatch_verdict_gate()
         while True:
             approved, payload, no_verdict = await self._verdict_gate_verdict(
