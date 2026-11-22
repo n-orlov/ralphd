@@ -11189,15 +11189,27 @@ class LoopSupervisor:
                 # `verified_unchanged` without dispatching the review hat.
                 # `petition_held_this_pass` also exempts the pass from the
                 # stagnation diff formula.
+                # The phase gate counts as a dependency (v0.37 B.1): a
+                # pending task of a later phase waits on the open phase's
+                # held tasks, so it is held too, edge or no edge. The hold
+                # needs at least one unsettled petitioned root; a remainder
+                # held only by dead roots is the doomed route's business.
                 blocked_incl_petitioned = state.task_blocked_by_chain(
                     tasks_before.get("tasks", []),
-                    settled=settled_petitioned)
+                    settled=settled_petitioned,
+                    phases=tasks_before.get("phases"))
                 actionable_ids = {
                     str(t["id"]) for t in tasks_before.get("tasks", [])
                     if isinstance(t, dict) and t.get("id") not in (None, "")
                     and task_is_actionable(t)}
                 if actionable_ids and actionable_ids <= set(
-                        blocked_incl_petitioned.keys()):
+                        blocked_incl_petitioned.keys()) and (
+                        self._unsettled_petitioned_among(
+                            tasks_before, sorted({
+                                r for roots in
+                                blocked_incl_petitioned.values()
+                                for r in roots}),
+                            settled_petitioned)):
                     petition_held_this_pass = True
                     self.run.emit(
                         "log", level="info",
@@ -11242,7 +11254,8 @@ class LoopSupervisor:
                         after_doc = self.run.read_tasks()
                         after_blocked = state.task_blocked_by_chain(
                             after_doc.get("tasks", []),
-                            settled=self._settled_petitioned_ids(after_doc))
+                            settled=self._settled_petitioned_ids(after_doc),
+                            phases=after_doc.get("phases"))
                         after_actionable = {
                             str(t["id"]) for t in after_doc.get("tasks", [])
                             if isinstance(t, dict)
@@ -15490,7 +15503,8 @@ class LoopSupervisor:
         doc = self.run.read_tasks()
         tasks = doc.get("tasks") or []
         blocked = state.task_blocked_by_chain(
-            tasks, settled=self._settled_petitioned_ids(doc))
+            tasks, settled=self._settled_petitioned_ids(doc),
+            phases=doc.get("phases"))
         held = {str(t.get("id")): t for t in
                 (self._steering_origin_outstanding()
                  + self._review_cure_origin_outstanding())}

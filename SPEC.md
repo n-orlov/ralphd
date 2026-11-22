@@ -2118,7 +2118,8 @@ and `inputQuestion` with `kind: petition_hold`, `trigger: petition_hold`,
 `expiresAt: null` and `onTimeout: never` when the prompt adjudication episode
 left a held petitioned task unsettled, or found no open petition to adjudicate;
 the hold covers every actionable task that waits on an unsettled `petitioned`
-task directly or through a chain of dependents (`state.task_blocked_by_chain`).
+task directly or through a chain of dependents (`state.task_blocked_by_chain`),
+a pending task of a phase behind the open phase's closed gate included.
 `ralphctl answer <run>` releases it once an `amend` waiver or status ruling is
 recorded.
 
@@ -3287,7 +3288,15 @@ petition is not on file) cannot be settled by the judge either, so it parks
 dispatched and the final review is not reached. The engine reads the hold through
 `state.task_blocked_by_chain`, which lists for each held task every unsettled
 `petitioned` or dead root it reaches across all of its `dependsOn` branches (the
-display surfaces keep the one-hop `taskBlockedBy`). The one exception is a hold on
+display surfaces keep the one-hop `taskBlockedBy`). The open phase's gate counts
+as a dependency (v0.37 B.1): a `pending` task of a later phase is never scheduled
+while that gate is closed, and the gate cannot pass while a task of the open
+phase is held, so the later-phase task is held by the same roots with no
+`dependsOn` edge naming them, and is listed among their `dependents`. A
+later-phase task already claimed (`in-progress`, `validation-failed`) is not
+gated, and with no held open-phase task the gate adds nobody. The hold needs at
+least one unsettled `petitioned` root: a remainder held only by dead roots is
+not a petition hold and never parks `petition_hold`. The one exception is a hold on
 a state a deferred VERIFIED of this approach already judged (equal review state
 key, B.2): the worker spends no no-task iteration and goes straight to `review`
 (guard `petition_held_no_task_bound`), which parks `verified_unchanged` without

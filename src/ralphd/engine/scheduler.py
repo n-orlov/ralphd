@@ -54,24 +54,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from .state import earliest_open_phase_id, task_dependency_satisfied
+from .state import later_phase_ids, task_dependency_satisfied
 
 
 def _later_phase_ids(phases: list | None) -> set:
-    """PRD v0.37 requirement B.1: the ids of the phases AFTER the open phase
-    (the earliest whose gate is not `passed`); a task in one of them is never
-    scheduled. Empty for an absent/empty `phases` (no gating), and for a plan
-    whose open phase is the last one. A task of a phase BEFORE the open one
-    (a passed phase an `invalidates` walk re-opened a task of, B.2) is not in
-    this set, so it is schedulable at once as part of the open phase's work."""
-    if not isinstance(phases, list) or not phases:
-        return set()
-    ids = [p["id"] for p in phases
-           if isinstance(p, dict) and isinstance(p.get("id"), str)]
-    open_id = earliest_open_phase_id({"phases": phases})
-    if open_id not in ids:
-        return set()
-    return set(ids[ids.index(open_id) + 1:])
+    """PRD v0.37 requirement B.1: `state.later_phase_ids` -- one rule shared
+    with the engine's petition-hold detection (`state.task_blocked_by_chain`
+    reads the same set to see which tasks wait on the open phase's gate)."""
+    return later_phase_ids(phases)
 
 
 def pending_candidates(tasks: list, phases: list | None = None,

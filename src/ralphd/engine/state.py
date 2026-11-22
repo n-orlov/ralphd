@@ -3450,6 +3450,22 @@ def earliest_open_phase_id(data: dict) -> str | None:
     return last_phase_id(data)
 
 
+def later_phase_ids(phases: list | None) -> set:
+    """PRD v0.37 requirement B.1: the ids of the phases AFTER the open phase
+    (the earliest whose gate is not `passed`); a `pending` task in one of
+    them is never scheduled. Empty for an absent/empty `phases` (no gating)
+    and for a plan whose open phase is the last one. A phase BEFORE the open
+    one (re-opened by an `invalidates` walk, B.2) is not in this set."""
+    if not isinstance(phases, list) or not phases:
+        return set()
+    ids = [p["id"] for p in phases
+           if isinstance(p, dict) and isinstance(p.get("id"), str)]
+    open_id = earliest_open_phase_id({"phases": phases})
+    if open_id not in ids:
+        return set()
+    return set(ids[ids.index(open_id) + 1:])
+
+
 def plan_phase_status(data: dict) -> dict | None:
     """PRD v0.37 F.2: the `planPhase` object `status.json`, `GET /status` and
     `ralphctl status` carry -- `{id, title, index, count, gate}` for the
@@ -7443,7 +7459,8 @@ def task_blocked_by(tasks: list, *,
     return out
 
 
-def task_blocked_by_chain(tasks: list, *, settled=()) -> dict[str, list[str]]:
+def task_blocked_by_chain(tasks: list, *, settled=(),
+                          phases: list | None = None) -> dict[str, list[str]]:
     """`task_blocked_by(include_petitioned=True)` extended through dependency
     CHAINS (v0.38 A.4, #306): a task that depends, however many hops away,
     on an unsettled `petitioned` task or a dead (`failed`/`skipped`) one is
@@ -7459,6 +7476,15 @@ def task_blocked_by_chain(tasks: list, *, settled=()) -> dict[str, list[str]]:
     traversed further. A finished task (a sink), a held petitioned task and
     a `failed`/`skipped` task are never keys. The display surfaces keep the
     one-hop `task_blocked_by`; the engine's hold detection reads this one.
+
+    `phases` (the tasks.json `phases` list, v0.37 B.1) adds the PHASE GATE
+    as a dependency: a `pending` task of a phase later than the open one is
+    never scheduled until the open phase's gate passes, and that gate cannot
+    pass while a task of the open phase is itself held (a held task is never
+    terminal, so the phase is never due). Such a later-phase task therefore
+    lists, besides its own roots, the roots of every held open-phase task --
+    with no `dependsOn` edge naming them. With no held open-phase task, or
+    no `phases`, nothing is added.
     """
     depends_on: dict[str, list[str]] = {}
     status_by_id: dict[str, str] = {}
@@ -7492,6 +7518,20 @@ def task_blocked_by_chain(tasks: list, *, settled=()) -> dict[str, list[str]]:
             if found and found != reach.get(tid):
                 reach[tid] = found
                 changed = True
+    later = later_phase_ids(phases)
+    if later:
+        open_id = earliest_open_phase_id({"phases": phases})
+        phase_by_id = {str(t["id"]): t.get("phase") for t in tasks
+                       if isinstance(t, dict) and t.get("id") not in (None, "")}
+        gate_roots: set[str] = set()
+        for tid in order:
+            if phase_by_id.get(tid) == open_id:
+                gate_roots |= reach.get(tid, set())
+        if gate_roots:
+            for tid in order:
+                if (status_by_id[tid] == "pending"
+                        and phase_by_id.get(tid) in later):
+                    reach[tid] = reach.get(tid, set()) | gate_roots
     return {tid: sorted(reach[tid]) for tid in order if tid in reach}
 
 

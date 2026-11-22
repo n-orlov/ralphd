@@ -571,7 +571,10 @@ through dependency chains: a task that waits on a task that waits on a
 `petitioned` one is held too (the engine reads the hold through
 `state.task_blocked_by_chain`, which names every petitioned or dead root a task
 reaches on every branch, so a task waiting on two petitioned tasks is a dependent
-of both; the display surfaces keep the one-hop map). A hold
+of both; the display surfaces keep the one-hop map). The open phase's closed
+gate counts as a dependency: a pending task of a later phase cannot run until
+that gate passes, which no held open-phase task allows, so it is held by the
+same roots without a `dependsOn` edge. A hold
 with no open petition to adjudicate (none on file) cannot be settled by the judge
 either, so it parks the same way, never through a no-task worker iteration or the
 final review; the one exception is a hold on a state a deferred VERIFIED already

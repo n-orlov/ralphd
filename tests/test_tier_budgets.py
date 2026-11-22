@@ -1057,8 +1057,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # root on every branch: two-root fan-in, deep two-branch joins, a join of
     # a petitioned and a dead branch, a cycle, the SPEC guard), in both
     # tiers -> fast 9298/576, smoke 7517/449.
-    "fast": {"tests": 9298, "modules": 576},
-    "smoke": {"tests": 7517, "modules": 449},
+    # v0.38 task cure-01-01-4 second retry: +8 tests / +1 module (tests/
+    # test_petition_hold_phase_gate.py: a hold behind a closed phase gate),
+    # in both tiers -> fast 9306/577, smoke 7525/450.
+    "fast": {"tests": 9306, "modules": 577},
+    "smoke": {"tests": 7525, "modules": 450},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
