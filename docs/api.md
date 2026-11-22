@@ -878,15 +878,15 @@ then follows. When the engine process's job ends in the `exhausted` hold (resuma
 | `reflect_skipped` | the post-terminal `reflect` phase produced no verdict because a signal was already taking the engine down: `attempted` (false = never started, true = cut short mid-attempt), `signal`, `reason`. No `FAILED.md` is written on this path — see status.json's `reflect` |
 | `reflect_tombstone_cleared` | a successful `reflect` attempt removed a stale `reflection/FAILED.md` written by an earlier one: `path`. The alias `reflect-failed` disappears from `artifacts ls` with the file |
 | `task.undeferred` | an operator's `POST /tasks/{task_id}/undefer` was applied on the loop: `taskId`, `until` and `reason` (the cleared deferral), `by: "operator"` |
-| `input.parked` | the run entered `awaiting_input` on a findings question (v0.36 requirement C.1/H.2): the `inputQuestion` fields `kind`, `trigger`, `judge`, `findings`, `cureRoundsUsed`, `cureRoundsAllowed`, `approach`, `maxApproaches`, `expiresAt`, `onTimeout` (and `planPhase` on a park a plan phase's gate raised, PRD v0.37 D.3). Emitted once per park, after `status.json` already reads `state: "awaiting_input"` and after the `operator_escalation` event carrying the full text. With `operator_input_needed_pause: false` the run never leaves `running`: the event carries `timeoutAtPark: true` and an `expiresAt` equal to the park time |
+| `input.parked` | the run entered `awaiting_input` on a question (v0.36 requirement C.1/H.2). On a findings question: the `inputQuestion` fields `kind`, `trigger`, `judge`, `findings`, `cureRoundsUsed`, `cureRoundsAllowed`, `approach`, `maxApproaches`, `expiresAt`, `onTimeout` (and `planPhase` on a park a plan phase's gate raised, PRD v0.37 D.3), emitted once per park after `status.json` already reads `state: "awaiting_input"` and after the `operator_escalation` event carrying the full text; with `operator_input_needed_pause: false` the run never leaves `running`: the event carries `timeoutAtPark: true` and an `expiresAt` equal to the park time. On a `petition_hold` park (v0.38 A.5) and a `verified_unchanged` park (B.2/B.3) the payload is the whole `inputQuestion` except `parkedAt` (the event's own `ts`): the findings fields with `findings: []`, `judge` `null` (`petition_hold`) or `"review"`/`"verdict_gate"` (`verified_unchanged`), `expiresAt: null`, `onTimeout: "never"`, plus `heldTasks` and `text` (and `reviewStateKey` on `verified_unchanged`); never `planPhase` or `timeoutAtPark`. These two parks emit NO `operator_escalation` event: the order is the `status.json` write, `run.paused` (`reason` is the park kind), `input.parked`, a `log` event, then the park's one notification attempt (a `notification.sent`/`notification.failed` event when a notifier URL is configured) |
 | `input.timed_out` | the input timeout fired on a park, or `operator_input_needed_pause: false` made it fire at the moment of the park (v0.36 requirement E.3): `outcome` (`"cure_now"` \| `"next_approach"` \| `"exhausted_approaches"`), `judge`, `trigger`, `approach`, `maxApproaches`, `expiresAt`, `timeoutMin` (and `planPhase` on a phase gate's park). The engine then acts as if the operator had answered, accepting every finding and waiving none. A `secret` park never emits it |
-| `input.answered` | `LoopSupervisor.answer` accepted an answer to an `awaiting_input` findings question (v0.36 requirement C; `POST /answer`, `ralphctl answer` or the hub panel): `outcome` (`"verified"` \| `"cure"` \| `"next_approach"`), `judge`, `approach`, `waived` / `accepted` (finding ids), `cureRounds`, `approachesGranted`, `waiverFiles`, `rulingFile` (and `planPhase` when the question was a phase gate's). Emitted once, after the waivers and the note's ruling were written and `status.json`'s `inputAnswer` was persisted, just before the park is released |
+| `input.answered` | `LoopSupervisor.answer` accepted an answer to an `awaiting_input` question (v0.36 requirement C; `POST /answer`, `ralphctl answer` or the hub panel). On a findings question: `outcome` (`"verified"` \| `"cure"` \| `"next_approach"`), `judge`, `approach`, `waived` / `accepted` (finding ids), `cureRounds`, `approachesGranted`, `waiverFiles`, `rulingFile` (and `planPhase` when the question was a phase gate's), emitted once after the waivers and the note's ruling were written and `status.json`'s `inputAnswer` was persisted, just before the park is released. On a `petition_hold` park: `outcome: "petition_hold_released"`, `kind: "petition_hold"`, `approach`, `heldTaskIds`; on a `verified_unchanged` park: `outcome: "verified_unchanged_released"`, `kind: "verified_unchanged"`, `approach` -- and nothing else: they write no waiver, no ruling and no `inputAnswer`, so the event is emitted first, then `resume()` clears the park (`run.unpaused`) and the loop re-enters `worker` / `review` / `verdict_gate`. A `secret` park's own payload is `outcome: "secret_handled"`, `kind: "secret"`, `approach`, `baseSha` |
 | `run.paused` | optional; the run is held: `reason` is `operator` for a `POST /pause` that takes effect, or the engine's `pauseReason` for an `awaiting_input` park persisted to `status.json` |
 | `run.unpaused` | optional; the run's pause ended: `pausedS`, the seconds it was held (from the first `run.paused` of the stretch) |
 | `deadline_extended` | the job deadline moved out after an infra wait, an operator pause OR a rate-limit wait: `waitedS`, new `deadlineAt`, `reason` (`"infra wait"` — also phase/attempt/`infraWaitTotalS` — or `"operator pause"` — also `pausedTotalS` — or `"rate limit wait"` — also phase/`rateLimitWaitTotalS`) |
 | `budget_changed` | the iteration budget was changed in flight via `PATCH /config/budget`: `field: "iterations"` (also `"maxApproaches"`/`"iterationTimeoutS"`/`"jobDeadlineEpochS"`/`"curePassCeiling"`/`"inputTimeoutMin"`/`"rateLimitMaxWaitS"` — task 003/#94 (a) and task 010/v0.27 requirement C.3 widen the knob, never the event's own shape), `previous`, the new value under the field's own key (`iterations`/`maxApproaches`/`iterationTimeoutS`/`jobDeadlineEpochS`/`curePassCeiling`/`rateLimitMaxWaitS`), `delta`, `iterationsUsed` (`iterations` field only), `source: "api"` |
 | `notification.sent` / `notification.failed` | the engine-owned `notify` hat tool (or the engine's own operator-escalation notifier) POSTed to the configured notifier URL: `endpoint`, `textSha256`, `httpStatus`. A successful send (2xx) emits `notification.sent`; an unconfigured URL, a connection error, or a non-2xx status all emit the distinct `notification.failed` instead -- never `notification.sent` for a send that did not actually succeed (requirement B.1, #197). v0.23 requirement A.7 (#224, task 017): a failing POST is retried exactly ONCE, immediately, with no backoff, before either event is recorded -- `httpStatus` on the event is always the LAST attempt's own status, and exactly one of the two events is ever recorded per call (two failures in a row still record one `notification.failed`, not two). Task cure-01-01-3 (v0.26 requirement A.4's own DoD 1): this per-call retry-once is the one, non-escalation caller's behaviour; an operator-escalation delivery attempt (below) disables it (`max_attempts=1`) so its own outer retries are the ONLY retrying that happens, and each escalation attempt still emits exactly one of these two events, one real POST per event |
-| `notification.escalation_undelivered` | v0.26 requirement A.4 (task 004, #269), tightened by task cure-01-01-3 (the same requirement's DoD 1, "at most 3 escalation delivery attempts"): an operator-escalation notification (`_park_for_input`/`_park_for_commit_secret`) never reached the notifier after up to 3 delivery attempts with bounded backoff between them (60s, then 120s -- 180s total) -- and those 3 attempts are also the TOTAL count of real notifier HTTP POSTs made, never 3 attempts each silently paying for a second internal retry: `reason` (the escalating pause's own `operator_escalation.reason` string -- also its persisted `pauseReason`). Each of the up-to-3 attempts still records its own honest `notification.sent`/`notification.failed` event above, unchanged; this is the ADDITIONAL, distinct event marking that the escalation itself was never delivered at all -- never emitted when any attempt succeeds |
+| `notification.escalation_undelivered` | v0.26 requirement A.4 (task 004, #269), tightened by task cure-01-01-3 (the same requirement's DoD 1, "at most 3 escalation delivery attempts"): an operator-escalation notification (`_park_for_input`/`_park_for_commit_secret`) never reached the notifier after up to 3 delivery attempts with bounded backoff between them (60s, then 120s -- 180s total) -- and those 3 attempts are also the TOTAL count of real notifier HTTP POSTs made, never 3 attempts each silently paying for a second internal retry: `reason` (the escalating pause's own `operator_escalation.reason` string -- also its persisted `pauseReason`). Each of the up-to-3 attempts still records its own honest `notification.sent`/`notification.failed` event above, unchanged; this is the ADDITIONAL, distinct event marking that the escalation itself was never delivered at all -- never emitted when any attempt succeeds. The `petition_hold` and `verified_unchanged` parks are not escalations and never emit it: each makes one best-effort notification attempt, with no retry |
 | `task.criteria_repaired` | one of the two lexical plan-ingestion lints had already computed a lossless, lint-clean rewrite of a criteria and the engine applied it instead of refusing the whole proposal and re-asking the hat (#209): `taskId`, `oldCriteria`, `newCriteria`, `lints` (the lint names applied), `source` (`"plan-ingestion"`, which also carries `hat`/`attempt`, or `"cure-insertion"` when the text was a curable finding's `cured_when` becoming a cure task's criteria) |
 | `petition.remedy_task_inserted` | a REFUTED petition adjudication whose remedy is WORK rather than advice (`remedy_type` `substance`) became one cure task, on the same path a curable rejection's cure task takes (#209): `approach`, `obligation`, `taskId`, `finding` (the synthesized blocking-finding record). Emitted from both the mid-run adjudication episode AND an ordinary run-ending review pass alike (v0.23 requirement D.2, task 019, #220), and it spends no cure-pass budget |
 | `task.dependency_repointed` | an existing task's whole `dependsOn` list was replaced (#209, task 003, task 004): `taskId`, `removed`, `added`, `dependsOn` (the new full list), `reason`, `source` (one of `"worker-repoint"` -- a worker's optional `proposed_task_updates` report re-pointed a task the harness itself derives as blocked off a `failed`/`skipped` ancestor -- or `"cure-insertion"` -- either the engine's own `state._repoint_dependents_onto_cure_task` re-pointing a dependent of a `failed` task onto the cure task inserted for it, or `petitions.apply_confirmed_petition_adjudications` adding a CONFIRMED entry's `replacement_task_id` to each dependent of the `petitioned` task it settles, which keeps its status and its edge, so `removed` is empty). The accepted-write sibling of `task.dependency_edge_rejected`; for `"worker-repoint"` the same `reason` is also appended to that task's own `notes`, so the re-point is legible from the task record as well as from the event stream |
@@ -1030,25 +1030,41 @@ worker continues. The response is `{"outcome": "secret_handled", "kind":
 
 A `petition_hold` question (`inputQuestion.kind: "petition_hold"`, v0.38 A.5: the
 one prompt adjudication of a held petitioned task found no adjudication or left
-the hold unchanged) takes an empty body: `409` when any key is sent, otherwise the
-park is released (`input.answered`, `outcome: "petition_hold_released"`,
-`kind: "petition_hold"`, `approach`, `heldTaskIds`) and the worker re-reads the
-plan. The operator's answer is the host-side `ralphctl amend` ruling recorded
-beforehand (`inputQuestion.text` names both forms); `inputQuestion.heldTasks`
-lists `taskId`, `title`, `petition` and `dependents` per held task, and the
-question never expires (`expiresAt: null`, `onTimeout: "never"`).
+the hold unchanged) and a `verified_unchanged` question
+(`inputQuestion.kind: "verified_unchanged"`, v0.38 B.2/B.3: the final review, or
+the final peer verdict gate, would be dispatched on the review state key it
+already judged) share one answer contract. Their answer is the host-side
+`ralphctl amend` ruling (or, for `verified_unchanged`, any other change such as a
+commit) made beforehand; the `POST /answer` that follows only releases the park.
 
-A `verified_unchanged` question (`inputQuestion.kind: "verified_unchanged"`, v0.38
-B.2: the final review would be dispatched on the review state key a deferred
-VERIFIED already judged) takes an empty body too: `409` when any key is sent,
-otherwise the park is released (`input.answered`, `outcome:
-"verified_unchanged_released"`, `kind: "verified_unchanged"`, `approach`) and the
-run re-enters `review` (`verdict_gate` when `inputQuestion.judge` is
-`verdict_gate`: the final peer gate parks the same way on a key its own earlier
-verdict judged, v0.38 B.3), which compares the key again, so a release with nothing
-changed parks again without a dispatch. `inputQuestion.heldTasks` lists
-`taskId`, `title`, `status` and `blockedBy` per non-terminal task; the question
-never expires (`expiresAt: null`, `onTimeout: "never"`).
+- **Values that refuse the release** (`409`, nothing written, the run stays
+  parked): `waive`, `accept`, `cureRounds` or `approaches` with any value other
+  than `null` or `[]` -- including `0`, so `{"cureRounds": 0}` and
+  `{"approaches": 0}` are refused like `{"waive": ["F1"]}` -- and
+  `secretHandled: true`. The message names what applies: the `amend` ruling
+  (or the change) and then a bare `answer`.
+- **Fields ignored on these two parks** (the release still happens, `200`):
+  `note` and `name` -- a note is NOT recorded as a ruling here (no
+  `<run-root>/rulings/` file is written; use `ralphctl amend` beforehand or
+  `POST /rule`) --, any key the route does not know, `secretHandled: false` or
+  absent, and a `null` or `[]` value of any refusing key. So `{}` and a body of
+  only `{"note": "..."}` answer the park alike.
+- **The successful response** is `200` with exactly the `input.answered` payload.
+  `petition_hold`: `{"outcome": "petition_hold_released", "kind":
+  "petition_hold", "approach", "heldTaskIds"}` (`approach` is the question's;
+  `heldTaskIds` is each held task's `taskId`) and the worker re-reads the plan.
+  `verified_unchanged`: `{"outcome": "verified_unchanged_released", "kind":
+  "verified_unchanged", "approach"}` and the run re-enters `review`
+  (`verdict_gate` when `inputQuestion.judge` is `verdict_gate`), which compares
+  the key again, so a release with nothing changed parks again without a
+  dispatch. Neither response has `judge`, `waived`, `accepted`, `cureRounds`,
+  `approachesGranted`, `waiverFiles` or `rulingFile`: no waiver, ruling or
+  cure-round change is made, and `status.json` gets no `inputAnswer`.
+- `inputQuestion.heldTasks` lists `taskId`, `title`, `petition` and `dependents`
+  per held task on a `petition_hold` question (`inputQuestion.text` names both
+  `amend` forms), and `taskId`, `title`, `status` and `blockedBy` per
+  non-terminal task on a `verified_unchanged` one. Neither question expires
+  (`expiresAt: null`, `onTimeout: "never"`).
 
 - `waive` / `accept` name findings of `inputQuestion.findings` by id. Each
   waived finding is written to the waiver store (`<run-root>/waivers/NNN.json`:
@@ -1259,14 +1275,22 @@ ruling alone answers nothing and a bare unpause is refused. The full
 `operator_escalation.escalation` text follows the same rule: for the
 finding-bearing reasons it gives the `ralphctl answer` command. The
 commit-secret park's own answer command names only `ralphctl answer <run>
---secret-handled` and says a ruling does not release it. The `petition_hold`
-and `verified_unchanged` parks (v0.38 A.5, B.2) post no digest: their
-notification is the run id and the question's own `text`, which names
-`ralphctl amend <run> ...` and then `ralphctl answer <run>`. Delivery is retried up to 3 times
-with bounded backoff and an exhausted retry records
-`notification.escalation_undelivered` (below). The full text still lands
-on the `operator_escalation` event's own `escalation` field -- except for
-the commit-secret park, whose record is its `commit_secret_scan` event.
+--secret-handled` and says a ruling does not release it. The retried delivery described next belongs to the
+operator-escalation path (`_park_for_input` and `_park_for_commit_secret`): it
+is retried up to 3 times with bounded backoff and an exhausted retry records
+`notification.escalation_undelivered` (below). The full text lands on the
+`operator_escalation` event's own `escalation` field -- except for the
+commit-secret park, whose record is its `commit_secret_scan` event. The
+`petition_hold` and `verified_unchanged` parks (v0.38 A.5, B.2/B.3) are not on
+that path: they emit no `operator_escalation` event and post no digest. Each
+sends ONE best-effort notification -- the text `run <run> is parked in
+awaiting_input` and the question's own `text`, which names `ralphctl amend <run>
+...` and then `ralphctl answer <run>` -- with a single POST attempt
+(`max_attempts=1`), no backoff and no retry. A notifier that fails or raises
+leaves the park exactly as it was; a configured notifier's failure is only a
+`notification.failed` event, and `notification.escalation_undelivered` is never
+emitted for these parks (so the hub's undelivered marker never shows for them).
+Neither park expires, so neither has a reminder or a timeout message.
 SPEC.md §4.6.
 
 ### `POST /retry`

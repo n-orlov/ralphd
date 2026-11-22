@@ -2010,7 +2010,7 @@ validated|skipped <reason>`. `amend` writes the ruling file on the host and neve
 it (its only engine call is the read-only legality check a `--status` ruling
 makes while the record is unreadable, below), so record it first and then run `ralphctl answer <run>` with no options: the park is
 released and the worker re-reads the plan (a hold the ruling did not move parks
-again). Any option on that `answer`, and a bare `ralphctl unpause`, is refused.
+again). On `answer`, `--waive`, `--accept`, `--cure-rounds` (`0` included), `--approaches` and `--secret-handled` are refused (exit `5`, nothing written); `--note-file` and `--name` are accepted and ignored -- the note is NOT recorded as a ruling on this park, so record rulings with `amend`. A bare `ralphctl unpause` is refused.
 
 A **`verified_unchanged` question** (`inputQuestion.kind: verified_unchanged`,
 `trigger: verified_unchanged`; v0.38 B.2) is what the final review parks the run
@@ -2025,8 +2025,7 @@ It never expires, and `inputQuestion.heldTasks` and `inputQuestion.text` name th
 non-terminal tasks that held that VERIFIED and what blocks each. Change something
 first (an `amend` ruling on a blocking task, or a commit), then run `ralphctl
 answer <run>` with no options: a changed key dispatches the review, an unchanged
-one parks again. Any option on that `answer`, and a bare `ralphctl unpause`, is
-refused.
+one parks again. On `answer`, `--waive`, `--accept`, `--cure-rounds` (`0` included), `--approaches` and `--secret-handled` are refused (exit `5`, nothing written); `--note-file` and `--name` are accepted and ignored -- the note is NOT recorded as a ruling on this park. A bare `ralphctl unpause` is refused.
 
 Posts through the run's live API (`POST /answer`, docs/api.md), the same route
 the hub panel's `POST /api/runs/<id>/answer` proxies to; all three reach the one

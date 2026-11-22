@@ -1043,8 +1043,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.38 task 010: +10 tests / +2 modules (tests/test_no_petition_run_
     # unchanged.py, tests/test_compat_037_run_dirs.py), in both tiers ->
     # fast 9213/574, smoke 7432/447.
-    "fast": {"tests": 9213, "modules": 574},
-    "smoke": {"tests": 7432, "modules": 447},
+    # v0.38 task cure-01-01-3: +62 tests / +1 module (tests/test_non_
+    # findings_park_contracts.py: the petition_hold and verified_unchanged
+    # answer, event and notification contracts), in both tiers -> fast
+    # 9275/575, smoke 7494/448.
+    "fast": {"tests": 9275, "modules": 575},
+    "smoke": {"tests": 7494, "modules": 448},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
