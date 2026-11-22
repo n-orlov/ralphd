@@ -8632,7 +8632,8 @@ class LoopSupervisor:
                                 head_sha: str | None) -> None:
         """v0.36 F.6/C.5 (it replaces the 0.35 `operator_input_needed`
         pause): a secret found in a commit parks the run in `awaiting_input`
-        with `inputQuestion.kind: secret` -- the only non-findings park. The
+        with `inputQuestion.kind: secret` -- one of the two non-findings parks
+        (the other is the v0.38 `petition_hold` park). The
         question names the hit's sha, part and variable (never the value) and
         the offending commit range (`baseSha..headSha`) the answer re-scans.
         It never expires: `expiresAt` is `null` whatever `input_timeout_min`
