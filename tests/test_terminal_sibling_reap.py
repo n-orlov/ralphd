@@ -41,6 +41,11 @@ from ralphd.engine import findings
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir
 
+
+def _bounded(coro, timeout: float = 30.0):
+    return asyncio.run(asyncio.wait_for(coro, timeout))
+
+
 __all__ = ["ctl"]
 
 RUN = "v08-finishing"  # the run id `_supervisor` gives its config
@@ -126,7 +131,7 @@ def _failed_run(tmp_path, fake):
     RunDir(root=root).update_status(state="starting")
     sup = _supervisor(root, [_plan, _finish_task, _review_rejects_incurable])
     sup.docker_runner = fake
-    final = asyncio.run(sup.run_job())
+    final = _bounded(sup.run_job())
     return sup, final
 
 
@@ -164,7 +169,7 @@ def test_reap_is_after_the_terminal_state_is_on_disk(tmp_path, docker_access):
     RunDir(root=root).update_status(state="starting")
     sup = _supervisor(root, [_plan, _finish_task, _review_rejects_incurable])
     sup.docker_runner = spying
-    asyncio.run(sup.run_job())
+    _bounded(sup.run_job())
     assert seen and set(seen) == {"failed"}
 
 
@@ -174,7 +179,7 @@ def test_aborted_run_reaps_too(tmp_path, docker_access):
     RunDir(root=root).update_status(state="starting")
     sup = _supervisor(root, [_plan, _abort])
     sup.docker_runner = fake
-    final = asyncio.run(sup.run_job())
+    final = _bounded(sup.run_job())
     assert final == "aborted"
     assert fake.ids() == set()
     assert _events(sup.run.root, "siblings.reaped")[0]["count"] == 1
