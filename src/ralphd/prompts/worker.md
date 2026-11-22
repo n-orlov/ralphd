@@ -46,8 +46,9 @@ immediately starts the next iteration.
    sentence naming the rule to you) — with the petitioned task named as its
    cause — but a petitioned task is not genuinely dead the way `failed`/
    `skipped` is: an adjudication may still REFUTE it (the hold stays) or
-   CONFIRM it (the task moves to `skipped` and its dependents are
-   re-pointed). Held, not doomed — do not carve around it as if it were a
+   CONFIRM it (the task stays `petitioned`, is settled, and satisfies its
+   dependents); an operator waiver settles it the same way.
+   Held, not doomed — do not carve around it as if it were a
    dead dependency.
 3. Do the work in the workspace for the assigned task. **If your prompt carries the
    rejection block titled "Why the previous attempt was rejected"** — a

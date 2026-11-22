@@ -7142,8 +7142,8 @@ def task_blocked_by(tasks: list, *,
     through the fixpoint below) is included too, with that ancestor as its
     cause. `petitioned` is deliberately never added to `dead`/`doomed`
     itself: a petition can still resolve (REFUTED keeps it exactly where it
-    is; CONFIRMED moves it to `skipped` and re-points dependents, C.3's
-    scope) so treating it as permanently dead here would make
+    is; CONFIRMED settles it in place, v0.38's `settled` argument below)
+    so treating it as permanently dead here would make
     `_doomed_plan_fault`'s "nothing can ever move this plan again" verdict
     fire on a plan that is merely holding for an adjudication -- the one
     reason this is opt-in, `False` by default, so every existing caller

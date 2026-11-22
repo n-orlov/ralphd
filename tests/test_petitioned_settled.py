@@ -8,11 +8,11 @@ CONFIRMED adjudication. It keeps its status throughout (no status lies). The
 rule lives next to `TASK_DEPENDENCY_SATISFIED_STATUSES`
 (`state.task_dependency_satisfied`, `state.settled_petitioned_task_ids`).
 
-An operator status ruling moves a petitioned task out
-(`petitioned -> validated|skipped`, both variants), beside the engine's own
-CONFIRMED-adjudication application (`-> skipped`), and an operator ruling
-takes the un-reopen edge on a cure-reopened task; a hat's report of either
-stays refused.
+Only an operator status ruling moves a petitioned task out
+(`petitioned -> validated|skipped`, both variants); a CONFIRMED adjudication
+applied by the engine settles it in place. An operator ruling also takes the
+un-reopen edge on a cure-reopened task; a hat's report of either stays
+refused.
 
 Sections: (1) one test per settling source, (2) the plan_complete check,
 (3) controls that hold before and after, (4) the operator exits, (5) the
@@ -29,6 +29,7 @@ from test_cli_docker import ctl, unix_sock  # noqa: F401  (fixtures)
 from ralphd.cli import ui_server
 from ralphd.engine import loop as loop_mod
 from ralphd.engine import petitions, state, transitions
+from ralphd.engine.runner import IterationResult
 from ralphd.engine.scheduler import select_next_task
 from ralphd.engine.state import (
     TASK_BLOCKED_FIELD,
@@ -120,6 +121,33 @@ def test_confirmed_adjudication_settles_a_petitioned_dependency(tmp_path, cfg_di
 
     picked = _select(sup)
 
+    assert picked is not None and picked["id"] == "002"
+    assert _status_of(sup, "001") == "petitioned"
+
+
+def test_confirmed_adjudication_through_review_settles_the_edge_in_place(
+        tmp_path, cfg_dir):
+    """The engine path, not a seeded record: a contract-valid mid-run
+    episode payload ruling the petition CONFIRMED goes through
+    `_review_verdict(mid_run=True)`. The task stays `petitioned`, the
+    dependent keeps its `dependsOn` edge, and the scheduler picks the
+    dependent BECAUSE the settled set names the petitioned task."""
+    sup = _sup(tmp_path, [_petitioned(), _dependent()])
+    result = IterationResult(exit_code=0)
+    result.final_text = json.dumps({
+        "verdict": "adjudicated", "reason": "the obligation is impossible",
+        "petition_adjudications": [
+            {"obligation": OBLIGATION, "adjudication": "CONFIRMED"}]})
+
+    _verified, _payload, errors = sup._review_verdict(result, mid_run=True)
+
+    assert errors == []
+    doc = sup.run.read_tasks()
+    by_id = {t["id"]: t for t in doc["tasks"]}
+    assert by_id["001"]["status"] == "petitioned"
+    assert by_id["002"]["dependsOn"] == ["001"]
+    assert sup._settled_petitioned_ids(doc) == {"001"}
+    picked = _select(sup)
     assert picked is not None and picked["id"] == "002"
     assert _status_of(sup, "001") == "petitioned"
 

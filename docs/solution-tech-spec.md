@@ -571,12 +571,15 @@ checks CONFIRMED adjudications as far as it can without the engine's MAC key.
 An unsettled petitioned dependency still blocks its dependents, and a `skipped`
 dependency never satisfies one.
 
-A petitioned task leaves `petitioned` in two ways. The engine applies a CONFIRMED
-adjudication (`petitions.apply_confirmed_petition_adjudications`): the task
-moves to `skipped` and its dependents are re-pointed. An operator status ruling
-(`ralphctl amend <run> <task> --status validated|skipped`) takes either move, in
-both the base and the vigilant table. A hat's report of the same move is
-refused. An operator `--status` ruling also takes the un-reopen edge for a task
+A CONFIRMED adjudication settles the task in place. The engine applies it in
+the same pass that records it (`petitions.apply_confirmed_petition_adjudications`):
+the task keeps the status `petitioned`, gains a note naming the adjudication,
+and every dependent keeps its `dependsOn` edge, which the settled rule reads as
+satisfied. A `replacement_task_id` naming a task in the plan is added to each
+dependent beside that edge. A petitioned task leaves `petitioned` only through
+an operator status ruling (`ralphctl amend <run> <task> --status
+validated|skipped`), which takes either move in both the base and the vigilant
+table. A hat's report of the same move is refused. An operator `--status` ruling also takes the un-reopen edge for a task
 a cure pass re-opened (`preCureStatuses`) and emits `task.un_reopened` with
 `source: "operator"`. The guard still refuses that edge from every hat.
 
@@ -604,7 +607,6 @@ stateDiagram-v2
     active --> superseded: forced split children accepted
     active --> skipped: unsatisfiable report
     petitioned --> failed: REFUTED, remedy cure task inserted
-    petitioned --> skipped: CONFIRMED, dependents re-pointed
     petitioned --> validated: operator status ruling only
     petitioned --> skipped: operator status ruling only
     active --> failed: work failure

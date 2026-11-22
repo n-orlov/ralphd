@@ -17707,37 +17707,27 @@ class LoopSupervisor:
         return inserted
 
     def _apply_confirmed_petition_adjudications(self, adjudications) -> list[str]:
-        """Task 015 (requirement C.3, #149): the write-back half of
-        `engine.petitions.apply_confirmed_petition_adjudications` -- the
-        CONFIRMED-side sibling of `_apply_refuted_petition_adjudications`
-        immediately above, same seam: read the CURRENT `tasks.json`, apply
-        any CONFIRMED entries in `adjudications` to it (moving a matching
-        `petitioned` task to `skipped`, its own `notes` field carrying the
-        adjudication, and re-pointing every dependent's `dependsOn` off
-        it -- to the entry's `replacement_task_id` when one names a real
-        task, otherwise to nothing), and persist + announce the change
-        exactly like any other engine-driven task-status move
-        (`_emit_task_changes`). A no-op call touches neither the file nor
-        the emitted-changes machinery -- `write_tasks` is skipped entirely
-        when nothing changed, so a review pass with no matching CONFIRMED
-        entry never perturbs `tasks.json`'s mtime.
+        """The write-back half of `engine.petitions.apply_confirmed_petition_
+        adjudications` -- the CONFIRMED-side sibling of `_apply_refuted_
+        petition_adjudications`: read the CURRENT `tasks.json`, apply any
+        CONFIRMED entries in `adjudications` to it, and persist the change.
 
-        Called from `_review_verdict` in the SAME step as `record_
-        confirmed_adjudications` (the run-scope persistence, C.2's own
-        exemption) and `_apply_refuted_petition_adjudications` beside it,
-        for every settled review/mid-run-adjudication payload, verified or
-        not -- exactly the same unconditional-call discipline this
-        method's REFUTED and criteria-amendment siblings already keep.
+        v0.38 (#306, #320, PRD A.1 b): a CONFIRMED adjudication SETTLES the
+        matching `petitioned` task and never moves it -- the task keeps
+        `petitioned` (no status lies), gains a note naming the adjudication,
+        and every dependent keeps its `dependsOn` edge, which the settled
+        rule (`state.task_dependency_satisfied`, fed by the run-scope record
+        `record_confirmed_adjudications` wrote just before this call) reads
+        as satisfied. A `replacement_task_id` naming a real task is ADDED to
+        each dependent beside the settled edge (`task.dependency_repointed`,
+        `self.run` threaded through). A no-op call touches neither the file
+        nor the emitted-changes machinery.
 
-        Task 004 (requirement E.2): `self.run` is now threaded through as
-        the wrapped function's `run=` argument, so the re-point itself
-        also emits `state.DEPENDENCY_REPOINTED_EVENT` (`source=
-        "cure-insertion"`) for every dependent whose `dependsOn` actually
-        changes -- the confirmed-petition path's own counterpart to
-        `state._repoint_dependents_onto_cure_task`'s emit from task 003.
+        Called from `_review_verdict` for every settled review/mid-run-
+        adjudication payload, verified or not, beside its REFUTED and
+        criteria-amendment siblings.
 
-        Returns the ids of every task this call moved to `skipped`, same
-        as the petitions-module function it wraps.
+        Returns the ids of every task this call settled.
         """
         if not adjudications:
             return []

@@ -573,7 +573,9 @@ def _write_plan(sup: LoopSupervisor, tasks: list[dict]) -> None:
     atomic_write_json(sup.run.tasks_file, {"version": 1, "tasks": tasks})
 
 
-def test_apply_confirmed_petition_adjudications_moves_the_task_to_skipped():
+def test_apply_confirmed_petition_adjudications_settles_the_task_in_place():
+    """v0.38 (PRD A.1 b, decision 1 "no status lies"): CONFIRMED settles a
+    petitioned task without rewriting its status."""
     tasks_doc = {"version": 1, "tasks": [_task()]}
     changed = petitions.apply_confirmed_petition_adjudications(tasks_doc, [
         {"obligation": CLOSES_OBLIGATION, "adjudication": "CONFIRMED"},
@@ -581,7 +583,7 @@ def test_apply_confirmed_petition_adjudications_moves_the_task_to_skipped():
 
     assert changed == [TASK_ID]
     task = tasks_doc["tasks"][0]
-    assert task["status"] == "skipped"
+    assert task["status"] == "petitioned"
     assert "CONFIRMED" in task["notes"]
     assert CLOSES_OBLIGATION in task["notes"]
 
@@ -626,7 +628,7 @@ def test_apply_confirmed_petition_adjudications_is_a_noop_with_no_adjudications(
     assert tasks_doc["tasks"][0]["status"] == "petitioned"
 
 
-def test_a_dependents_dependson_loses_the_confirmed_task_with_no_replacement():
+def test_a_dependents_dependson_keeps_the_settled_edge_with_no_replacement():
     tasks_doc = {"version": 1, "tasks": [
         _task(),
         {"id": DEPENDENT_ID, "title": "depends on it",
@@ -638,7 +640,7 @@ def test_a_dependents_dependson_loses_the_confirmed_task_with_no_replacement():
     ])
 
     dependent = next(t for t in tasks_doc["tasks"] if t["id"] == DEPENDENT_ID)
-    assert dependent["dependsOn"] == []
+    assert dependent["dependsOn"] == [TASK_ID]
 
 
 def test_a_dependents_dependson_gains_the_named_replacement_task():
@@ -656,10 +658,10 @@ def test_a_dependents_dependson_gains_the_named_replacement_task():
     ])
 
     dependent = next(t for t in tasks_doc["tasks"] if t["id"] == DEPENDENT_ID)
-    assert dependent["dependsOn"] == [REPLACEMENT_ID]
+    assert dependent["dependsOn"] == [TASK_ID, REPLACEMENT_ID]
 
 
-def test_a_replacement_task_id_naming_no_real_task_repoints_to_nothing():
+def test_a_replacement_task_id_naming_no_real_task_adds_nothing():
     tasks_doc = {"version": 1, "tasks": [
         _task(),
         {"id": DEPENDENT_ID, "title": "depends on it",
@@ -672,7 +674,7 @@ def test_a_replacement_task_id_naming_no_real_task_repoints_to_nothing():
     ])
 
     dependent = next(t for t in tasks_doc["tasks"] if t["id"] == DEPENDENT_ID)
-    assert dependent["dependsOn"] == []
+    assert dependent["dependsOn"] == [TASK_ID]
 
 
 def test_a_dependent_naming_both_the_task_and_its_replacement_has_no_duplicate():
@@ -690,7 +692,7 @@ def test_a_dependent_naming_both_the_task_and_its_replacement_has_no_duplicate()
     ])
 
     dependent = next(t for t in tasks_doc["tasks"] if t["id"] == DEPENDENT_ID)
-    assert dependent["dependsOn"] == [REPLACEMENT_ID]
+    assert dependent["dependsOn"] == [TASK_ID, REPLACEMENT_ID]
 
 
 def test_a_dependent_with_no_dependson_at_all_is_left_alone():
@@ -711,8 +713,9 @@ def test_a_repoint_with_run_threaded_emits_dependency_repointed_event(tmp_path):
     """Task 004 (PRD requirement E.2): once `run` is threaded through,
     `apply_confirmed_petition_adjudications` emits `DEPENDENCY_REPOINTED_
     EVENT` (`source="cure-insertion"`) for the dependent whose `dependsOn`
-    the CONFIRMED re-point actually rewrites -- naming the removed and
-    added ids and the resulting list, mirroring `state._repoint_
+    the CONFIRMED adjudication's named replacement actually extends (v0.38:
+    the settled edge stays, so nothing is removed) -- naming the added id
+    and the resulting list, mirroring `state._repoint_
     dependents_onto_cure_task`'s own emit from task 003 (requirement E.1).
     """
     run = RunDir(root=tmp_path / "run")
@@ -735,9 +738,9 @@ def test_a_repoint_with_run_threaded_emits_dependency_repointed_event(tmp_path):
     repoints = [e for e in events if e["type"] == DEPENDENCY_REPOINTED_EVENT]
     assert len(repoints) == 1
     assert repoints[0]["taskId"] == DEPENDENT_ID
-    assert repoints[0]["removed"] == [TASK_ID]
+    assert repoints[0]["removed"] == []
     assert repoints[0]["added"] == [REPLACEMENT_ID]
-    assert repoints[0]["dependsOn"] == [REPLACEMENT_ID]
+    assert repoints[0]["dependsOn"] == [TASK_ID, REPLACEMENT_ID]
     assert repoints[0]["source"] == "cure-insertion"
     assert repoints[0]["reason"]
 
@@ -765,7 +768,7 @@ def test_a_repoint_that_touches_nothing_emits_no_event(tmp_path):
     assert not (run.root / "events.jsonl").exists()
 
 
-def test_supervisor_write_back_persists_the_confirmed_transition(tmp_path):
+def test_supervisor_write_back_persists_the_confirmed_settlement(tmp_path):
     sup = _supervisor_closes_task(tmp_path / "run")
     _write_plan(sup, [
         _task(),
@@ -779,21 +782,15 @@ def test_supervisor_write_back_persists_the_confirmed_transition(tmp_path):
 
     assert changed == [TASK_ID]
     on_disk = {t["id"]: t for t in sup.run.read_tasks()["tasks"]}
-    assert on_disk[TASK_ID]["status"] == "skipped"
+    # v0.38 (PRD A.1 b): the task stays petitioned and the dependent keeps
+    # its edge -- the settled rule, not a re-point, unblocks it.
+    assert on_disk[TASK_ID]["status"] == "petitioned"
     assert "CONFIRMED" in on_disk[TASK_ID]["notes"]
-    assert on_disk[DEPENDENT_ID]["dependsOn"] == []
-    # Task 004 (requirement E.2): the wrapper threads `self.run` through,
-    # so this same write-back also lands a `task.dependency_repointed`
-    # event on the run's own `events.jsonl`.
-    events = [json.loads(x) for x in
-              (sup.run.root / "events.jsonl").read_text().splitlines()]
-    repoints = [e for e in events if e["type"] == DEPENDENCY_REPOINTED_EVENT]
-    assert len(repoints) == 1
-    assert repoints[0]["taskId"] == DEPENDENT_ID
-    assert repoints[0]["removed"] == [TASK_ID]
-    assert repoints[0]["added"] == []
-    assert repoints[0]["dependsOn"] == []
-    assert repoints[0]["source"] == "cure-insertion"
+    assert on_disk[DEPENDENT_ID]["dependsOn"] == [TASK_ID]
+    events_file = sup.run.root / "events.jsonl"
+    events = ([json.loads(x) for x in events_file.read_text().splitlines()]
+              if events_file.exists() else [])
+    assert not [e for e in events if e["type"] == DEPENDENCY_REPOINTED_EVENT]
 
 
 def test_supervisor_write_back_is_a_noop_with_no_adjudications(tmp_path):

@@ -2375,75 +2375,47 @@ def apply_refuted_petition_adjudications(tasks_doc: dict, adjudications,
 
 def apply_confirmed_petition_adjudications(tasks_doc: dict, adjudications,
                                            run=None) -> list[str]:
-    """Task 015 (PRD requirement C.3, #149): the CONFIRMED counterpart to
-    `apply_refuted_petition_adjudications` above, for the SAME `petitioned`
-    task records -- "a CONFIRMED adjudication moves the petitioned task to
-    `skipped` with the adjudication in `notes` (the obligation is void) and
-    re-points every dependent's `dependsOn` from it to nothing (or to the
-    replacement task the adjudication names), in the same pass that records
-    the confirmation."
+    """v0.38 (#306, #320, PRD A.1 b and decision 1 "no status lies"): the
+    CONFIRMED counterpart to `apply_refuted_petition_adjudications` above,
+    for the SAME `petitioned` task records. A CONFIRMED adjudication
+    SETTLES the task; it does not move it. The task keeps the status
+    `petitioned`, and every `dependsOn` edge naming it stays in place and
+    reads as satisfied through `state.task_dependency_satisfied` (the
+    settled set comes from the run-scope record `record_confirmed_
+    adjudications` writes in the same pass, matched by `petitioned_task_
+    accepted`). Only an operator `--status` ruling moves a petitioned task
+    to another status (`transitions.OPERATOR_TASK_STATUS_EXITS`).
 
     Matches a CONFIRMED entry to a `petitioned` task the identical way the
     REFUTED branch does -- `task_petition_obligation(t)` fuzzy-matched
     (substring either direction, `_normalize_obligation`) against the
-    entry's own `obligation` text -- because this is the SAME free-text
-    channel disagreement `_refuted_remedy_type`'s sibling already lives
-    with. This is deliberately a DIFFERENT match than `criteria_amendment_
-    candidates` above: that one matches a CONFIRMED entry against a task's
-    own `successCriteria` (the task stays in the plan, only its criteria
-    text changes); this one matches against a `petitioned` task's own
-    ENGINE-FILED obligation (the task itself is what the petition says is
-    impossible), so the two never fire on the same entry for the same
-    reason -- a task cannot simultaneously stay in the plan with amended
-    criteria and be removed from it.
+    entry's own `obligation` text. This is deliberately a DIFFERENT match
+    than `criteria_amendment_candidates` above, which matches a CONFIRMED
+    entry against a task's own `successCriteria`.
 
     For each match:
 
-    - the task's `status` moves to `skipped` (never `failed` -- CONFIRMED
-      means the obligation is void, not that the task was tried and came
-      up short, the distinction REFUTED's own routing already draws
-      between the two adjudications);
+    - the task's `status` is left `petitioned`;
     - a note naming the obligation and the CONFIRMED call is appended to
-      the task's own `notes` field (kept, never overwritten, exactly like
-      task 011's absorption note beside it: `f"{existing}\n{note}"` when
-      `notes` is already non-empty);
-    - every OTHER task in `tasks_doc` whose `dependsOn` names this task's
-      id has that id removed from `dependsOn`; when the SAME entry also
-      carries a non-empty `replacement_task_id` string that names a task
-      actually present in `tasks_doc` (the judge's own claim of which
-      task inherits the dependency -- an id that does not exist in the
-      CURRENT plan is never invented a dependency on), that id is added
-      in its place (skipped if already present, so a dependent naming
-      both the petitioned task and its replacement already never ends up
-      with a duplicate entry). No `replacement_task_id`, or one naming a
-      task that is not in the plan, leaves the dependent depending on
-      nothing in that slot -- "re-points ... to nothing" is the default,
-      exactly as the requirement's own parenthetical states it.
+      the task's own `notes` field (kept, never overwritten:
+      `f"{existing}\n{note}"` when `notes` is already non-empty);
+    - every dependent keeps its edge to this task. When the SAME entry
+      carries a non-empty `replacement_task_id` naming a task present in
+      `tasks_doc` (the judge's claim that another task carries work the
+      dependents still need), that id is ADDED to each dependent's
+      `dependsOn` beside the settled edge (skipped if already present). A
+      replacement naming no task in the plan adds nothing.
 
-    Returns the ids of every task this call moved to `skipped`, in plan
-    order; a no-op call (nothing CONFIRMED, or nothing `petitioned` to
-    match against) returns `[]` and leaves `tasks_doc` untouched -- the
-    same no-op contract `apply_refuted_petition_adjudications` keeps.
+    Returns the ids of every task this call settled, in plan order; a no-op
+    call (nothing CONFIRMED, or nothing `petitioned` to match against)
+    returns `[]` and leaves `tasks_doc` untouched. A REFUTED entry is
+    ignored here (`apply_refuted_petition_adjudications`' job).
 
-    A REFUTED entry in `adjudications` is silently ignored here -- that
-    side is `apply_refuted_petition_adjudications`'s job; this function
-    only ever moves a task OFF `petitioned` on CONFIRMED.
-
-    Task 004 (PRD requirement E.2): when `run` is given (a `state.RunDir`,
-    optional and defaulting to `None` so every existing caller that only
-    ever passed `tasks_doc`/`adjudications` keeps working unchanged), each
-    dependent whose `dependsOn` list this call actually rewrites also gets
-    one `state.DEPENDENCY_REPOINTED_EVENT` -- the same event, same
-    `source="cure-insertion"`, `state._repoint_dependents_onto_cure_task`
-    already emits for its own re-point (task 003, requirement E.1); this
-    is the confirmed-petition path E.2 threads `run` through for. A
-    dependent whose `new_deps` ends up identical to its prior `deps`
-    (`tid` was never in it, or the replacement it already held makes the
-    write a no-op) emits nothing -- "changes nothing" is judged against
-    the WRITTEN list, exactly like the cure-insertion sibling. `run` is
-    imported function-locally (`from ralphd.engine.state import ...`),
-    matching every other `state` reference this module already makes, to
-    keep `state.py` free of a module-level import of `petitions`.
+    When `run` is given (a `state.RunDir`), each dependent whose
+    `dependsOn` actually gains a replacement also gets one `state.
+    DEPENDENCY_REPOINTED_EVENT` (`source="cure-insertion"`, `removed` empty)
+    -- judged against the WRITTEN list, so a dependent that already named
+    the replacement emits nothing.
     """
     if not adjudications:
         return []
@@ -2471,41 +2443,36 @@ def apply_confirmed_petition_adjudications(tasks_doc: dict, adjudications,
                 continue
             tid = t.get("id")
             handled.add(tid)
-            note = (f"Petition CONFIRMED: {obligation.strip()} -- the "
-                   "obligation is void; this task is skipped.")
+            note = (f"Petition CONFIRMED: {obligation.strip()} -- this task "
+                    "stays petitioned and is settled: every dependsOn naming "
+                    "it is satisfied.")
             existing = t.get("notes")
             t["notes"] = f"{existing}\n{note}" if existing else note
-            t["status"] = "skipped"
             changed.append(tid)
             valid_replacement = (
                 replacement_task_id
-                if replacement_task_id and any(
+                if replacement_task_id and replacement_task_id != tid and any(
                     isinstance(o, dict) and o.get("id") == replacement_task_id
                     for o in tasks)
                 else None)
+            if valid_replacement is None:
+                continue
             for other in tasks:
-                if not isinstance(other, dict) or other is t:
+                if (not isinstance(other, dict) or other is t
+                        or other.get("id") == valid_replacement):
                     continue
                 deps = other.get("dependsOn")
-                if not isinstance(deps, list) or tid not in deps:
+                if (not isinstance(deps, list) or tid not in deps
+                        or valid_replacement in deps):
                     continue
-                new_deps = [d for d in deps if d != tid]
-                if (valid_replacement is not None
-                        and valid_replacement not in new_deps):
-                    new_deps.append(valid_replacement)
-                if run is not None and new_deps != deps:
-                    other_id = other.get("id")
-                    reason = (
-                        f"petitioned task {tid} was skipped after its "
-                        "obligation was adjudicated CONFIRMED"
-                        + (f"; replaced by {valid_replacement}"
-                           if valid_replacement is not None else
-                           "; no replacement task named"))
-                    run.emit(DEPENDENCY_REPOINTED_EVENT, taskId=other_id,
-                             removed=sorted(set(deps) - set(new_deps)),
-                             added=sorted(set(new_deps) - set(deps)),
+                new_deps = [*deps, valid_replacement]
+                if run is not None:
+                    run.emit(DEPENDENCY_REPOINTED_EVENT, taskId=other.get("id"),
+                             removed=[], added=[valid_replacement],
                              dependsOn=new_deps,
-                             reason=reason,
+                             reason=(f"petitioned task {tid} was settled by a "
+                                     "CONFIRMED adjudication naming "
+                                     f"{valid_replacement} as its replacement"),
                              source="cure-insertion")
                 other["dependsOn"] = new_deps
     return changed
