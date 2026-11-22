@@ -25,7 +25,8 @@ rather than a third independent copy in a new location:
    again is idempotent).
 3. Otherwise the pending-task scheduler: consider only `pending` tasks whose
    `dependsOn` entries (if the field is present at all) are ALL satisfied --
-   `state.TASK_DEPENDENCY_SATISFIED_STATUSES`, the same pair
+   `state.task_dependency_satisfied` (`TASK_DEPENDENCY_SATISFIED_STATUSES`
+   plus a settled `petitioned` task, `settled`), the same rule
    `task_blocked_by()` uses, so a task whose dependency merely hasn't
    finished yet (not dead) is excluded from consideration exactly like a
    task whose dependency is dead, but for a different reason: it isn't
@@ -53,7 +54,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .state import TASK_DEPENDENCY_SATISFIED_STATUSES, earliest_open_phase_id
+from .state import earliest_open_phase_id, task_dependency_satisfied
 
 
 def _later_phase_ids(phases: list | None) -> set:
@@ -73,7 +74,8 @@ def _later_phase_ids(phases: list | None) -> set:
     return set(ids[ids.index(open_id) + 1:])
 
 
-def pending_candidates(tasks: list, phases: list | None = None) -> list:
+def pending_candidates(tasks: list, phases: list | None = None,
+                       settled=()) -> list:
     """The full pool step 3 of `select_next_task` (below) considers --
     every `pending` task whose `dependsOn` entries are all satisfied and
     which does not carry `deferredUntil` -- in plan (list) order, WITHOUT
@@ -119,14 +121,16 @@ def pending_candidates(tasks: list, phases: list | None = None) -> list:
         raw_deps = t.get("dependsOn")
         deps = raw_deps if isinstance(raw_deps, list) else []
         unmet = [dep for dep in deps
-                 if status_by_id.get(str(dep)) not in TASK_DEPENDENCY_SATISFIED_STATUSES]
+                 if not task_dependency_satisfied(
+                     dep, status_by_id.get(str(dep)), settled)]
         if unmet:
             continue
         candidates.append(t)
     return candidates
 
 
-def select_next_task(tasks: list, phases: list | None = None) -> dict | None:
+def select_next_task(tasks: list, phases: list | None = None,
+                     settled=()) -> dict | None:
     """Pick the next task a worker iteration should work on, or `None` if
     nothing is viable. `tasks` is the plain list from `tasks.json`'s
     `{"tasks": [...]}` doc -- pass `doc.get("tasks", [])` if you have the
@@ -163,7 +167,7 @@ def select_next_task(tasks: list, phases: list | None = None) -> dict | None:
     if in_progress:
         return _highest_priority_first(in_progress)
 
-    candidates = pending_candidates(entries, phases)
+    candidates = pending_candidates(entries, phases, settled)
     if not candidates:
         return None
 

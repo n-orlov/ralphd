@@ -2868,7 +2868,9 @@ def apply_task_status_change(run: "RunDir", task_id: str, target_status: str,
     if current == target_status:
         record.update(applied=False, reason="already at that status")
         return record
-    if not transitions.is_legal_task_status_transition(current, target_status, vigilant):
+    operator_ruling = source == "operator"
+    if not transitions.is_legal_task_status_transition(
+            current, target_status, vigilant, operator_ruling=operator_ruling):
         record.update(applied=False, reason="illegal transition")
         return record
     effective_justification = justification or reason
@@ -2888,7 +2890,10 @@ def apply_task_status_change(run: "RunDir", task_id: str, target_status: str,
     status_errors = transitions.task_status_report_errors(
         {"task_status": target_status, "justification": effective_justification},
         current, vigilant,
-        allow_un_reopen_restore=(source == "cure-reconciliation"))
+        allow_un_reopen_restore=(source == "cure-reconciliation"),
+        operator_ruling=operator_ruling,
+        cure_reopened=(operator_ruling and task_id in (
+            run.read_status().get("preCureStatuses") or {})))
     if status_errors:
         record.update(applied=False, reason=status_errors[0])
         return record
@@ -4424,6 +4429,10 @@ class TasksRead:
     source: str
     stale: bool
     error: str | None = None
+    # v0.38 (#306): the ids of this read's settled `petitioned` tasks
+    # (`settled_petitioned_task_ids`), filled in by a reader that holds the
+    # run's waivers and adjudications (the engine API); empty elsewhere.
+    settled: frozenset = frozenset()
 
     @property
     def tasks(self) -> list:
@@ -4468,7 +4477,8 @@ class TasksRead:
         dependent of a `petitioned` task shows up here (and, through
         `payload` below, in `GET /tasks` and `ralphctl tasks`) with the
         petitioned task named as its cause, same map, same field."""
-        return task_blocked_by(self.tasks, include_petitioned=True)
+        return task_blocked_by(self.tasks, include_petitioned=True,
+                               settled=self.settled)
 
     @property
     def payload(self) -> dict:
@@ -4491,6 +4501,9 @@ class TasksRead:
         blocked = self.blocked_by
         if blocked:
             out[TASK_BLOCKED_FIELD] = blocked
+        out.pop(TASK_SETTLED_FIELD, None)
+        if self.settled:
+            out[TASK_SETTLED_FIELD] = sorted(self.settled)
         return out
 
     @property
@@ -5031,6 +5044,77 @@ TASK_COUNT_OVERLAY_KEYS = TASK_COUNT_SUBKEYS + ("blocked",)
 # tasks` just inserted (`_apply_forced_split_report`, `engine/loop.py`).
 TASK_DEPENDENCY_SATISFIED_STATUSES = ("completed", "validated", "superseded")
 TASK_DEPENDENCY_DEAD_STATUSES = ("failed", "skipped")
+
+# v0.38 (#306, #320): the ONE settled-dependency rule. A `petitioned` task
+# keeps its status -- no status lies -- but it is SETTLED, and then reads as
+# a satisfied dependency and never blocks plan completion, when an operator
+# waiver covers it (`ralphctl amend --waive` naming the task, or a
+# clause-bound waiver whose clause matches the petition's obligation) or a
+# CONFIRMED adjudication names its obligation. `skipped` keeps its meaning
+# ("dead") and still satisfies nothing. The scheduler, the blocked-by
+# overlay, the petition-held hold and the terminal-success / plan-complete
+# checks all read `task_dependency_satisfied` and `settled_petitioned_
+# task_ids` below; nothing re-derives either.
+TASK_STATUS_PETITIONED = "petitioned"
+
+
+def task_dependency_satisfied(task_id, status, settled=()) -> bool:
+    """True iff a `dependsOn` entry naming `task_id`, whose record holds
+    `status`, is satisfied: `status` is in `TASK_DEPENDENCY_SATISFIED_
+    STATUSES`, or the task is `petitioned` and its id is in `settled` (the
+    set `settled_petitioned_task_ids` derives). `status` may be `None` for
+    an id absent from the plan, which is never satisfied."""
+    if status in TASK_DEPENDENCY_SATISFIED_STATUSES:
+        return True
+    return (status == TASK_STATUS_PETITIONED and task_id is not None
+            and str(task_id) in settled)
+
+
+def settled_petitioned_task_ids(run: "RunDir", tasks, *, config_root: Path,
+                                approach: int | None = None) -> frozenset[str]:
+    """The ids of every `petitioned` task in `tasks` that is settled, read
+    from the three settling sources:
+
+    - an applied task-level operator waiver (`<config_root>/amendments/`,
+      `mode: waive`, `taskId` naming the task; the LAST ruling recorded
+      against that task is the operator's current word, and a ruling pinned
+      to another approach does not bind this one);
+    - a run-level clause-bound waiver (`run.waiver_entries()`) whose clause
+      matches the task's own petition obligation (`petitions.task_petition_
+      obligation`, the same substring-either-direction match a CONFIRMED
+      adjudication uses);
+    - a CONFIRMED adjudication (`petitions.petitioned_task_accepted`); a
+      tampered record counts as an empty set, failing towards blocking.
+    """
+    from . import petitions
+    petitioned = [t for t in (tasks or []) if isinstance(t, dict)
+                  and t.get("status") == TASK_STATUS_PETITIONED
+                  and t.get("id") not in (None, "")]
+    if not petitioned:
+        return frozenset()
+    confirmed, tampered = petitions.confirmed_obligations(run)
+    if tampered:
+        confirmed = set()
+    latest: dict[str, dict] = {}
+    for e in amendment_entries(config_root):
+        if e.get("scope") != "task":
+            continue
+        latest[str(e.get("taskId"))] = e
+    waived_ids = {
+        tid for tid, e in latest.items()
+        if e.get("waive") and (e.get("approach") is None
+                               or e.get("approach") == approach)}
+    clauses = {petitions._normalize_obligation(w["clause"])
+               for w in run.waiver_entries() if w.get("clause")}
+    out = set()
+    for t in petitioned:
+        tid = str(t["id"])
+        if (tid in waived_ids
+                or petitions.petitioned_task_accepted(t, confirmed)
+                or petitions._obligation_confirmed(
+                    petitions.task_petition_obligation(t), clauses)):
+            out.add(tid)
+    return frozenset(out)
 
 # The one spelling of the status itself, so a caller outside this module
 # (`LoopSupervisor._all_tasks_completed`) names it rather than re-typing
@@ -6926,7 +7010,16 @@ def task_is_terminal(task: dict) -> bool:
     return isinstance(task, dict) and task.get("status") in TASK_TERMINAL_STATUSES
 
 
-def steering_origin_outstanding(tasks_doc, phase: str | None = None) -> list:
+def _settled_petitioned(task: dict, settled) -> bool:
+    """True iff `task` is a `petitioned` task the settled rule covers: done,
+    never outstanding (`task_dependency_satisfied`)."""
+    return (isinstance(task, dict) and task.get("status") == TASK_STATUS_PETITIONED
+            and task_dependency_satisfied(task.get("id"), TASK_STATUS_PETITIONED,
+                                          settled))
+
+
+def steering_origin_outstanding(tasks_doc, phase: str | None = None,
+                                settled=()) -> list:
     """Every steering-origin task (`is_steering_origin`) that is NOT yet
     terminal (`task_is_terminal`), in plan order.
 
@@ -6956,10 +7049,12 @@ def steering_origin_outstanding(tasks_doc, phase: str | None = None) -> list:
              else tasks_doc)
     return [t for t in (tasks or [])
             if is_steering_origin(t) and not task_is_terminal(t)
+            and not _settled_petitioned(t, settled)
             and (phase is None or t.get("phase") == phase)]
 
 
-def review_cure_origin_outstanding(tasks_doc, phase: str | None = None) -> list:
+def review_cure_origin_outstanding(tasks_doc, phase: str | None = None,
+                                   settled=()) -> list:
     """Every `review-cure`-origin task (`is_review_cure_origin`) that is NOT
     yet terminal (`task_is_terminal`), in plan order -- the sibling of
     `steering_origin_outstanding` just above, for `_terminal_success_
@@ -6980,11 +7075,13 @@ def review_cure_origin_outstanding(tasks_doc, phase: str | None = None) -> list:
              else tasks_doc)
     return [t for t in (tasks or [])
             if is_review_cure_origin(t) and not task_is_terminal(t)
+            and not _settled_petitioned(t, settled)
             and (phase is None or t.get("phase") == phase)]
 
 
 def task_blocked_by(tasks: list, *,
-                     include_petitioned: bool = False) -> dict[str, list[str]]:
+                     include_petitioned: bool = False,
+                     settled=()) -> dict[str, list[str]]:
     """Task 021 (#60 pillar 3): `{task id: [dead/doomed ancestor ids]}` for
     every task that can never be completed because a `dependsOn` entry --
     directly, or transitively through another doomed task -- reached
@@ -7022,6 +7119,10 @@ def task_blocked_by(tasks: list, *,
     `validation-failed`, `awaiting-validation` -- is still in flight and can
     be doomed.
 
+    `settled` (v0.38, #306): the ids `settled_petitioned_task_ids` derives.
+    A settled petitioned task satisfies its dependents, so it is no cause
+    for any of them and never a member of the `include_petitioned` hold.
+
     Fixpoint over the dependency graph, so a chain of several doomed tasks
     (task 004 dead -> 005 doomed -> 006 doomed) is caught, not just direct
     dependents. Each task's list is its OWN direct `dependsOn` entries that
@@ -7051,8 +7152,11 @@ def task_blocked_by(tasks: list, *,
             if t.get("status", "pending") in TASK_DEPENDENCY_DEAD_STATUSES}
     held: set[str] = set()
     if include_petitioned:
+        # a SETTLED petitioned task (`settled_petitioned_task_ids`) satisfies
+        # its dependents, so it holds none of them
         held = {tid for tid, t in by_id.items()
-                if t.get("status", "pending") == "petitioned"}
+                if t.get("status", "pending") == "petitioned"
+                and not task_dependency_satisfied(tid, "petitioned", settled)}
     doomed = set(dead)
     changed = True
     while changed:
@@ -7061,7 +7165,7 @@ def task_blocked_by(tasks: list, *,
             if tid in doomed:
                 continue
             status = by_id[tid].get("status", "pending")
-            if status in TASK_DEPENDENCY_SATISFIED_STATUSES:
+            if task_dependency_satisfied(tid, status, settled):
                 continue  # a sink: done regardless of what it depended on
             if any(dep in doomed for dep in depends_on.get(tid, [])):
                 doomed.add(tid)
@@ -7072,7 +7176,7 @@ def task_blocked_by(tasks: list, *,
         if tid in dead or tid in held:
             continue
         status = by_id[tid].get("status", "pending")
-        if status in TASK_DEPENDENCY_SATISFIED_STATUSES:
+        if task_dependency_satisfied(tid, status, settled):
             continue  # a sink: done regardless of what it depended on
         causes = sorted(dep for dep in depends_on.get(tid, [])
                          if dep in doomed or dep in held)
@@ -7086,6 +7190,11 @@ def task_blocked_by(tasks: list, *,
 # reasoning: `GET /tasks`, `ralphctl tasks --json` and the hub's run-detail
 # payload all serve `{task id: [ancestor ids]}`, never a copy.
 TASK_BLOCKED_FIELD = "taskBlockedBy"
+
+# v0.38 (#306): the settled `petitioned` task ids a live `GET /tasks`
+# payload carries (absent when none is settled), so the hub's own
+# blocked-by re-derivation reads the same settled rule the engine does.
+TASK_SETTLED_FIELD = "taskSettledPetitioned"
 
 
 def task_failure_kind(task: dict) -> str | None:

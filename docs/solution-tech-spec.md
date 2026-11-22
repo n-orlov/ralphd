@@ -555,6 +555,22 @@ once the graph is repaired. Neither parks the run.
 A remainder held on a `petitioned` ancestor goes to review after three no-task
 passes (`petition_held_no_task_bound`).
 
+A `petitioned` task is **settled** when an applied operator waiver covers it (a
+task-level `ralphctl amend <run> <task> --waive`, or a run-level clause waiver
+whose clause matches the obligation its petition carries) or a CONFIRMED
+adjudication names that obligation. A settled task keeps the status
+`petitioned`, satisfies every `dependsOn` that names it, and never blocks
+`plan_complete` or a terminal-success verdict. One rule,
+`state.task_dependency_satisfied`, beside `TASK_DEPENDENCY_SATISFIED_STATUSES`,
+is read by the scheduler, the `taskBlockedBy` overlay, the petition-held hold
+and the plan-complete and terminal-success checks. An unsettled petitioned
+dependency still blocks its dependents, and a `skipped` dependency never
+satisfies one. Only an operator status ruling (`ralphctl amend <run> <task>
+--status validated|skipped`) moves a petitioned task to another status, in both
+the base and the vigilant table. A hat's report of the same move is refused. An
+operator `--status` ruling also takes the un-reopen edge for a task a cure pass
+re-opened (`preCureStatuses`); the guard still refuses it from every hat.
+
 Before dispatch, the harness claims the selected task as `in-progress` and
 records that transition. It also fixes the task's effective tier for this claim.
 Each worker invocation gets one assignment. While the agent runs, the transcript
@@ -580,6 +596,8 @@ stateDiagram-v2
     active --> skipped: unsatisfiable report
     petitioned --> failed: REFUTED, remedy cure task inserted
     petitioned --> skipped: CONFIRMED, dependents re-pointed
+    petitioned --> validated: operator status ruling only
+    petitioned --> skipped: operator status ruling only
     active --> failed: work failure
     failed --> skipped: justified task_status relabel
 ```
@@ -1386,7 +1404,7 @@ task is unfinished (`_terminal_success_blockers`). The run then defers once to
 | Operator ruling | `ralphctl rule <run> --file <f>`, `POST /rule` or the hub's parked-question textarea writes `rulings/NNN-<name>.md` under the run root. A ruling is keyed to the current rejection signature, not to a task id, so it survives a replan. It reaches both review and per-task verify. It never releases an `awaiting_input` park (only an answer does); it buys no re-park and bounds nothing on the rejection ladder. |
 | Operator amendment | A host-side `ralphctl amend` record under read-only `/config/amendments`. Three kinds: `replace` and `waive` change the effective criterion presented to review and the peer verdict gate, but not to per-task verify; `--status` is applied by the engine to `tasks.json` at load and at every worker and review step boundary. Rulings are task-scoped (stamped with an approach) or wave-scoped (`--wave`). A task-scoped ruling whose target a replan removed is reported `ORPHANED`, emits `amendment_target_not_in_plan`, and can be moved with `--repoint`. |
 | Impossibility petition | Worker declares an obligation impossible with a type and evidence. The engine files it in the run-scope `petitions.md`, never in the workspace (pre-committed workspace `artifacts/reports/*-petitions.md` files are still read), and refuses a duplicate or an out-of-vocabulary type. Independent adjudication must decide it. The types are `environmental`, `temporal`, `contradictory-clauses`, `external`, and `self-referential`. When the PRD declares a petition protocol, validation exhaustion files one too and moves the task to `petitioned` instead of `failed`. |
-| Confirmed petition | Removes the adjudicated obligation from the blocking set and accepts the matching `petitioned` task. It is persisted across approaches and episodes with MAC-backed integrity records. |
+| Confirmed petition | Removes the adjudicated obligation from the blocking set and accepts the matching `petitioned` task. A confirmed petition is one of the three sources that settle a `petitioned` task for its dependents and for plan completion (see the task graph section). It is persisted across approaches and episodes with MAC-backed integrity records. |
 | Refuted petition | A `substance` remedy moves the `petitioned` task to `failed` and inserts one `review-cure` task. That task's criteria come from the remedy's `Done when:`/`Cured when:` marker, and a remedy without one is refused on the review contract ladder. A `form` remedy moves the task to `validated` and records the remedy as debt instead of retrying the implementation. |
 | Verification debt | Durable notes carried forward from verification/adjudication; explicit resolution records preserve what was addressed. |
 

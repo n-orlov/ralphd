@@ -1304,6 +1304,19 @@ TASK_STATUS_VIGILANT_DELTA: dict[str, tuple[str, ...]] = {
 }
 
 
+# v0.38 (#306, #320): the exits a `petitioned` task has, legal ONLY when an
+# operator status ruling (`ralphctl amend --status`, applied through
+# `state.apply_task_status_change` with `source="operator"`) takes them. They
+# are deliberately NOT in `TASK_STATUS_TABLE`/`TASK_STATUS_VIGILANT_DELTA`: a
+# worker's or verify's own report of the same move stays refused, in both
+# variants, because the table below still lists no successor of `petitioned`.
+# `validated` accepts the obligation as met (a ruling, not a claim the
+# criteria hold); `skipped` relabels it dead. Declared once for both variants.
+OPERATOR_TASK_STATUS_EXITS: dict[str, tuple[str, ...]] = {
+    "petitioned": ("validated", "skipped"),
+}
+
+
 def task_status_table_for(vigilant: bool) -> dict[str, tuple[str, ...]]:
     """Compose `TASK_STATUS_TABLE` with `TASK_STATUS_VIGILANT_DELTA` -- the
     ONLY function that produces a variant's task-status table, mirroring
@@ -1321,18 +1334,27 @@ def legal_next_task_statuses(status: str, vigilant: bool) -> tuple[str, ...]:
     return task_status_table_for(vigilant).get(status, ())
 
 
-def is_legal_task_status_transition(current: str, target: str, vigilant: bool) -> bool:
+def is_legal_task_status_transition(current: str, target: str, vigilant: bool,
+                                    *, operator_ruling: bool = False) -> bool:
     """True iff moving a task from `current` to `target` is legal in this
     variant. A no-op (`current == target`) is always legal -- it is not a
     move at all, and a hat re-stating the status it already holds is not a
-    violation of anything."""
+    violation of anything.
+
+    `operator_ruling` (v0.38, #306): True only for an operator status ruling,
+    which may also take the `OPERATOR_TASK_STATUS_EXITS` of the current
+    status. A hat report never sets it."""
     if current == target:
+        return True
+    if operator_ruling and target in OPERATOR_TASK_STATUS_EXITS.get(current, ()):
         return True
     return target in legal_next_task_statuses(current, vigilant)
 
 
 def task_status_report_errors(payload: Any, current_status: str, vigilant: bool,
-                              *, allow_un_reopen_restore: bool = False) -> list[str]:
+                              *, allow_un_reopen_restore: bool = False,
+                              operator_ruling: bool = False,
+                              cure_reopened: bool = False) -> list[str]:
     """The semantic check layered ON TOP OF a hat's schema validation
     (`contracts.validate_payload`, the only SCHEMA validator, fact 16/#65 --
     this is not a second one of those: it is a business-rule check of the
@@ -1359,6 +1381,13 @@ def task_status_report_errors(payload: Any, current_status: str, vigilant: bool,
     `UN_REOPEN_TASK_STATUS_TARGETS` above) from widening a HAT's
     vocabulary by one status in either variant:
 
+    v0.38 (#306, #320): `operator_ruling` marks an operator status ruling,
+    which may take `OPERATOR_TASK_STATUS_EXITS` (`petitioned -> validated`
+    or `skipped`) and, with `cure_reopened` (the task is in the run's
+    `preCureStatuses`, i.e. a cure pass re-opened it), the un-reopen edge
+    out of `pending` -- the operator's ruling on a re-opened record is not
+    a hat's free-form claim. The guard still refuses both for every hat.
+
     - `superseded` is refused out of ANY status, as it always was;
     - out of `pending`, EVERY un-reopen target is refused, unconditionally
       -- cure-01-05-2 (F05's own worker-reported gap): cure-01-05 refused
@@ -1380,7 +1409,8 @@ def task_status_report_errors(payload: Any, current_status: str, vigilant: bool,
     target = payload.get("task_status")
     if target is None:
         return []
-    if not is_legal_task_status_transition(current_status, target, vigilant):
+    if not is_legal_task_status_transition(current_status, target, vigilant,
+                                           operator_ruling=operator_ruling):
         variant = "vigilant" if vigilant else "non-vigilant"
         return [f"task_status: {current_status!r} -> {target!r} is not a "
                 f"legal transition in the declared {variant} task-status "
@@ -1434,7 +1464,8 @@ def task_status_report_errors(payload: Any, current_status: str, vigilant: bool,
     # engine itself persisted -- never a hat's or an operator's own
     # claim, in either variant, for any of the six restore targets.
     if (is_un_reopen_transition(current_status, target)
-            and not allow_un_reopen_restore):
+            and not allow_un_reopen_restore
+            and not (operator_ruling and cure_reopened)):
         variant = "vigilant" if vigilant else "non-vigilant"
         return [f"task_status: {target!r} out of 'pending' is the engine's own "
                 f"un-reopen restore of a status it persisted before a cure "

@@ -81,6 +81,7 @@ from ..engine.state import (
     STEERING_APPLIED,
     STEERING_PENDING,
     TASK_BLOCKED_FIELD,
+    TASK_SETTLED_FIELD,
     TASK_FAILURE_KINDS_FIELD,
     TASKS_STALE_LABEL,
     TERMINAL_STATES,
@@ -1656,7 +1657,11 @@ def _with_task_blocked_by(tasks: dict) -> dict:
     # `TasksRead.blocked_by` (the on-disk/`GET /tasks` half) shows it, with
     # the petitioned task named as its cause.
     out = {k: v for k, v in tasks.items() if k != TASK_BLOCKED_FIELD}
-    blocked = task_blocked_by(tasks.get("tasks") or [], include_petitioned=True)
+    settled = tasks.get(TASK_SETTLED_FIELD)
+    blocked = task_blocked_by(
+        tasks.get("tasks") or [], include_petitioned=True,
+        settled=frozenset(str(i) for i in settled)
+        if isinstance(settled, list) else frozenset())
     if blocked:
         out[TASK_BLOCKED_FIELD] = blocked
     return out

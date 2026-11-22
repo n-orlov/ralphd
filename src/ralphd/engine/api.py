@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import os
 import shutil
@@ -43,6 +44,7 @@ from .skills import (
     verify_placement_and_report,
 )
 from .state import (
+    settled_petitioned_task_ids,
     unpause_refusal,
     STEERING_GLOB,
     AWAITING_INPUT_STATE,
@@ -247,7 +249,9 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         # `failureKind` label. Shaped by `TasksRead.payload`, shared with the
         # CLI's on-disk path and the hub.
         res = run.read_tasks_result()
-        return res.payload
+        return dataclasses.replace(
+            res, settled=settled_petitioned_task_ids(
+                run, res.tasks, config_root=CONFIG_DIR)).payload
 
     @app.get("/prd")
     async def prd(original: bool = False):

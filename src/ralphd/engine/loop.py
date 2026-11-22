@@ -10783,9 +10783,11 @@ class LoopSupervisor:
             # resumed run's very first pass through this loop does not
             # read as "progress" for the stagnation counter just because
             # the claim moved.
+            settled_petitioned = self._settled_petitioned_ids(tasks_before)
             selected = scheduler.select_next_task(
                 tasks_before.get("tasks", []),
-                phases=tasks_before.get("phases"))
+                phases=tasks_before.get("phases"),
+                settled=settled_petitioned)
             # Task 002 (#278 B.1/B.4/B.7): the router is asked for the
             # pending-step pick, and ONLY the pending-step pick -- never
             # the validation-failed or in-progress steps just above
@@ -10805,7 +10807,8 @@ class LoopSupervisor:
                     and self.cfg.route_task_selection):
                 pending_candidates = scheduler.pending_candidates(
                     tasks_before.get("tasks", []),
-                    phases=tasks_before.get("phases"))
+                    phases=tasks_before.get("phases"),
+                    settled=settled_petitioned)
                 if len(pending_candidates) >= 2:
                     selected = await self._route_task_selection(
                         pending_candidates, selected)
@@ -10967,7 +10970,8 @@ class LoopSupervisor:
                 # a fresh petition/etc.), only the STAGNATION bookkeeping
                 # is exempted.
                 blocked_incl_petitioned = state.task_blocked_by(
-                    tasks_before.get("tasks", []), include_petitioned=True)
+                    tasks_before.get("tasks", []), include_petitioned=True,
+                    settled=settled_petitioned)
                 actionable_ids = {
                     str(t["id"]) for t in tasks_before.get("tasks", [])
                     if isinstance(t, dict) and t.get("id") not in (None, "")
@@ -16921,6 +16925,20 @@ class LoopSupervisor:
         return (f"ralphctl amend {self.cfg.run_id} {slug} --waive "
                f"{shlex.quote(reason)}")
 
+    def _settled_petitioned_ids(self, tasks_doc: dict | None = None) -> frozenset[str]:
+        """v0.38 (#306, #320): the ids of every settled `petitioned` task
+        (an applied task-level waiver, a clause-bound waiver of its
+        obligation, or a CONFIRMED adjudication), through the one rule in
+        `state.settled_petitioned_task_ids`. Every reader that decides
+        whether a petitioned task still holds something -- the scheduler,
+        the blocked-by derivation, the petition-held hold, the terminal-
+        success blockers and the plan_complete check -- calls this."""
+        if tasks_doc is None:
+            tasks_doc = self.run.read_tasks()
+        return state.settled_petitioned_task_ids(
+            self.run, tasks_doc.get("tasks") or [], config_root=CONFIG_DIR,
+            approach=self._approach)
+
     def _terminal_success_blockers(self) -> list[str]:
         """Task 013 (requirement I, #98): the ONE predicate the exit-gate
         site (`_step_review`'s VERIFIED check; the off-budget grace
@@ -17059,7 +17077,9 @@ class LoopSupervisor:
         is just the `self.run.read_tasks()` plumbing around it, matching
         every other `tasks_doc`-reading call site in this class.
         """
-        return state.steering_origin_outstanding(self.run.read_tasks())
+        tasks_doc = self.run.read_tasks()
+        return state.steering_origin_outstanding(
+            tasks_doc, settled=self._settled_petitioned_ids(tasks_doc))
 
     def _review_cure_origin_outstanding(self) -> list[dict]:
         """Task 018 (PRD requirement D.1, #220): `review-cure`-origin tasks
@@ -17074,7 +17094,9 @@ class LoopSupervisor:
         this is just the `self.run.read_tasks()` plumbing around it,
         matching `_steering_origin_outstanding`'s own shape.
         """
-        return state.review_cure_origin_outstanding(self.run.read_tasks())
+        tasks_doc = self.run.read_tasks()
+        return state.review_cure_origin_outstanding(
+            tasks_doc, settled=self._settled_petitioned_ids(tasks_doc))
 
     def _unconsumed_steering_patch(self) -> dict:
         """status.json patch (task 006) applied at every terminal-state write:
@@ -17508,15 +17530,12 @@ class LoopSupervisor:
         completion` already says.
         """
         tasks = tasks_doc.get("tasks") or []
-        confirmed: set[str] | None = None
+        settled = self._settled_petitioned_ids(tasks_doc)
         outstanding = []
         for t in tasks:
-            if isinstance(t, dict) and t.get("status") == "petitioned":
-                if confirmed is None:
-                    confirmed, tampered = petitions.confirmed_obligations(self.run)
-                    if tampered:
-                        confirmed = set()
-                if petitions.petitioned_task_accepted(t, confirmed):
+            if isinstance(t, dict) and t.get("status") == state.TASK_STATUS_PETITIONED:
+                if state.task_dependency_satisfied(
+                        t.get("id"), state.TASK_STATUS_PETITIONED, settled):
                     continue
                 outstanding.append(t)
                 continue

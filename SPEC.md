@@ -3097,6 +3097,47 @@ detection itself is untouched; the four display surfaces that DO pass it are
 `ui_server._with_task_blocked_by`, and `worker.md`'s own prose naming the same
 map for the fourth (a worker reading its own blocked dependents).
 
+**A settled `petitioned` task satisfies its dependents (v0.38, #306, #320).**
+A `petitioned` task is *settled* when any one of three sources covers it: an
+applied task-level operator waiver (`ralphctl amend <run> <task> --waive`; the
+last ruling recorded against the task is the operator's current word, and a
+ruling pinned to another approach does not bind this one), a run-level
+clause-bound waiver (`<run>/waivers/`) whose clause matches the obligation the
+task's petition carries (`petitions.task_petition_obligation`, the same
+substring-either-direction match a CONFIRMED adjudication uses), or a CONFIRMED
+adjudication of that obligation (`petitions.petitioned_task_accepted`; a
+tampered adjudication record counts as empty). A settled task keeps the status
+`petitioned` -- a waiver is not a status change -- but it reads as a satisfied
+dependency and never blocks `plan_complete` or a terminal-success verdict.
+The rule lives in one place beside `TASK_DEPENDENCY_SATISFIED_STATUSES`:
+`state.task_dependency_satisfied(task_id, status, settled)` is the predicate and
+`state.settled_petitioned_task_ids` derives the settled set from the three
+sources. `scheduler.select_next_task`/`pending_candidates` (through `settled`),
+`state.task_blocked_by` (a settled task is no cause and no member of the
+`include_petitioned` hold, so the `taskBlockedBy` overlay on `GET /tasks`,
+`ralphctl tasks` and the hub drops its dependents; a live `GET /tasks` payload
+carries the settled ids as `taskSettledPetitioned`), the petition-held hold in
+`_step_worker`, `LoopSupervisor._outstanding_for_completion` (the `plan_complete`
+check) and `_terminal_success_blockers` all read it through
+`LoopSupervisor._settled_petitioned_ids`. An unsettled petitioned dependency
+still blocks its dependents, and `skipped` keeps its meaning ("dead"): it still
+satisfies nothing, waiver or not.
+
+**A `petitioned` task has operator-only exits (v0.38, #306, #320).** The
+task-status table lists no successor of `petitioned`, so a worker's or verify's
+report of `petitioned -> validated` or `petitioned -> skipped` is refused in
+both variants. An operator status ruling (`ralphctl amend <run> <task> --status
+validated|skipped`, applied through `state.apply_task_status_change` with
+`source="operator"`) takes either move, in the base and the vigilant table
+alike (`transitions.OPERATOR_TASK_STATUS_EXITS`, read by
+`is_legal_task_status_transition(..., operator_ruling=True)`), and emits
+`amendment_status_applied`. The same ruling source may also take the un-reopen
+edge out of `pending` for a task a cure pass re-opened -- one present in
+`status.json`'s `preCureStatuses` -- so an operator `--status validated` ruling
+on a re-opened task is applied (and emits `task.un_reopened`, `source:
+"operator"`); the un-reopen guard still refuses the same move from every hat and
+for an operator ruling on a task no cure re-opened.
+
 **`superseded` unblocks its own dependents and never strands plan completion
 (v0.20 requirement B.1, #156, task 016).** A forced split -- triggered when a
 task's own progress budget (§5.2's `progressBudget` field, above) is spent
