@@ -3223,8 +3223,11 @@ map for the fourth (a worker reading its own blocked dependents).
 **A settled `petitioned` task satisfies its dependents (v0.38, #306, #320).**
 A `petitioned` task is *settled* when any one of three sources covers it: an
 applied task-level operator waiver (`ralphctl amend <run> <task> --waive`; the
-last ruling recorded against the task is the operator's current word, and a
-ruling pinned to another approach does not bind this one), a run-level
+last criteria ruling -- a waiver or a criteria replacement -- recorded against
+the task is the operator's current word, so a later replacement revokes the
+waiver while a `--status` ruling, which carries no criteria text, never does,
+whether or not the engine applied it; a ruling pinned to another approach does
+not bind this one), a run-level
 clause-bound waiver (`<run>/waivers/`) whose clause matches the obligation the
 task's petition carries (`petitions.task_petition_obligation`, the same
 substring-either-direction match a CONFIRMED adjudication uses), or a CONFIRMED

@@ -604,8 +604,10 @@ its own earlier verdict judged (`judge: verdict_gate`, re-entering `verdict_gate
 The phase review is not keyed.
 
 A `petitioned` task is **settled** when an applied operator waiver covers it (a
-task-level `ralphctl amend <run> <task> --waive`, or a run-level clause waiver
-whose clause matches the obligation its petition carries) or a CONFIRMED
+task-level `ralphctl amend <run> <task> --waive`, which stays binding until a
+later criteria replacement; a `--status` ruling never revokes it -- or a
+run-level clause waiver whose clause matches the obligation its petition
+carries) or a CONFIRMED
 adjudication names that obligation. A settled task keeps the status
 `petitioned`, satisfies every `dependsOn` that names it, and never blocks
 `plan_complete` or a terminal-success verdict. One rule,

@@ -5309,6 +5309,12 @@ def _settled_ids(petitioned, *, confirmed, amendments, waivers,
     for e in amendments:
         if e.get("scope") != "task":
             continue
+        # A `mode: status` ruling moves a status; it carries no criteria
+        # text, so it is neither a waiver nor a criteria replacement and
+        # never supersedes the criteria ruling that binds the task (the
+        # review criteria reader excludes it the same way).
+        if e.get("mode") == AMENDMENT_MODE_STATUS:
+            continue
         latest[str(e.get("taskId"))] = e
     waived_ids = {
         tid for tid, e in latest.items()

@@ -1060,8 +1060,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.38 task cure-01-01-4 second retry: +8 tests / +1 module (tests/
     # test_petition_hold_phase_gate.py: a hold behind a closed phase gate),
     # in both tiers -> fast 9306/577, smoke 7525/450.
-    "fast": {"tests": 9306, "modules": 577},
-    "smoke": {"tests": 7525, "modules": 450},
+    # v0.38 task cure-01-02: +15 tests / +1 module (tests/test_waiver_survives_
+    # status_ruling.py: a status-only ruling does not revoke a waiver), in
+    # both tiers -> fast 9321/578, smoke 7540/451.
+    "fast": {"tests": 9321, "modules": 578},
+    "smoke": {"tests": 7540, "modules": 451},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
