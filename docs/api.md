@@ -1020,8 +1020,10 @@ B.2: the final review would be dispatched on the review state key a deferred
 VERIFIED already judged) takes an empty body too: `409` when any key is sent,
 otherwise the park is released (`input.answered`, `outcome:
 "verified_unchanged_released"`, `kind: "verified_unchanged"`, `approach`) and the
-run re-enters `review`, which compares the key again, so a release with nothing
-changed parks again without a review dispatch. `inputQuestion.heldTasks` lists
+run re-enters `review` (`verdict_gate` when `inputQuestion.judge` is
+`verdict_gate`: the final peer gate parks the same way on a key its own earlier
+verdict judged, v0.38 B.3), which compares the key again, so a release with nothing
+changed parks again without a dispatch. `inputQuestion.heldTasks` lists
 `taskId`, `title`, `status` and `blockedBy` per non-terminal task; the question
 never expires (`expiresAt: null`, `onTimeout: "never"`).
 

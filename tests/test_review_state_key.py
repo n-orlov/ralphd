@@ -23,6 +23,7 @@ import pytest
 
 from ralphd.engine import state as engine_state
 from ralphd.engine.runner import IterationResult
+from tests import test_review_state_key_edges as edges
 from tests.conftest import ScriptedRunner, attach_runner, make_supervisor
 
 HELD = "001"
@@ -354,3 +355,65 @@ def test_the_first_attempt_s_unjudged_head_is_a_changed_key(tmp_path, shape):
     assert runner.calls["review"] == 3, "the unjudged HEAD is judged"
     assert out[:2] == ("advance", "worker")
     assert sup.run.read_status().get("pauseReason") != "verified_unchanged"
+
+
+# ---------------------------------------------------------------------------
+# B.3 controls (the peer verdict gate shares the key; the hold itself is
+# pinned in tests/test_review_state_key_edges.py)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("change", ["head", "task_status"])
+def test_a_changed_key_dispatches_the_final_peer_gate_normally(
+        tmp_path, change):
+    sup, runner = edges._gate_supervisor(tmp_path)
+    edges._bounded(sup._step_verdict_gate())
+    edges._bounded(edges._release_with_nothing_changed(sup))
+
+    if change == "head":
+        sup._workspace_head_sha = lambda: "b" * 40
+    else:
+        doc = sup.run.read_tasks()
+        doc["tasks"].append(edges._task("002", "completed"))
+        sup.run.write_tasks(doc)
+
+    out = edges._bounded(sup._step_verdict_gate())
+
+    assert runner.calls["verdict_gate"] == 2, "the gate hat was dispatched"
+    assert out != ("advance", "paused", "verified_unchanged")
+    assert sup.run.read_status().get("pauseReason") != "verified_unchanged"
+
+
+def _truncated_until(state: dict):
+    """A reply that ended `stopReason: length` with no text (no verdict)
+    until `state["usable"]` is set, then a passing verdict."""
+    def hat(sup, prompt=""):
+        if state.get("usable"):
+            return edges._ok({"verdict": "verified"})
+        r = IterationResult(exit_code=0)
+        r.final_text = ""
+        r.output_truncated = True
+        r.duration_s = 1.0
+        r.usage = {"input": 1, "output": 1, "totalTokens": 2}
+        return r
+    return hat
+
+
+def test_a_gate_dispatch_with_no_usable_verdict_judged_nothing(tmp_path):
+    """The converse of B.3: a gate dispatch that returned no usable verdict
+    never judged the state, so the next entry dispatches the gate again."""
+    hat_state: dict = {}
+    sup, runner = edges._supervisor(
+        tmp_path, [edges._task("001", "completed")],
+        {"verdict_gate": [_truncated_until(hat_state)]},
+        peer_verdict_gate=True)
+    first = edges._bounded(sup._step_verdict_gate())
+    assert first == ("tail",), first
+    calls = runner.calls["verdict_gate"]
+    recorded = (sup.run.read_status().get("reviewStateKeys") or {}).get("1")
+    assert "gateJudged" not in (recorded or {})
+
+    hat_state["usable"] = True
+    second = edges._bounded(sup._step_verdict_gate())
+
+    assert runner.calls["verdict_gate"] > calls, "the gate hat was dispatched"
+    assert second == ("done", "succeeded")

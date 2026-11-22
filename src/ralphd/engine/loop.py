@@ -1670,8 +1670,11 @@ class LoopSupervisor:
         if secret_handled or any(
                 v not in (None, [], ()) for v in others.values()):
             raise answering.AnswerRefused(
-                "this run is parked because the final review already "
-                "returned VERIFIED on this exact state; change something "
+                "this run is parked because the final "
+                + ("peer verdict gate already returned a verdict"
+                   if question.get("judge") == "verdict_gate" else
+                   "review already returned VERIFIED")
+                + " on this exact state; change something "
                 f"(`ralphctl amend {self.cfg.run_id} ...` or a commit), "
                 f"then `ralphctl answer {self.cfg.run_id}` with no options")
         record = {"outcome": "verified_unchanged_released",
@@ -9860,6 +9863,13 @@ class LoopSupervisor:
             self._budget_exhausted_tail = True
             return ("tail",)
         self.run.emit("phase", phase="verdict_gate", approach=approach)
+        # v0.38 B.3: the final peer gate shares the review state key with the
+        # final review. A dispatch on the key an earlier verdict of its own
+        # already judged is not made: the run parks `verified_unchanged`.
+        gate_key = self._review_state_key()
+        if self._verdict_gate_key_unchanged(approach, gate_key):
+            return self._park_for_verified_unchanged(
+                approach, gate_key, judge="verdict_gate")
         result = await self._dispatch_verdict_gate()
         while True:
             approved, payload, no_verdict = await self._verdict_gate_verdict(
@@ -9881,6 +9891,7 @@ class LoopSupervisor:
                          "verdict_gate_no_verdict")
             return ("tail",)
         self._reset_judge_fault_episode()
+        self._record_gate_judged_key(approach, gate_key)
         self._record_gate_approach_verdict(approach, approved, payload)
         self._record_verdict_gate_peek(approach)
         if approved:
@@ -15403,6 +15414,20 @@ class LoopSupervisor:
         attempt returns can set one again."""
         self._write_review_key_entry(approach, {"dispatched": key})
 
+    def _verdict_gate_key_unchanged(self, approach: int, key: dict) -> bool:
+        """True iff the final peer gate of this approach already returned a
+        verdict on a key equal to `key` (v0.38 B.3)."""
+        judged = self._review_key_entry(approach).get("gateJudged")
+        return isinstance(judged, dict) and judged.get("key") == key
+
+    def _record_gate_judged_key(self, approach: int, key: dict) -> None:
+        """The final peer gate returned a usable verdict on `key`: remember
+        it, so a later dispatch on the same key is held. A no-verdict outcome
+        records nothing -- nothing was judged."""
+        entry = dict(self._review_key_entry(approach))
+        entry["gateJudged"] = {"key": key}
+        self._write_review_key_entry(approach, entry)
+
     def _record_deferred_verified_key(
         self, approach: int, blockers: list[str],
     ) -> None:
@@ -15464,8 +15489,30 @@ class LoopSupervisor:
             "blockedBy": sorted(blocked.get(tid, [])),
         } for tid, t in sorted(held.items())]
 
-    def _verified_unchanged_question_text(self, entries: list[dict]) -> str:
+    def _verified_unchanged_question_text(
+            self, entries: list[dict], judge: str = "review") -> str:
         run_id = self.cfg.run_id
+        if judge == "verdict_gate":
+            lines = [
+                "The final peer verdict gate already returned a verdict on "
+                "this exact state (same workspace HEAD, same task statuses). "
+                "Asking it again would judge the same state twice, so the "
+                "run holds here."]
+            for e in entries:
+                blockers = (", ".join(e["blockedBy"]) if e["blockedBy"]
+                            else "nothing (the task is simply not done)")
+                lines.append(f"  task {e['taskId']} [{e['status']}]"
+                             + (f" ({e['title']})" if e["title"] else "")
+                             + f": blocked by {blockers}")
+            lines += [
+                "",
+                "Change something, then answer: commit to the workspace or "
+                f"rule a task (`ralphctl amend {run_id} <task> --status "
+                f"validated|skipped <reason>`), then run "
+                f"`ralphctl answer {run_id}`. An answer with nothing "
+                "changed parks again.",
+            ]
+            return "\n".join(lines)
         lines = [
             "The final review already returned VERIFIED on this exact state "
             "(same workspace HEAD, same task statuses) and the engine "
@@ -15489,17 +15536,20 @@ class LoopSupervisor:
         ]
         return "\n".join(lines)
 
-    def _park_for_verified_unchanged(self, approach: int, key: dict) -> tuple:
+    def _park_for_verified_unchanged(self, approach: int, key: dict,
+                                     judge: str = "review") -> tuple:
         """v0.38 B.2: do not dispatch the final review on a key a deferred
         VERIFIED already judged. Park `awaiting_input`
         (`pauseReason: verified_unchanged`), naming the non-terminal tasks
         and their blockers, from `review`; a release re-enters `review`,
-        which compares the key again (an unchanged one re-parks)."""
+        which compares the key again (an unchanged one re-parks). With
+        `judge="verdict_gate"` (v0.38 B.3) the park is the final peer gate's
+        own, from and back to `verdict_gate`."""
         self._pause.clear()
         self.run.emit("log", message="paused at next iteration boundary")
         entries = self._verified_unchanged_entries()
         question = state.build_input_question(
-            judge="review", trigger=state.VERIFIED_UNCHANGED_INPUT_TRIGGER,
+            judge=judge, trigger=state.VERIFIED_UNCHANGED_INPUT_TRIGGER,
             blocking=[],
             cure_rounds_used=self._cure_passes_for_approach(approach),
             cure_rounds_allowed=self._cure_rounds_allowed(approach),
@@ -15507,7 +15557,7 @@ class LoopSupervisor:
             parked_at_epoch=self._now_epoch(),
             timeout_min=getattr(self.cfg, "input_timeout_min", None),
             kind=state.VERIFIED_UNCHANGED_KIND)
-        text = self._verified_unchanged_question_text(entries)
+        text = self._verified_unchanged_question_text(entries, judge)
         question.update({"heldTasks": entries, "reviewStateKey": key,
                          "text": text})
         self.run.update_status(
@@ -15519,13 +15569,16 @@ class LoopSupervisor:
                                          if k != "parkedAt"})
         self.run.emit("log", level="warning", message=(
             f"run state recorded `{AWAITING_INPUT_STATE}` "
-            f"(verified_unchanged, approach {approach}): the final review "
-            "already returned VERIFIED on this HEAD and these task "
-            "statuses; not dispatching it again"))
+            f"(verified_unchanged, approach {approach}): the final "
+            + ("peer verdict gate already returned a verdict"
+               if judge == "verdict_gate" else
+               "review already returned VERIFIED")
+            + " on this HEAD and these task statuses; not dispatching it "
+            "again"))
         if self.notifier is not None:
             self._notify_input_event(
                 f"run {self.cfg.run_id} is parked in awaiting_input\n{text}")
-        self._advance("review", "paused", "verified_unchanged")
+        self._advance(judge, "paused", "verified_unchanged")
         return ("advance", "paused", "verified_unchanged")
 
     def _review_verified_edge(self, approach: int) -> tuple:
@@ -15968,6 +16021,14 @@ class LoopSupervisor:
             self._advance("paused", "worker",
                           "paused_resumed_unresolvable_edge")
             return ("advance", "worker", "paused_resumed_unresolvable_edge")
+        if (reason == state.VERIFIED_UNCHANGED_INPUT_TRIGGER
+                and isinstance(opening.get("inputQuestion"), dict)
+                and opening["inputQuestion"].get("judge") == "verdict_gate"):
+            # v0.38 B.3: the final peer gate's own unchanged-key park
+            # re-enters `verdict_gate`, which compares the key again.
+            self._advance("paused", "verdict_gate",
+                          "paused_resumed_verdict_gate")
+            return ("advance", "verdict_gate", "paused_resumed_verdict_gate")
         if reason == "verdict_gate_operator_input_needed":
             # Task 008 (v0.27 requirement C.1): the peer verdict gate's
             # own pause -- review already spoke `verified` for this

@@ -1008,8 +1008,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # (a retried review binds its VERIFIED to the retry's HEAD; the first
     # attempt's unjudged HEAD is a changed key, two reply shapes each), in
     # both tiers -> fast 9106, smoke 7325.
-    "fast": {"tests": 9106, "modules": 570},
-    "smoke": {"tests": 7325, "modules": 443},
+    # v0.38 task 004: +11 tests / +1 module (tests/test_review_state_key_
+    # edges.py: 8 tests; 3 control nodes added to tests/test_review_state_
+    # key.py), in both tiers -> fast 9117/571, smoke 7336/444.
+    "fast": {"tests": 9117, "modules": 571},
+    "smoke": {"tests": 7336, "modules": 444},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

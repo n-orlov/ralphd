@@ -204,6 +204,7 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `verdict_gate` | verdict_gate | peer verdict gate only | `finishing` | `verdict_gate_approved` |
 | `verdict_gate` | verdict_gate | peer verdict gate only | `cure` | `verdict_gate_rejected_curable_pass_available` |
 | `verdict_gate` | verdict_gate | peer verdict gate only | `paused` | `verdict_gate_operator_input_needed` |
+| `verdict_gate` | verdict_gate | peer verdict gate only | `paused` | `verified_unchanged` |
 | `verdict_gate` | verdict_gate | peer verdict gate only | `replan` | `verdict_gate_rejected_approach_left` |
 | `verdict_gate` | verdict_gate | peer verdict gate only | `finishing` | `verdict_gate_rejected_no_approach_left` |
 | `cure` | — | both | `worker` | `cure_pass_appended` |

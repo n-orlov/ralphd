@@ -586,8 +586,12 @@ and review's verified edge is taken. Otherwise it parks in `awaiting_input`
 expires) naming the non-terminal tasks that held the earlier VERIFIED and what
 blocks each. A changed HEAD or a changed task status dispatches the review as
 before. `ralphctl answer <run>` releases the park and the run re-enters `review`,
-so a release with nothing changed parks again with no review dispatch. The phase
-review is not keyed.
+so a release with nothing changed parks again with no review dispatch. The key is
+compared on every `worker -> review` edge (`verdict_ready`, `blocked_with_failures`,
+`doomed_plan_unverifiable`, `petition_held_no_task_bound`,
+`unsatisfiable_and_nothing_left`) and by the final peer verdict gate against the key
+its own earlier verdict judged (`judge: verdict_gate`, re-entering `verdict_gate`).
+The phase review is not keyed.
 
 A `petitioned` task is **settled** when an applied operator waiver covers it (a
 task-level `ralphctl amend <run> <task> --waive`, or a run-level clause waiver

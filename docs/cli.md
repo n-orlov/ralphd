@@ -2014,7 +2014,12 @@ again). Any option on that `answer`, and a bare `ralphctl unpause`, is refused.
 A **`verified_unchanged` question** (`inputQuestion.kind: verified_unchanged`,
 `trigger: verified_unchanged`; v0.38 B.2) is what the final review parks the run
 on when it would be dispatched on the review state key (workspace HEAD plus the
-sorted `(task id, status, settled)` triples) a deferred VERIFIED already judged.
+sorted `(task id, status, settled)` triples) a deferred VERIFIED already judged,
+whichever of the five `worker -> review` edges (`verdict_ready`,
+`blocked_with_failures`, `doomed_plan_unverifiable`, `petition_held_no_task_bound`,
+`unsatisfiable_and_nothing_left`) entered it. The final peer verdict gate parks the
+same way (`judge: verdict_gate`) when it would be dispatched on the key its own
+earlier verdict judged; a phase review is never parked.
 It never expires, and `inputQuestion.heldTasks` and `inputQuestion.text` name the
 non-terminal tasks that held that VERIFIED and what blocks each. Change something
 first (an `amend` ruling on a blocking task, or a commit), then run `ralphctl

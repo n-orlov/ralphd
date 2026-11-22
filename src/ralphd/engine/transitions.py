@@ -805,6 +805,11 @@ PEER_VERDICT_GATE_DELTA: dict[str, tuple[Transition, ...]] = {
         # ahead of both. ON by default, gated by the SAME `JobConfig.
         # operator_input_needed_pause` flag review's own edge reads.
         T("paused", "verdict_gate_operator_input_needed"),
+        # v0.38 B.3: the final peer gate shares the review state key -- it is
+        # not dispatched twice on one unchanged key after its own earlier
+        # verdict; the run parks `awaiting_input` (`verified_unchanged`) from
+        # `verdict_gate` and re-enters it on release.
+        T("paused", "verified_unchanged"),
         T("replan", "verdict_gate_rejected_approach_left"),
         T("finishing", "verdict_gate_rejected_no_approach_left"),
     ),
