@@ -4068,7 +4068,9 @@ shape as `operator_input_needed_pause`'s own disable flag above), plus the
 three image supply keys `image`, `base_image` and
 `dockerfile` (settled as one unit, §3.2), plus three
 path-valued keys resolved relative to the template directory: `skills` (a list of
-directory names), `creds` (one directory name) and `prd` (a filename, default
+directory names), `creds` (one directory name, default `creds`:
+a template's `creds/` directory is copied whenever it exists and no `creds`
+name or `--creds` flag says otherwise, `job.yaml` or not) and `prd` (a filename, default
 `prd.md`). Task 006 retired `model_strategy`/`fast_model` from this list — a
 template's own `job.yaml` may still literally carry either (they translate at
 engine load time like any other job.yaml, §4.1), but `start` no longer copies

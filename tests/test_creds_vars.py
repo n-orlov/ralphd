@@ -65,6 +65,33 @@ def test_template_creds_directory_copies_vars_files(ctl, tmp_path):
     assert (staged / "ci.vars").read_text() == f"CI_URL={URL}\n"
 
 
+@pytest.mark.parametrize("job_yaml", [None, "max_iterations: 7\n"],
+                         ids=["no-job-yaml", "job-yaml-without-creds-key"])
+def test_template_default_creds_directory_copies_vars_files(ctl, tmp_path, job_yaml):
+    """SPEC 6.x: a template with no job.yaml (or one naming no `creds:`
+    directory) still contributes its `creds/` directory."""
+    tdir = ctl.registry / "templates" / "implicit"
+    (tdir / "creds").mkdir(parents=True)
+    (tdir / "creds" / "ci.vars").write_text(f"CI_URL={URL}\n")
+    if job_yaml is not None:
+        (tdir / "job.yaml").write_text(job_yaml)
+    res = ctl.run("start", "--template", "implicit", "--prd", str(ctl.prd),
+                  "--llm", "none", "--run-id", "implicit-run")
+    assert res.returncode == 0, res.stderr
+    staged = ctl.registry / "configs" / "implicit-run" / "creds"
+    assert (staged / "ci.vars").read_text() == f"CI_URL={URL}\n"
+
+
+def test_template_without_creds_directory_stages_no_creds(ctl):
+    tdir = ctl.registry / "templates" / "bare"
+    tdir.mkdir(parents=True)
+    res = ctl.run("start", "--template", "bare", "--prd", str(ctl.prd),
+                  "--llm", "none", "--run-id", "bare-run")
+    assert res.returncode == 0, res.stderr
+    staged = ctl.registry / "configs" / "bare-run" / "creds"
+    assert not staged.exists() or list(staged.iterdir()) == []
+
+
 # --- placement, rebuild, delete -------------------------------------------
 
 def _config_with(tmp_path, **files):

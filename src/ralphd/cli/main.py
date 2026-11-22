@@ -2228,8 +2228,15 @@ def _apply_template(args) -> Path | None:
     if not args.skills:
         skill_names = cfg.get("skills") or []
         args.skills = [str(tdir / s) for s in skill_names] or None
-    if not args.creds and cfg.get("creds"):
-        args.creds = str(tdir / cfg["creds"])
+    # A template's creds directory is the `creds:` name in its job.yaml,
+    # default `creds/` -- so a template with no job.yaml (or one that does
+    # not name a creds directory) still contributes its `creds/` when it
+    # has one (#314; the same default `ralphctl doctor` reports against).
+    if not args.creds and tdir is not None:
+        if cfg.get("creds"):
+            args.creds = str(tdir / cfg["creds"])
+        elif (tdir / "creds").is_dir():
+            args.creds = str(tdir / "creds")
     if args.prd is None and tdir is not None:
         prd_name = cfg.get("prd", "prd.md")
         prd_path = tdir / prd_name

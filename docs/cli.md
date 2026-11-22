@@ -332,7 +332,8 @@ templates/<name>/
 `llm`, `model`, `thinking`, `notifier_url` (task 010, requirement B.2 --
 the `--notifier-url` endpoint), `skills` (a list of directory names
 relative to the template dir), `creds` (a directory name relative to the
-template dir), and `prd` (a filename relative to the template dir, default
+template dir, default `creds`: a template's `creds/` directory is copied even
+when it has no `job.yaml` or its `job.yaml` names no `creds`), and `prd` (a filename relative to the template dir, default
 `prd.md`). Every one of these has a corresponding `start` flag; **an explicit
 flag on the command line always overrides the template's value** for that
 field (`--skills`/`--creds` override wholesale, not merge). For `image`,
