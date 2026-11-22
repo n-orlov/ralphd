@@ -614,7 +614,13 @@ def test_steering_post_proxies_and_creates_steering_file(tmp_path, live, ui):
     assert any("hub steering message" in f.read_text() for f in steering_files)
 
     hold_file.touch()
-    run.wait_terminal()
+    # v0.38 B.2 (#320): the steer hat settles the message without moving
+    # HEAD or the task, so the deferred VERIFIED's review state key is
+    # unchanged and the run parks `verified_unchanged` rather than ending.
+    settled = run.wait_state(("awaiting_input", "succeeded", "failed",
+                              "aborted"))
+    assert settled["state"] == "awaiting_input", settled
+    assert settled["pauseReason"] == "verified_unchanged", settled
 
 
 def test_steering_post_unknown_run_404(tmp_path, ui):

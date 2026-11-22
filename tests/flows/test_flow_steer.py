@@ -347,8 +347,11 @@ def test_a_malformed_spool_request_is_refused_without_ending_the_run(
     spool (never through `hat_tools.call()`, which always writes valid
     JSON) must be answered `ok: false` -- `SteerToolBroker.serve_once()`'s
     `except (OSError, json.JSONDecodeError)` branch -- and must not crash
-    the broker's asyncio task, hang the steer iteration, or fail the run:
-    the run still has to reach its ordinary terminal, verified state."""
+    the broker's asyncio task, hang the steer iteration, or fail the run.
+    v0.38 B.2 (#320): this steer inserts nothing and moves no HEAD, so the
+    review state key equals the one the deferred VERIFIED judged and the run
+    parks `verified_unchanged` (the review is not re-dispatched) -- the
+    ordinary outcome of a settled no-op message, not a failure."""
     # task 009 (B.3): see the hold rationale on the sibling test above.
     hold_file = tmp_path / "hold-spool-malformed"
     e = engine_factory(job={"on_complete": "exit", "iterations": 12},
@@ -362,11 +365,16 @@ def test_a_malformed_spool_request_is_refused_without_ending_the_run(
                       {"message": "drop a bad request", "name": "bad"})
     assert code == 202 and res["file"] == "001-bad.md"
     hold_file.touch()  # release: let the held worker iteration proceed
-    assert wait_engine_exit(e, timeout=90) == 0
+    e.wait_state(("awaiting_input", "succeeded", "failed", "aborted"),
+                 timeout=90)
 
     st = status(e)
-    assert st.get("state") == "succeeded", st
-    assert st.get("verdict") == "verified", st
+    assert st.get("state") == "awaiting_input", st
+    assert st.get("pauseReason") == "verified_unchanged", st
+    assert st.get("verdict") is None, st
+    reviews = [ev for ev in events_of(e, "iteration.start")
+               if ev.get("phase") == "review"]
+    assert len(reviews) == 1, "the unchanged key is not judged a second time"
 
     answer_path = e.run_dir / "hat-tools" / "responses" / "stub-malformed.json"
     assert answer_path.exists(), "the malformed request was never answered"

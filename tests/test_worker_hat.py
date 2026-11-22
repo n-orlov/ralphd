@@ -2611,14 +2611,17 @@ def test_unsettled_steering_at_verified_defers_once_through_the_declared_edge(
         f"the deferral must name the unsettled file: {warnings!r}")
 
 
-def test_the_deferred_edge_is_settled_by_the_steer_hat_then_review_verifies(
+def test_the_deferred_edge_is_settled_by_the_steer_hat_then_the_equal_key_parks(
         tmp_path):
     """What the removed in-place loop used to do by hand, now done by the
     ordinary dispatch loop: the deferral lands in `worker`, whose
     absolute-top-priority check (task 012) routes to the `steer` hat, which
     settles the message and consumes the file on its clean exit -- and only
-    then does the VERIFIED verdict make the run terminal (v0.38 B.2: on the
-    unchanged state that verdict is reused, the review is not re-run)."""
+    then is review asked again. v0.38 B.2 (#320): the steer settled the
+    message without moving HEAD or the task, so the review state key equals
+    the one the deferred VERIFIED judged: the review is not re-run and the
+    remembered verdict is not taken in its place -- the run parks
+    `verified_unchanged` instead of going terminal."""
     root = tmp_path / "run"
     run = _seed(root, [{"id": svd013_TASK_1, "status": "completed"}])
     fname = run.add_steering("hold on, check one more thing", "lastcall")
@@ -2641,11 +2644,13 @@ def test_the_deferred_edge_is_settled_by_the_steer_hat_then_review_verifies(
     assert fname in consumed
     assert sup._terminal_success_blockers() == []
 
-    assert asyncio.run(sup._step_review()) == ("done", "succeeded")
+    assert asyncio.run(sup._step_review()) == (
+        "advance", "paused", "verified_unchanged")
     status = sup.run.read_status()
-    assert status.get("state") == "succeeded"
-    assert status.get("verdict") == "verified"
-    assert status.get("unconsumedSteering") == []
+    assert status.get("state") == "awaiting_input"
+    assert status.get("pauseReason") == "verified_unchanged"
+    assert status.get("verdict") is None
+    assert sup.run.pending_steering() == []
 
 
 def test_both_blockers_are_named_by_the_one_shared_predicate(tmp_path):

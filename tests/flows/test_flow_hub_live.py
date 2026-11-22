@@ -52,7 +52,13 @@ HUB_LIVE_ORDERED_STEPS = [
     "iteration:planning",
     "iteration:worker",
     "steering:received:001-flow019.md",
-    "state:succeeded",
+    # v0.38 B.2 (#320): the review's VERIFIED defers on the pending message,
+    # the steer settles it without moving HEAD or the task, and the review is
+    # entered again on the unchanged review state key: it parks
+    # `verified_unchanged` (status.json, below) without a second dispatch.
+    "verdict:review:verified@1",
+    "steering:consumed:001-flow019.md",
+    "phase:review@1",
 ]
 
 
@@ -154,16 +160,19 @@ def test_hub_reads_and_steers_a_real_engine_in_process(tmp_path, live):
                    for f in steering_files), steering_files
     finally:
         hold_file.touch()
-        st = run.wait_terminal(timeout=60)
-        assert st.get("state") == "succeeded", (
-            f"flow hub live: the run should still reach 'succeeded' after "
-            f"the hub's steer POST and the hold's release, got "
-            f"{st.get('state')!r} (status.json: {st})")
+        st = run.wait_state(("awaiting_input", "succeeded", "failed",
+                             "aborted"), timeout=60)
+        assert st.get("state") == "awaiting_input", (
+            f"flow hub live: after the hub's steer POST and the hold's "
+            f"release the run should park on the unchanged review state key, "
+            f"got {st.get('state')!r} (status.json: {st})")
+        assert st.get("pauseReason") == "verified_unchanged", st
 
-        # -- run detail and task counts again, now that the run is over --
+        # -- run detail and task counts again, now that the run is parked --
         code, detail = hub.get(f"/api/runs/{run.run_id}")
         assert code == 200, detail
-        assert detail["status"].get("state") == "succeeded", detail["status"]
+        assert detail["status"].get("state") == "awaiting_input", \
+            detail["status"]
 
         final_counts = _engine_task_counts(run)
         rows = {r["runId"]: r for r in run_list(run.registry)}
@@ -171,7 +180,9 @@ def test_hub_reads_and_steers_a_real_engine_in_process(tmp_path, live):
         assert row["tasksCompleted"] == final_counts.get("completed", 0) == 1, row
         assert row["tasksDisplay"] == format_task_fraction(final_counts), row
 
-        assert_steps_include(flow_steps(run), HUB_LIVE_ORDERED_STEPS,
+        steps = flow_steps(run)
+        assert_steps_include(steps, HUB_LIVE_ORDERED_STEPS,
                              flow="flow hub live")
+        assert steps.count("iteration:review") == 1, steps
 
         hub.close()

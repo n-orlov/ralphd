@@ -352,7 +352,8 @@ def test_steering_during_review_iteration_never_silently_dropped(engine_factory,
 
     hold_file.touch()  # release: let the held review iteration proceed
 
-    status = e.wait_state(("succeeded", "failed", "aborted"), timeout=90)
+    status = e.wait_state(("awaiting_input", "succeeded", "failed", "aborted"),
+                          timeout=90)
 
     consumed = json.loads((e.run_dir / "steering" / ".consumed.json").read_text()) \
         if (e.run_dir / "steering" / ".consumed.json").exists() else []
@@ -371,15 +372,22 @@ def test_steering_during_review_iteration_never_silently_dropped(engine_factory,
     # nothing left to do once its one task is already completed) the fix in
     # task 005 routes the run back to a worker iteration specifically to
     # consume the steering before re-reviewing, so the expected concrete
-    # outcome is full consumption and a clean VERIFIED success -- assert
-    # that too, not just the weaker either/or.
-    assert status["state"] == "succeeded"
-    assert status["verdict"] == "verified"
+    # outcome is full consumption -- assert that too, not just the weaker
+    # either/or. v0.38 B.2 (#320): the steer settled the message without
+    # moving HEAD or the task, so the review state key equals the one the
+    # deferred VERIFIED already judged: the run never goes terminal on the
+    # remembered verdict, it parks `verified_unchanged` for the operator.
+    assert status["state"] == "awaiting_input"
+    assert status["pauseReason"] == "verified_unchanged"
+    assert status.get("verdict") is None
     assert consumed_it, f"expected steering to be consumed, not merely reported: {status}"
     assert not reported_it
-
-    e.api("POST", "/shutdown")
-    wait_engine_exit(e, timeout=10)
+    phases = [json.loads((d / "meta.json").read_text())["phase"]
+              for d in sorted((e.run_dir / "iterations").iterdir())]
+    assert phases.count("review") == 1, phases
+    # `/shutdown` is refused (409) while the run is parked; the fixture's
+    # teardown stops the engine, as for the parked run in
+    # test_verified_review_refused_while_steering_pending.
 
 
 def test_huge_output_line_does_not_kill_job(engine_factory):
