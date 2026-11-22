@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Callable
 
 from .. import __version__
-from .. import collapse_index, render_index
+from .. import collapse_index, render_index, siblings
 from . import answer as answering
 from . import commit_scan
 from . import contract_enforcement
@@ -295,6 +295,9 @@ class LoopSupervisor:
         self.cfg = cfg
         self.run = run
         self.workspace = workspace
+        # v0.38 E.1: the docker client the terminal sibling reap uses; None
+        # means the real `docker` binary, a test sets a fake.
+        self.docker_runner = None
         # #291: the first `events.jsonl` line as this process FOUND it,
         # before it emits anything itself -- on a resume, the run's original
         # start; a line this process appends (to a fresh or a removed file)
@@ -4799,12 +4802,43 @@ class LoopSupervisor:
         """
         status = self.run.read_status()
         if status.get("state") == "finishing":
-            return self._promote_recorded_finishing_state(status)
-        state = await self._run_job_core()
-        if self.cfg.reflect and state != EXHAUSTED_STATE:
-            await self._run_reflection()
-        self._promote_finishing_state()
+            state = self._promote_recorded_finishing_state(status)
+        else:
+            state = await self._run_job_core()
+            if self.cfg.reflect and state != EXHAUSTED_STATE:
+                await self._run_reflection()
+            self._promote_finishing_state()
+        self._reap_siblings_at_terminal(state)
         return state
+
+    # v0.38 E.1 (#319 item 1): the states a run ends in on its own, the
+    # exhausted hold and the legacy `timed_out` spelling of it included.
+    _SIBLING_REAP_STATES = ("succeeded", "failed", "aborted",
+                            EXHAUSTED_STATE, state.LEGACY_TIMED_OUT_STATE)
+
+    def _reap_siblings_at_terminal(self, final_state: str) -> None:
+        """Remove this run's labelled sibling containers once it has ended.
+
+        Only with docker access (`siblings.engine_has_docker_access()`): a
+        run without it makes no docker call and emits nothing. Filters on
+        `ralphd.run=<run>` AND `ralphd.role=sibling`, never the run label
+        alone -- this process runs inside the job container, which carries
+        the first label too. Best effort: it emits `siblings.reaped` with the
+        count and any per-container error, and never changes the outcome.
+        `self.docker_runner` is the seam a test replaces with a fake client.
+        """
+        if final_state not in self._SIBLING_REAP_STATES:
+            return
+        if not siblings.engine_has_docker_access():
+            return
+        try:
+            runner = self.docker_runner or siblings.docker_runner()
+            result = siblings.reap_siblings(self.cfg.run_id, runner,
+                                            sibling_only=True)
+            self.run.emit("siblings.reaped", state=final_state,
+                          **result.event_fields())
+        except Exception as exc:  # never let a reap change the outcome
+            log.warning("sibling reap failed: %s", exc)
 
     def _finish_tail_unverified(self) -> str:
         """The ordinary `("tail",)`-exit terminal write from

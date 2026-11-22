@@ -979,8 +979,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # outcomes.py (empty probe output, stderr-only output, a non-executable
     # CLI on PATH, the live wrappers end to end), in both tiers -> fast
     # 9040, smoke 7259.
-    "fast": {"tests": 9040, "modules": 565},
-    "smoke": {"tests": 7259, "modules": 438},
+    # v0.38 task 007: +20 tests / +1 module (tests/test_terminal_sibling_
+    # reap.py), in both tiers -> fast 9060/566, smoke 7279/439 (the prior
+    # ceiling plus the added tests).
+    "fast": {"tests": 9060, "modules": 566},
+    "smoke": {"tests": 7279, "modules": 439},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

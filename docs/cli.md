@@ -369,7 +369,11 @@ you should know):
   label plus `--label ralphd.role=job` so the two can be told apart; the job
   also gets `RALPHD_SELF_CONTAINER_ID` naming its own container) —
   `ralphctl stop`/`rm` reap everything with the run label,
-  best-effort. `ralphctl doctor` lists stray labeled containers whose run no
+  best-effort, and (v0.38) the engine itself removes the containers carrying
+  both `ralphd.run=<run>` and `ralphd.role=sibling` once the run reaches a
+  terminal state (`succeeded`, `failed`, `aborted`, `exhausted`, `timed_out`),
+  when the job has docker access, emitting `siblings.reaped` with the count and
+  any per-container error. `ralphctl doctor` lists stray labeled containers whose run no
   longer exists.
 - **Never clean up by the run label alone** — and the agent is told so in
   every prompt. From inside
@@ -613,6 +617,12 @@ refuses until --allow-docker or --no-allow-docker)`. `--json` carries
 `dockerAccess: {enabled, setBy, at, line}`, `enabled` `null` when nothing is
 recorded, plus `unreadable: true` when a record exists but cannot be read; the hub's run header shows the same
 line as its `docker` row.
+
+A `warning:` line (v0.38 E.2, #319) appears when the run is not running
+(terminal, or `exhausted`) but docker still lists running containers labelled
+`ralphd.run=<run>`: it names the count, and `ralphctl stop <run>` removes them.
+`--json` carries the count as `liveSiblings` (`0` when none remain, `null` while
+the run is running or docker could not answer).
 
 Task 032 (F.6): the running engine's own version (task 030's `status.json`
 `engineVersion`) rides beside the content-hash tag on this same line, tag

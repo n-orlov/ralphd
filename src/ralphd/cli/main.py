@@ -40,6 +40,7 @@ from typing import Self
 import yaml
 
 from .. import __version__
+from .. import siblings as siblings_mod
 from ..engine.config import (
     BILLING_BASES,
     CODEX_MIN_VERSION,
@@ -650,13 +651,11 @@ def _reap_siblings(run_id: str) -> None:
     --filter label=ralphd.role=sibling, since the same query run from there
     would destroy the container it is running in (task 035, #7).
 
-    Never fails the caller.
+    The logic lives in `ralphd.siblings`, which the engine imports too (it
+    reaps with `sibling_only=True` when its run ends). Never fails the caller.
     """
-    res = sh([DOCKER, "ps", "-aq", "--filter", f"label=ralphd.run={run_id}"])
-    if res.returncode != 0:
-        return
-    for cid in res.stdout.split():
-        sh([DOCKER, "rm", "-f", cid])
+    siblings_mod.reap_siblings(run_id, lambda argv: sh([DOCKER, *argv]),
+                               sibling_only=False)
 
 
 def _resolve_pi_apikeys(models_json: Path) -> None:
@@ -4166,6 +4165,12 @@ def _summarize_usage(usage: dict) -> str:
     return summary
 
 
+# v0.38 E.2: the run states in which `ralphctl status` looks for containers
+# that should no longer be there (terminal outcomes and the exhausted hold).
+_SIBLING_WARNING_STATES = (*TERMINAL_STATES, EXHAUSTED_STATE,
+                           LEGACY_TIMED_OUT_STATE)
+
+
 def cmd_status(args):
     live = True
     try:
@@ -4327,6 +4332,16 @@ def cmd_status(args):
         container_gone is not None
         and container_gone["liveness"] == CONTAINER_ABSENT)
 
+    # v0.38 E.2 (#319 item 3): a run that is not running should have no
+    # containers left. Ask docker only then (a running run's own siblings are
+    # expected), and say so on the status itself: the count of RUNNING
+    # `ralphd.run=<run>` containers, `null` while the run is still going or
+    # docker could not answer.
+    status["liveSiblings"] = (
+        siblings_mod.live_container_count(
+            args.run_id, lambda argv: sh([DOCKER, *argv]))
+        if status.get("state") in _SIBLING_WARNING_STATES else None)
+
     # Duration fields (PRD steering 051): a single `durationSeconds` covers
     # both "elapsed so far" (state still running, no endedAt yet) and "total
     # run time" (terminal state, endedAt set) -- same measurement, the only
@@ -4471,6 +4486,12 @@ def cmd_status(args):
     # config dir alone) so a run that lost its socket says so.
     if isinstance(status.get("dockerAccess"), dict):
         lines.append(f"docker:    {status['dockerAccess'].get('line')}")
+    # v0.38 E.2: containers still running for a run that is not running.
+    if status.get("liveSiblings"):
+        lines.append(
+            f"warning:   {status['liveSiblings']} container(s) labelled "
+            f"ralphd.run={args.run_id} still running although the run is "
+            f"{state_display}; `ralphctl stop {args.run_id}` removes them")
     # Task 010 (#79, PRD requirement O): the resolved hat -> model mapping
     # (`provisioningLines`, computed above from job.yaml through the ONE
     # shared `state.format_provisioning_lines` formatter) -- printed

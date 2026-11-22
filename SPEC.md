@@ -547,6 +547,26 @@ has no registry directory, report-only. Reaping is containers only: labelled *im
 and *volumes* survive `stop`/`rm` deliberately, and anything the job left unlabelled
 and detached outlives it — the daemon has no parentage notion to fall back on.
 
+**The engine reaps its own siblings when the run ends (v0.38 E, #319).** The
+reaping logic lives in `src/ralphd/siblings.py`, imported by both `ralphctl` and
+the engine, so the two cannot drift. When a run reaches `succeeded`, `failed`,
+`aborted`, `exhausted` or `timed_out` and the job has docker access (the
+`RALPHD_HOST_*` coordinates `start --allow-docker` exports are present), the
+engine removes every container labelled **both** `ralphd.run=<run>` **and**
+`ralphd.role=sibling`, best effort, and emits one `siblings.reaped` event with the
+`count` removed and an `errors` map of container id → message for any it could not
+remove (a failed listing adds `error`). Unlike the host-side reaper it MUST add the
+role filter: it runs inside the job container, which carries the run label too. An
+unlabelled container, another run's sibling and the job container are never touched,
+and a run without docker access makes no docker call and emits nothing. The reap
+runs after the terminal state is on disk and never changes the outcome.
+`ralphctl status` of a run that is not running (terminal or `exhausted`) asks docker
+for the running `ralphd.run=<run>` containers and prints a `warning:` line with the
+count when there are any; `--json` carries the count as `liveSiblings` (`null` while
+the run is running or docker could not answer, `0` when none remain). Tested by
+`tests/test_terminal_sibling_reap.py`. Grandchild containers without the label stay
+out of scope (#319 item 2).
+
 ### 3.5 Module map
 
 | path | responsibility |
@@ -2720,6 +2740,8 @@ nothing recording that they had been references), so every value of such a
 file is masked wholesale rather than guessed literal — the names still
 show. Empty for a run with no `--llm-header` wiring at all.
 
+`liveSiblings` (v0.38 E.2, #319) is host-merged the same way: the number of running `ralphd.run=<run>` containers when the run is not running (terminal or `exhausted`), else `null` (running, or docker could not answer).
+
 `dockerAccess` (#297, v0.32.2) is host-merged the same way, by `ralphctl
 status` and the hub (`ui_server._with_docker_access`, which also adds the
 rendered `dockerAccessLine`): `{enabled, setBy, at}` read from
@@ -3340,6 +3362,7 @@ The three `phase_gate.*` events (PRD v0.37 requirement F.1, #313) each carry `pl
 | type | fields | emitted when |
 |---|---|---|
 | `state` | `state`, `resumed` | the loop enters `running` (with `resumed`), and once with the terminal state |
+| `siblings.reaped` | `state`, `count`, `errors` (and `error` when the listing failed) | v0.38 requirement E.1 (#319): the run reached a terminal state (`succeeded`, `failed`, `aborted`, `exhausted`, `timed_out`) with docker access and the engine removed the containers labelled `ralphd.run=<run>` and `ralphd.role=sibling`; `count` is how many were removed, `errors` maps each container id it could not remove to the reason. Never emitted by a run without docker access |
 | `phase` | `phase`, `approach` | a `planning`/`worker`/`review` phase starts; `reflect` carries no approach |
 | `planning.warning` | `approach`, `warning` | v0.23 requirement F.1 (#222, task 022): the accepted-proposal path (`_step_planning`) surfaces one entry of `plan_ingestion.PlanIngestionResult.warnings` -- until this task accumulated but never read by anything at runtime, so `normalize_task_tiers`' degenerate-all-`hard`-tier warning and `normalize_task_estimated_iterations`' defaulted-estimate warning were invisible outside a unit test. One `log` event (`level: "warning"`) plus one of this event per warning string; a proposal that produces no warning emits neither |
 | `iteration.start` | `number`, `phase`, `model` | an iteration's agent process is about to start |
