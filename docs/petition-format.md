@@ -135,8 +135,10 @@ Review adjudicates every open petition as part of its verdict:
   truncated. Every dependent of the `petitioned` task the refutation
   just failed is re-pointed onto that task, so the refutation leaves no
   doomed remainder. A `form` remedy — one that changes no deliverable, only
-  how one is produced — is advice, needs no marker, and still becomes a
-  debt row and nothing else. The insertion happens only for a petition
+  how one is produced — is advice and needs no marker: it fails the
+  `petitioned` task like a `substance` remedy does, becomes a debt row, and
+  builds no cure task. A REFUTED petition never validates a task; only an
+  operator status ruling moves a `petitioned` task to `validated`. The insertion happens only for a petition
   still OPEN on disk, only
   once per obligation, and on both the mid-run adjudication episode and an
   ordinary run-ending review pass (task 019, requirement D.2, #220 —

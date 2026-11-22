@@ -234,9 +234,10 @@ also classify the remedy: `remedy_type: "form"` when it changes NO
 deliverable, only how one is produced (rerun a command differently, adjust
 a process, restate something already true), or `remedy_type: "substance"`
 (the default when omitted) when it actually requires a different
-deliverable. A `form` remedy routes the affected task to `validated`, with
-the remedy recorded as a debt item rather than a retry driver; a
-`substance` remedy fails the affected task -- which is then dependency-dead.
+deliverable. A `form` remedy fails the affected task, with the remedy
+recorded as a debt item and no cure task built; a `substance` remedy also
+fails the affected task -- which is then dependency-dead. A REFUTED
+petition never validates a task.
 On a `substance` remedy, the engine ALSO builds ONE cure task out of your
 remedy text, on the same path a curable rejection's cure task takes,
 re-pointing every dependent of the failed task onto it -- whether this
@@ -319,7 +320,7 @@ unrelated to `task_id`/`replacement_criteria` above -- those re-scope a
 task's criteria; `replacement_task_id` only ever applies to a CONFIRMED
 entry naming a petitioned task's own obligation. A REFUTED adjudication
 of a `petitioned` task's own obligation behaves exactly as it always has
-(the task moves to `failed` or `validated`, per its `remedy_type`) -- this
+(the task moves to `failed`, whatever its `remedy_type`) -- this
 section only changes what CONFIRMED does.
 
 ## Structured findings (severity, curability, clause, evidence)

@@ -17582,9 +17582,10 @@ class LoopSupervisor:
         `engine.petitions.apply_refuted_petition_adjudications` -- read
         the CURRENT `tasks.json`, apply any REFUTED entries in
         `adjudications` to it (mutating any matching `petitioned` task to
-        `failed`, remedy recorded -- or, for a `remedy_type: "form"`
-        entry, task 008/A.4, #155, to `validated`, with the remedy
-        recorded as a debt item instead), and persist + announce the
+        `failed`, remedy recorded on `validationNotes` -- for a
+        `remedy_type: "form"` entry too, which ALSO records the remedy as a
+        debt item; a REFUTED petition never validates the task, v0.38
+        #306/#320), and persist + announce the
         change exactly like any other engine-driven task-status move
         (`_emit_task_changes`, the same seam `_verify_task`'s own
         exhaustion routing uses). A no-op call touches neither the file
@@ -17592,10 +17593,10 @@ class LoopSupervisor:
         entirely when nothing changed, so a review pass with no REFUTED
         entries never perturbs `tasks.json`'s mtime.
 
-        Returns the ids of every task this call moved to `failed` (the
-        `"substance"` branch only), same as the petitions-module function
-        it wraps; a `"form"`-routed task's id is never in this list --
-        read the debt ledger (`self.run.read_debt()`) for those.
+        Returns the ids of every task this call moved to `failed` (both
+        remedy types), same as the petitions-module function it wraps; a
+        `"form"`-routed task's remedy is also in the debt ledger
+        (`self.run.read_debt()`).
 
         Task 007 (requirement B, #114): ALSO calls `petitions.
         record_refuted_adjudications` -- unconditionally, before the
@@ -17615,8 +17616,8 @@ class LoopSupervisor:
         `tasks.json` is written back (so a debt entry never outlives the
         task-status write that motivated it) and counted alongside
         `changed` for whether anything needs writing/announcing at all --
-        a call with only `"form"`-routed matches and no `"substance"`
-        ones still persists `tasks.json` and still emits task changes.
+        a call with only `"form"`-routed matches still persists
+        `tasks.json` and still emits task changes.
         """
         if not adjudications:
             return []
@@ -19007,9 +19008,10 @@ class LoopSupervisor:
             "is produced (rerun a command differently, restate something "
             "already true, adjust process); `substance` (the default if "
             "omitted) when the remedy actually requires a different "
-            "deliverable. A `form` remedy routes the task to `validated` "
-            "with the remedy recorded as a debt item, never as a retry "
-            "driver; a `substance` remedy fails the petitioned task AND "
+            "deliverable. A `form` remedy fails the petitioned task with "
+            "the remedy recorded as a debt item and builds no cure task; "
+            "a REFUTED petition never validates a task. A `substance` "
+            "remedy fails the petitioned task AND "
             "becomes ONE cure task built from your remedy text, with every "
             "dependent of the failed task re-pointed onto it -- so write a "
             "`substance` remedy as WORK whose completion is checkable (the "

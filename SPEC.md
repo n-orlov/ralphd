@@ -3165,11 +3165,15 @@ hub's per-run on-disk cache is keyed on the waivers dir, the amendments dir
 and the adjudication record as well as `tasks.json`, so a waiver recorded
 after the last plan write shows on the next poll.
 
-**A `petitioned` task leaves `petitioned` only through an operator ruling
-(v0.38, #306, #320).** The task-status table lists no successor of
+**A `petitioned` task reaches `validated` or `skipped` only through an operator
+ruling (v0.38, #306, #320).** The task-status table lists no successor of
 `petitioned`, so a worker's or verify's report of `petitioned -> validated` or
-`petitioned -> skipped` is refused in both variants. A CONFIRMED adjudication
-does not move the task either: `petitions.apply_confirmed_petition_adjudications`,
+`petitioned -> skipped` is refused in both variants. A REFUTED adjudication, by contrast,
+moves the task to `failed` with the remedy on `validationNotes` for either
+`remedy_type`: a `form` remedy also records the remedy as a debt item and builds
+no cure task, but form debt is never validation, so a REFUTED petition never
+validates a task (`petitions.apply_refuted_petition_adjudications`). A CONFIRMED adjudication
+does not move the task: `petitions.apply_confirmed_petition_adjudications`,
 run in the same pass that records it, leaves the matching task `petitioned`,
 appends the adjudication to its `notes` and leaves every dependent's
 `dependsOn` edge in place, so the task is settled under the rule above and its

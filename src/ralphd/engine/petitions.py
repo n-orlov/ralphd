@@ -2302,27 +2302,26 @@ def apply_refuted_petition_adjudications(tasks_doc: dict, adjudications,
       function did before task 008 (every pre-existing caller, none of
       which ever supplied `remedy_type`, is unaffected).
     - `"form"` (the remedy changes no deliverable, only how it is
-      produced -- PRD A.4) moves the task to `validated` instead --
-      the SAME acceptance a verify pass with only a form/wording/
-      process note already gives it (requirement A.2/A.3) -- and NEVER
-      touches `validationNotes`: the remedy is recorded as a
-      debt-shaped note (`{clause, observed, suggested}`, task 006's
-      `verifyNotes` shape) appended to `form_debt[task_id]` when the
-      caller supplies that dict, for the caller to hand to
-      `state.record_debt_entries`/`RunDir.record_debt` -- the same one
-      write path the verify-notes debt ledger already uses, never a
-      second ledger writer. `form_debt` is optional and, when omitted,
-      the note is simply not recorded anywhere but the task still moves
-      to `validated` -- this function's own job (routing the task) never
+      produced -- PRD A.4) moves the task to `failed` exactly like
+      `"substance"` does, with the remedy on `validationNotes` and the
+      same `failureKind`: a REFUTED petition is never an acceptance, and
+      form debt is never validation (v0.38, #306, #320: only an operator
+      status ruling moves a `petitioned` task to `validated`). The
+      difference is only that a `form` remedy is advice, so no remedy task
+      is built from it (`refuted_remedy_cure_findings` gates on
+      `substance`), and the remedy is ALSO recorded as a debt-shaped note
+      (`{clause, observed, suggested}`, task 006's `verifyNotes` shape)
+      appended to `form_debt[task_id]` when the caller supplies that dict,
+      for the caller to hand to `state.record_debt_entries`/
+      `RunDir.record_debt` -- the same one write path the verify-notes
+      debt ledger already uses, never a second ledger writer. `form_debt`
+      is optional; this function's own job (routing the task) never
       depends on the caller wanting the debt side effect too.
 
-    Returns the ids of every task this call moved to `failed` (the
-    `"substance"` branch only -- a `"form"`-routed task's id is never in
-    this list, matching the docstring's pre-task-008 promise verbatim;
-    callers that want the `"form"`-routed ids read `form_debt`'s own
-    keys instead), in plan order; a no-op call (nothing REFUTED, or
-    nothing `petitioned` to match against) returns `[]` and leaves
-    `tasks_doc` (and `form_debt`) untouched.
+    Returns the ids of every task this call moved to `failed` (both
+    branches), in plan order; a no-op call (nothing REFUTED, or nothing
+    `petitioned` to match against) returns `[]` and leaves `tasks_doc`
+    (and `form_debt`) untouched.
 
     A CONFIRMED entry in `adjudications` is silently ignored here --
     that side is `record_confirmed_adjudications`'s job, at run scope,
@@ -2352,8 +2351,12 @@ def apply_refuted_petition_adjudications(tasks_doc: dict, adjudications,
             own = _normalize_obligation(task_petition_obligation(t))
             if own and (own in norm or norm in own):
                 handled.add(t.get("id"))
+                t["status"] = "failed"
+                t["failureKind"] = TASK_FAILURE_VALIDATION_EXHAUSTED
+                t["validationNotes"] = remedy_text or (
+                    "Petition REFUTED with no remedy stated.")
+                changed.append(t.get("id"))
                 if remedy_type == "form":
-                    t["status"] = "validated"
                     if form_debt is not None:
                         form_debt.setdefault(t.get("id"), []).append({
                             "clause": obligation,
@@ -2364,12 +2367,6 @@ def apply_refuted_petition_adjudications(tasks_doc: dict, adjudications,
                             "suggested": remedy_text or (
                                 "Petition REFUTED with no remedy stated."),
                         })
-                else:
-                    t["status"] = "failed"
-                    t["failureKind"] = TASK_FAILURE_VALIDATION_EXHAUSTED
-                    t["validationNotes"] = remedy_text or (
-                        "Petition REFUTED with no remedy stated.")
-                    changed.append(t.get("id"))
     return changed
 
 

@@ -69,7 +69,7 @@ adjudicates every open petition as part of its verdict:
   remainder of the run — every approach, not just the current one.
 - **REFUTED** must state concretely what would satisfy the obligation, as
   WORK whose completion is checkable: a `substance` remedy becomes one cure
-  task, a `form` remedy (one that changes no deliverable) becomes a debt row.
+  task, a `form` remedy (one that changes no deliverable) fails the task and becomes a debt row, never a validation.
 
 **Once per obligation.** Re-filing a petition against an obligation that
 already has one — whether or not the first was adjudicated, and including a
