@@ -362,15 +362,20 @@ def test_the_first_attempt_s_unjudged_head_is_a_changed_key(tmp_path, shape):
 # pinned in tests/test_review_state_key_edges.py)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("change", ["head", "task_status"])
+@pytest.mark.parametrize("change", ["head", "task_status", "cure_top_up"])
 def test_a_changed_key_dispatches_the_final_peer_gate_normally(
         tmp_path, change):
+    """A changed HEAD or task status dispatches the gate; so does an
+    operator cure-round top-up since its verdict (`ralphctl budget
+    --cure-passes`), which changes what the same rejection leads to."""
     sup, runner = edges._gate_supervisor(tmp_path)
     edges._bounded(sup._step_verdict_gate())
     edges._bounded(edges._release_with_nothing_changed(sup))
 
     if change == "head":
         sup._workspace_head_sha = lambda: "b" * 40
+    elif change == "cure_top_up":
+        sup.set_cure_pass_ceiling(sup._cure_rounds_allowed(1) + 1)
     else:
         doc = sup.run.read_tasks()
         doc["tasks"].append(edges._task("002", "completed"))

@@ -1011,8 +1011,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.38 task 004: +11 tests / +1 module (tests/test_review_state_key_
     # edges.py: 8 tests; 3 control nodes added to tests/test_review_state_
     # key.py), in both tiers -> fast 9117/571, smoke 7336/444.
-    "fast": {"tests": 9117, "modules": 571},
-    "smoke": {"tests": 7336, "modules": 444},
+    # v0.38 task 004 retry: +1 test in tests/test_review_state_key.py (a
+    # cure-round top-up since the gate's verdict dispatches the gate again),
+    # in both tiers -> fast 9118, smoke 7337.
+    "fast": {"tests": 9118, "modules": 571},
+    "smoke": {"tests": 7337, "modules": 444},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

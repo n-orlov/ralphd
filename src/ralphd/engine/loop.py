@@ -15416,16 +15416,27 @@ class LoopSupervisor:
 
     def _verdict_gate_key_unchanged(self, approach: int, key: dict) -> bool:
         """True iff the final peer gate of this approach already returned a
-        verdict on a key equal to `key` (v0.38 B.3)."""
+        verdict on a key equal to `key` (v0.38 B.3) under the same cure-round
+        allowance. An operator top-up (`ralphctl budget --cure-passes`) since
+        that verdict changes what the same rejection leads to -- a cure
+        round instead of a park on a spent allowance -- so the gate is asked
+        again rather than held."""
         judged = self._review_key_entry(approach).get("gateJudged")
-        return isinstance(judged, dict) and judged.get("key") == key
+        if not (isinstance(judged, dict) and judged.get("key") == key):
+            return False
+        allowed = judged.get("cureRoundsAllowed")
+        return (allowed is None
+                or allowed == self._cure_rounds_allowed(approach))
 
     def _record_gate_judged_key(self, approach: int, key: dict) -> None:
         """The final peer gate returned a usable verdict on `key`: remember
         it, so a later dispatch on the same key is held. A no-verdict outcome
         records nothing -- nothing was judged."""
         entry = dict(self._review_key_entry(approach))
-        entry["gateJudged"] = {"key": key}
+        entry["gateJudged"] = {
+            "key": key,
+            "cureRoundsAllowed": self._cure_rounds_allowed(approach),
+        }
         self._write_review_key_entry(approach, entry)
 
     def _record_deferred_verified_key(

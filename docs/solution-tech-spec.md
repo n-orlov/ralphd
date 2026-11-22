@@ -291,7 +291,7 @@ non-terminal states, each with one owner:
 | `state` | Entered by | Left by |
 |---|---|---|
 | `paused` | the operator only (`ralphctl pause`, the hub, `POST /pause`); `status.json` records `pausedBy: "operator"` and the optional `pauseNote` | `ralphctl unpause` |
-| `awaiting_input` | the engine, only to ask the operator about findings (`inputQuestion`), about a secret found in a commit, or about a held petitioned task the prompt adjudication did not settle (`kind: petition_hold`, below), or because the final review would judge a state a deferred VERIFIED already judged (`kind: verified_unchanged`, below) | an answer (`ralphctl answer`, `POST /answer`, the hub panel) or the input timeout |
+| `awaiting_input` | the engine, only to ask the operator about findings (`inputQuestion`), about a secret found in a commit, or about a held petitioned task the prompt adjudication did not settle (`kind: petition_hold`, below), or because the final review would judge a state a deferred VERIFIED already judged, or the final peer verdict gate a state its own earlier verdict judged (`kind: verified_unchanged`, below) | an answer (`ralphctl answer`, `POST /answer`, the hub panel) or the input timeout |
 | `exhausted` | the engine, when the iteration, time or approach budget is spent (`exhaustedBudget`) | `ralphctl resume` with a top-up of that budget |
 | `running` with `health: degraded` | the engine, during an infrastructure outage | recovery, or `failed` once the outage budget is spent |
 
