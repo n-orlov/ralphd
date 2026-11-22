@@ -3110,8 +3110,10 @@ above) with a second, unrelated cause: a task whose `dependsOn` names a
 `petitioned` task DIRECTLY (one hop only, never propagated through the doomed
 fixpoint) is included too, with that ancestor as its cause. `petitioned` is
 deliberately never added to `dead`/`doomed` itself -- an open petition can
-still resolve (REFUTED leaves the dependency exactly where it is; CONFIRMED
-moves it to `skipped` and re-points dependents) -- so treating it as
+still resolve (REFUTED moves it to `failed` with the remedy, which dooms its
+dependents unless a cure task re-points them; CONFIRMED leaves it `petitioned`
+and settles it in place, so its dependents' edges stand and are satisfied, see
+"A settled `petitioned` task satisfies its dependents" below) -- so treating it as
 permanently dead here would make `_doomed_plan_fault`'s "nothing can ever move
 this plan again" verdict fire on a plan that is merely holding for an
 adjudication. `include_petitioned=True` is opt-in, `False` by default, so doom
