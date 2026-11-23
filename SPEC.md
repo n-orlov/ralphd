@@ -2785,6 +2785,7 @@ The single answer to "what is this run doing". One document, patched field by fi
 | `deadlineBeatVerdict` | object \| absent | present only on a `failed`/`unverified` terminal write where every task was done, `COMPLETE` was already honoured, and review never rendered a verdict because the deadline took the last attempt (v0.10 requirement B, #72): `{deadline, completeHonouredAt}`, naming the wall-clock deadline and the `ts` of the honoured `COMPLETE` event -- see §4.2 |
 | `onComplete` | string | `exit` \| `idle` |
 | `usage` | object | token and cost totals, plus `byPhase`, `byApproach` and `byTier` buckets |
+| `spend` | object \| absent | v0.39 (#321): the spend counters, `{overall: {<hat>: usd, total: usd}, byApproach: {"<n>": {<hat>: usd, total: usd}}}`, in dollars. See §8.6 "What counts as spend". Absent on a run with no finished iteration; a run dir from 0.38 gets it rebuilt at engine start |
 | `createdAt` | string | UTC ISO-8601, first status write |
 | `startedAt` | string | when the loop entered `running` in the CURRENT episode; each episode rewrites it |
 | `firstStartedAt` | string | optional; when the run's first episode entered `running`. Written once and never rewritten by a later episode. An engine that resumes a run lacking it writes the run's earliest recorded start (the earliest of the first `events.jsonl` line as the engine found it, every `previousEndings[].startedAt` and `startedAt`, read before the history is trimmed to its cap), or no `firstStartedAt` at all when none is on record, never its own or another later episode's start; absent on a run recorded before the field existed and not yet resumed |
@@ -5455,6 +5456,24 @@ rows, and a note that by phase, by approach and by tier are alternative
 breakdowns of the same total. When `byPayer` covers fewer tokens than the
 total (a run resumed across the upgrade) the headline is withheld and a notice
 says how much is covered. A run without `byPayer` renders exactly as before.
+
+**What counts as spend (#321, v0.39).** The engine keeps the run's spend in
+`status.json`'s `spend` key, per hat and `total`, for each approach
+(`byApproach["<n>"]`) and for the run so far (`overall`). A hat is the iteration's
+phase with any tier suffix dropped, so `worker.trivial`, `worker.normal` and
+`worker.hard` all count as `worker`. At the end of every iteration
+(`RunDir.record_spend`, called beside `_accumulate_usage`) the engine adds that
+iteration's `state.iteration_spend(usage)` to its hat's counter and to `total`, at
+both levels: the quoted `costUSD`, plus the host-derived `costDerivedUSD`, plus
+`listEquivalentUSD`. A subscription-billed iteration therefore counts at its
+list-equivalent price, never at its `$0` `costUSD`. The payer stamp moves money
+into `listEquivalentUSD` rather than copying it, so nothing counts twice. Router
+and contract-repair calls are not iterations and are not counted. A new approach
+adds a new `byApproach` key, so its counters start at zero while `overall` carries
+on. The counters live in status.json, so `resume` reads them back unchanged. A run
+dir with iteration records and no `spend` key (0.38) has the counters rebuilt at
+engine start from `iterations/NNNN/meta.json`, with the same function, so they equal
+the sum of those records' costs. A run with no finished iteration writes no key.
 
 `cost_status()` in `src/ralphd/engine/state.py` collapses a usage dict to
 `None` (fully priced, or nothing billed), `"derived"`, `"partial"` or

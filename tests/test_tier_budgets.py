@@ -1097,8 +1097,10 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # the SDK and codex pin guards, the bundled-CLI minimum and the 2.1.330
     # routing scrub for both harnesses), in both tiers -> fast 9422/580,
     # smoke 7641/453.
-    "fast": {"tests": 9422, "modules": 580},
-    "smoke": {"tests": 7641, "modules": 453},
+    # v0.39 task 004: +9 tests / +1 module (tests/test_spend_counters.py), in
+    # both tiers -> fast 9431/581, smoke 7650/454.
+    "fast": {"tests": 9431, "modules": 581},
+    "smoke": {"tests": 7650, "modules": 454},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

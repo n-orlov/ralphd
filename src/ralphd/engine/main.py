@@ -211,6 +211,9 @@ async def amain() -> int:
         return EXIT_SCHEMA_TOO_NEW
 
     _seed_iteration_budget(cfg, run)
+    # v0.39 (#321): a run dir with iteration records and no spend counters
+    # (0.38) gets them rebuilt from those records before anything reads them.
+    run.seed_spend()
     _seed_rate_limit_max_wait(cfg, run)
     # Task 004 (requirement B, #202): lift an existing run's authoritative
     # task record into the ancestor-protected, bind-mounted record

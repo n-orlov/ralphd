@@ -1417,6 +1417,21 @@ per-model rows, alongside `byPhase`, `byApproach` and `byTier`. `ralphctl cost`,
 by-payer table. The headline is withheld when `byPayer` covers fewer tokens than
 the total, and an unstamped run renders in its old layout.
 
+### Spend counters
+
+The engine counts spend per hat and `total`, for each approach and for the run, in
+`status.json`'s `spend` key (`{overall, byApproach}`, dollars). A hat is the phase
+with any tier suffix removed (`worker.hard` is `worker`). `RunDir.record_spend`
+adds `state.iteration_spend(usage)` at the end of every iteration: `costUSD` plus
+`costDerivedUSD` plus `listEquivalentUSD`, so a subscription-billed iteration
+counts at its list-equivalent price and not at its $0 cost. `stamp_billing` moves
+money into `listEquivalentUSD` instead of copying it, so nothing counts twice.
+Router and contract-repair calls are not iterations and are not counted. The
+counters persist with the run, so `resume` keeps them, and a new approach starts a
+new `byApproach` key while `overall` carries on. A 0.38 run dir has no `spend` key:
+engine start (`RunDir.seed_spend`) rebuilds it from `iterations/NNNN/meta.json`
+with `state.rebuild_spend`, which uses the same per-iteration function.
+
 ## 10. Steering, amendments, and petitions
 
 ### Durable steering

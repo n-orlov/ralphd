@@ -11159,6 +11159,86 @@ def cost_breakdown_text(bd: dict) -> str:
     (`fault_text`/`artifact_text`' role for #18.5)."""
     return "\n".join(cost_breakdown_lines(bd))
 
+
+# v0.39 (#321): spend counters. A run's spend is counted per HAT and `total`,
+# for the run so far (`overall`) and for each approach (`byApproach`), in
+# status.json's `spend` key -- the persisted state the next engine process
+# reads back, so `resume` carries the counters on unchanged.
+SPEND_STATUS_KEY = "spend"
+SPEND_TOTAL = "total"
+
+
+def spend_hat(phase: Any) -> str:
+    """The hat a phase's spend is counted under. A tier variant
+    (`worker.trivial`, `worker.normal`, `worker.hard`) is the same hat as
+    its base (`worker`): a cap names the hat, never its rung."""
+    return str(phase or "").split(".", 1)[0]
+
+
+def iteration_spend(usage: Any) -> float:
+    """What one iteration SPENT, in dollars: the provider-quoted `costUSD`
+    plus the host-derived `costDerivedUSD`, plus the list-equivalent price
+    (`listEquivalentUSD`) of a zero-priced iteration -- a subscription-billed
+    iteration counts at what it would have cost at list price, never at its
+    $0 `costUSD`. The payer stamp MOVES money from the cost keys into
+    `listEquivalentUSD` (`stamp_billing`), so the three never double count."""
+    if not isinstance(usage, dict):
+        return 0.0
+    total = 0.0
+    for key in ("costUSD", "costDerivedUSD", "listEquivalentUSD"):
+        value = usage.get(key)
+        if _is_number(value) and value > 0:
+            total += value
+    return round(total, 6)
+
+
+def _add_spend_to(bucket: dict, hat: str, amount: float) -> None:
+    for key in {hat, SPEND_TOTAL}:
+        if key:
+            bucket[key] = round(float(bucket.get(key) or 0) + amount, 6)
+
+
+def add_spend(spend: Any, approach: Any, phase: Any, amount: float) -> dict:
+    """Add `amount` to `spend`'s overall and `approach`'s counters for the
+    hat `phase` belongs to, and to `total` at both levels. Returns the
+    (new) spend document; `spend` may be missing or malformed."""
+    doc = spend if isinstance(spend, dict) else {}
+    overall = doc.get("overall") if isinstance(doc.get("overall"), dict) else {}
+    by_approach = (doc.get("byApproach")
+                   if isinstance(doc.get("byApproach"), dict) else {})
+    key = str(approach if isinstance(approach, int)
+              and not isinstance(approach, bool) and approach > 0 else 1)
+    bucket = by_approach.get(key) if isinstance(by_approach.get(key), dict) else {}
+    hat = spend_hat(phase)
+    _add_spend_to(overall, hat, amount)
+    _add_spend_to(bucket, hat, amount)
+    by_approach[key] = bucket
+    return {"overall": overall, "byApproach": by_approach}
+
+
+def rebuild_spend(run_root: Path, *, exclude: int | None = None) -> dict:
+    """The spend counters re-derived from a run dir's iteration records
+    (`iterations/NNNN/meta.json`): the same `iteration_spend` of the same
+    `usage` the live counters add at each iteration's end, so a run dir that
+    predates the counters (0.38) loads with counters equal to the sum of its
+    records' costs. A record that never ended carries no usage and adds
+    nothing. `exclude` leaves one iteration number out: the iteration
+    `record_spend` is about to add, whose record is already on disk."""
+    doc: dict = {"overall": {}, "byApproach": {}}
+    itdir = Path(run_root) / "iterations"
+    if not itdir.is_dir():
+        return doc
+    for d in sorted(itdir.iterdir()):
+        if not (d.is_dir() and d.name.isdigit()) or int(d.name) == exclude:
+            continue
+        meta = read_json(d / "meta.json", {})
+        if not isinstance(meta, dict) or not meta.get("endedAt"):
+            continue
+        doc = add_spend(doc, meta.get("approach"), meta.get("phase"),
+                        iteration_spend(meta.get("usage")))
+    return doc
+
+
 @dataclass
 class RunDir:
     """Layout of /run and helpers over it. Engine-owned."""
@@ -11849,6 +11929,43 @@ class RunDir:
         if uncertain:
             return
         self.vigilant_verified_file.unlink()
+
+    # -- spend counters (v0.39, #321) ------------------------------------
+    def read_spend(self) -> dict:
+        """The persisted spend counters (`{"overall": {hat: usd, "total":
+        usd}, "byApproach": {"1": {...}}}`). A status.json with no `spend`
+        key -- a 0.38 run dir -- has them rebuilt from its iteration
+        records (`rebuild_spend`), and the rebuilt document is what the next
+        `record_spend` adds to."""
+        spend = self.read_status().get(SPEND_STATUS_KEY)
+        if isinstance(spend, dict):
+            return spend
+        return rebuild_spend(self.root)
+
+    def seed_spend(self) -> bool:
+        """Persist rebuilt counters into a status.json that has records but
+        no counters (an engine process opening a 0.38 run dir). Writes
+        nothing for a run with no recorded spend. True iff it wrote."""
+        if isinstance(self.read_status().get(SPEND_STATUS_KEY), dict):
+            return False
+        rebuilt = rebuild_spend(self.root)
+        if not rebuilt["byApproach"]:
+            return False
+        self.update_status(**{SPEND_STATUS_KEY: rebuilt})
+        return True
+
+    def record_spend(self, approach: Any, phase: Any, usage: Any,
+                     number: int | None = None) -> dict:
+        """Add one finished iteration's spend to the persisted counters.
+        `number` names the iteration, whose own record is already on disk:
+        counters that must first be rebuilt (a 0.38 run dir) leave it out
+        so it is not counted twice."""
+        spend = self.read_status().get(SPEND_STATUS_KEY)
+        if not isinstance(spend, dict):
+            spend = rebuild_spend(self.root, exclude=number)
+        doc = add_spend(spend, approach, phase, iteration_spend(usage))
+        self.update_status(**{SPEND_STATUS_KEY: doc})
+        return doc
 
     # -- resume (PRD req 16) ---------------------------------------------
     def max_iteration_number(self) -> int:

@@ -3920,6 +3920,8 @@ class LoopSupervisor:
         # spelling is already in meta.json as modelResolved/modelRaw.
         self._accumulate_usage(result.usage, phase=phase, approach=meta.get("approach"),
                                tier=effective_tier, model=model)
+        # v0.39 (#321): the iteration's spend, per hat and total.
+        self.run.record_spend(meta.get("approach"), phase, result.usage, n)
         self.run.emit("iteration.end", number=n, phase=phase,
                       exitCode=result.exit_code, interrupted=result.interrupted,
                       sawComplete=result.saw_complete, sawVerified=result.saw_verified,
