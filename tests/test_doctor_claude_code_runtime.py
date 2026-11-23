@@ -46,14 +46,14 @@ def _text_doctor(tmp_path, capsys, monkeypatch, probe):
 
 def test_an_ok_probe_passes_the_check(tmp_path, capsys, monkeypatch):
     _, doc = _doctor(tmp_path, capsys, monkeypatch,
-                     lambda ref: {"sdk": "0.2.163", "cli": "2.1.286", "ok": True})
+                     lambda ref: {"sdk": "0.2.187", "cli": "2.1.330", "ok": True})
     assert doc["checks"]["claude_code_runtime"] is True
     assert doc["ok"] == all(doc["checks"].values())
 
 
 def test_the_minimum_version_itself_passes(tmp_path, capsys, monkeypatch):
     _, doc = _doctor(tmp_path, capsys, monkeypatch,
-                     lambda ref: {"sdk": "0.2.163", "cli": CLAUDE_CODE_MIN_VERSION,
+                     lambda ref: {"sdk": "0.2.187", "cli": CLAUDE_CODE_MIN_VERSION,
                                   "ok": True})
     assert doc["checks"]["claude_code_runtime"] is True
 
@@ -61,7 +61,7 @@ def test_the_minimum_version_itself_passes(tmp_path, capsys, monkeypatch):
 def test_an_old_cli_fails_and_the_message_names_the_minimum(
         tmp_path, capsys, monkeypatch):
     res, doc = _doctor(tmp_path, capsys, monkeypatch,
-                       lambda ref: {"sdk": "0.2.163", "cli": "2.1.75", "ok": False})
+                       lambda ref: {"sdk": "0.2.187", "cli": "2.1.75", "ok": False})
     assert doc["checks"]["claude_code_runtime"] is False
     assert doc["ok"] is False
     assert res.returncode == 1
@@ -69,7 +69,7 @@ def test_an_old_cli_fails_and_the_message_names_the_minimum(
 
 def test_the_text_report_names_the_minimum(tmp_path, capsys, monkeypatch):
     res = _text_doctor(tmp_path, capsys, monkeypatch,
-                       lambda ref: {"sdk": "0.2.163", "cli": "2.1.75", "ok": False})
+                       lambda ref: {"sdk": "0.2.187", "cli": "2.1.75", "ok": False})
     assert res.returncode == 1
     assert "✗ claude_code_runtime" in res.stdout
     assert CLAUDE_CODE_MIN_VERSION in res.stdout
@@ -115,7 +115,7 @@ def _probe_with(monkeypatch, res):
 
 
 def test_the_probe_runs_the_wrapper_with_the_images_python(monkeypatch):
-    doc = {"sdk": "0.2.163", "cli": "2.1.286", "cliPath": "/x", "ok": True}
+    doc = {"sdk": "0.2.187", "cli": "2.1.330", "cliPath": "/x", "ok": True}
     got, calls = _probe_with(monkeypatch, _Res(0, json.dumps(doc) + "\n"))
     assert got == doc
     argv = calls[0]

@@ -101,8 +101,21 @@ STRIPPED_ENV = frozenset({
     # forwarded env (which pi hats keep) is set up. CLAUDE_CODE_USE_BEDROCK /
     # CLAUDE_CODE_USE_VERTEX are covered by the CLAUDE_CODE_* rule.
     "ANTHROPIC_BASE_URL", "AWS_BEARER_TOKEN_BEDROCK",
+    # Claude Code 2.1.330 reads further credential and routing variables that
+    # the lists above predate: workload-identity federation, a named profile
+    # (and the config dir it lives in), and a unix-socket transport. Each can
+    # point the CLI somewhere other than the OAuth token's account.
+    "ANTHROPIC_IDENTITY_TOKEN", "ANTHROPIC_IDENTITY_TOKEN_FILE",
+    "ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_SERVICE_ACCOUNT_ID",
+    "ANTHROPIC_PROFILE", "ANTHROPIC_CONFIG_DIR", "ANTHROPIC_UNIX_SOCKET",
 })
-STRIPPED_ENV_PREFIXES = ("ANTHROPIC_BEDROCK_", "ANTHROPIC_VERTEX_")
+# The 2.1.330 CLI also has Foundry, Anthropic-on-AWS and Google Cloud provider
+# families (`CLAUDE_CODE_USE_FOUNDRY` etc. are already covered by the
+# `CLAUDE_CODE_*` rule); their key, URL and workspace variables are stripped
+# by prefix, like the Bedrock and Vertex ones.
+STRIPPED_ENV_PREFIXES = ("ANTHROPIC_BEDROCK_", "ANTHROPIC_VERTEX_",
+                         "ANTHROPIC_FOUNDRY_", "ANTHROPIC_AWS_",
+                         "ANTHROPIC_GOOGLE_CLOUD_")
 
 VERSION_TOO_OLD = "claude_code_version_too_old"
 CLI_NOT_FOUND = "claude_code_cli_not_found"

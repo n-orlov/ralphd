@@ -3805,7 +3805,7 @@ of them, exit code `0`/`1` accordingly):
   schema issues:`).
 
 - `claude_code_runtime` — the job image carries the Claude Agent SDK and a
-  Claude Code CLI at or above `CLAUDE_CODE_MIN_VERSION` (`2.1.280`). `doctor`
+  Claude Code CLI at or above `CLAUDE_CODE_MIN_VERSION` (`2.1.312`). `doctor`
   runs `python -m ralphd.harness.claude_code --probe-version` in the image
   (`docker run --rm --entrypoint python <image>`; `python` is the engine's
   interpreter in both the base and the derived image) and compares the CLI

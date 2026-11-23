@@ -189,7 +189,7 @@ rather than rejected, but no part of the current design may assume it arrives.
   suite substitute a stub `docker` on `PATH` with no in-product test hooks.
 - **Agent runtime: `pi`** (`@earendil-works/pi-coding-agent`), spawned once per
   iteration as a subprocess emitting NDJSON events on stdout. Both it and Node are
-  **pinned** in the image (`PI_VERSION=0.84.1`, Node 22 via NodeSource; the `codex` harness's CLI `@openai/codex` is pinned the same way, `CODEX_VERSION=0.156.1`, installed by the same npm step, and the derived-image recipe copies that pin) because npm
+  **pinned** in the image (`PI_VERSION=0.84.1`, Node 22 via NodeSource; the `codex` harness's CLI `@openai/codex` is pinned the same way, `CODEX_VERSION=0.171.0`, installed by the same npm step, and the derived-image recipe copies that pin) because npm
   silently resolves an ancient `pi` when the node engine requirement is unmet — pin
   both and the failure is loud instead of subtle. Single NDJSON lines routinely
   exceed asyncio's 64 KiB default, so the reader is opened with
@@ -3710,7 +3710,7 @@ prints them in, scrubbed with the same secret map. The pi events go to
 `output.jsonl` only and the raw events to `output.codex.jsonl` only; nothing
 reads the latter. Before it starts a turn the `codex` wrapper runs
 `<cli> --version` (the CLI is `$RALPHD_CODEX_CLI_PATH`, else `codex` on `PATH`)
-and compares the version to `config.CODEX_MIN_VERSION` (`0.156.1`) with
+and compares the version to `config.CODEX_MIN_VERSION` (`0.156.1`; `config.CLAUDE_CODE_MIN_VERSION` is `2.1.312`, each checked against its own CLI's reported version) with
 `ralphd.cli.versions.compare_versions`, the helper the `claude-code` gate also
 uses. A CLI below it ends the iteration in-band with `codex_version_too_old`
 (output present with no version in it too), and no binary with
@@ -4170,7 +4170,12 @@ own `os.environ` loses `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
 `ANTHROPIC_BASE_URL`, `AWS_BEARER_TOKEN_BEDROCK`, every `ANTHROPIC_BEDROCK_*`
 and `ANTHROPIC_VERTEX_*` variable and every `CLAUDE_CODE_*` except
 `CLAUDE_CODE_OAUTH_TOKEN` (which covers `CLAUDE_CODE_USE_BEDROCK` and
-`CLAUDE_CODE_USE_VERTEX`), after every merge: the container env, the profile's
+`CLAUDE_CODE_USE_VERTEX`), plus the routing the 2.1.330 CLI added: every
+`ANTHROPIC_FOUNDRY_*`, `ANTHROPIC_AWS_*` and `ANTHROPIC_GOOGLE_CLOUD_*`
+variable, `ANTHROPIC_IDENTITY_TOKEN`, `ANTHROPIC_IDENTITY_TOKEN_FILE`,
+`ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_SERVICE_ACCOUNT_ID`,
+`ANTHROPIC_PROFILE`, `ANTHROPIC_CONFIG_DIR` and `ANTHROPIC_UNIX_SOCKET`
+(the `codex` wrapper strips the same set), after every merge: the container env, the profile's
 `env:`, forwarded env and a mid-run `PUT /config/llm`. A `claude-code` hat
 therefore always talks to `api.anthropic.com` with `CLAUDE_CODE_OAUTH_TOKEN`,
 whatever a gateway profile sets. A `pi` hat keeps all of those variables, so a

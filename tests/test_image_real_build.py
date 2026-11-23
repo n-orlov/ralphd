@@ -55,6 +55,7 @@ tracked by its returned tag and removed by that.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -247,3 +248,27 @@ def test_the_build_does_not_ask_for_buildkit(derived):
     a job container has the static docker client and no buildx plugin, so the
     legacy builder is the one that can work there."""
     assert main._image_build_env()["DOCKER_BUILDKIT"] == "0"
+
+
+def test_the_derived_image_bundles_clis_that_meet_the_minimums(derived):
+    """`claude -v` (the SDK's bundled CLI) against `CLAUDE_CODE_MIN_VERSION` and
+    `codex --version` against `CODEX_MIN_VERSION`, each CLI against its own
+    minimum, in the image the build produced."""
+    from ralphd.cli.versions import compare_versions
+    from ralphd.engine import config
+    from ralphd.harness import claude_code
+
+    got = in_image(
+        derived["image"],
+        'cli=$(python3 -c "import claude_agent_sdk, pathlib; '
+        "print(pathlib.Path(claude_agent_sdk.__file__).parent / '_bundled' / 'claude')\"); "
+        '"$cli" -v; codex --version')
+    assert got.returncode == 0, got.stderr
+    claude_line, codex_line = got.stdout.strip().splitlines()[-2:]
+    claude_version = claude_code.read_version(claude_line)
+    codex_version = (re.search(r"\d+(?:\.\d+)+", codex_line) or [None])[0]
+    assert claude_version, claude_line
+    assert codex_version, codex_line
+    assert compare_versions(claude_version, config.CLAUDE_CODE_MIN_VERSION) in (0, 1)
+    assert compare_versions(codex_version, config.CODEX_MIN_VERSION) in (0, 1)
+    assert codex_version == pinned(image.CODEX_PIN)

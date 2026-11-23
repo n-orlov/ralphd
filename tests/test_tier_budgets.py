@@ -1093,8 +1093,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # stderr after unparseable stdout, stdout winning over stderr, both
     # streams below, a bare number on stderr not a version; x2 harnesses), in
     # both tiers -> fast 9371, smoke 7590.
-    "fast": {"tests": 9371, "modules": 579},
-    "smoke": {"tests": 7590, "modules": 452},
+    # v0.39 task 001: +51 tests / +1 module (tests/test_cli_version_pins.py:
+    # the SDK and codex pin guards, the bundled-CLI minimum and the 2.1.330
+    # routing scrub for both harnesses), in both tiers -> fast 9422/580,
+    # smoke 7641/453.
+    "fast": {"tests": 9422, "modules": 580},
+    "smoke": {"tests": 7641, "modules": 453},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

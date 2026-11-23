@@ -11,7 +11,7 @@ bound), then exits 1 if the result `is_error`, else 0.
 Knobs (all environment variables):
 
 STUB_CLAUDE_VERSION       `-v` / `--version` prints "<value> (Claude Code)"
-                          (default 2.1.286).
+                          (default 2.1.330).
 STUB_CLAUDE_OBSERVE       path of the JSON observation dump (default
                           $STUB_RUN_DIR/.stub-claude-observed.json, or
                           ./.stub-claude-observed.json when STUB_RUN_DIR is
@@ -70,7 +70,7 @@ import time
 import uuid
 
 E = os.environ.get
-VERSION = E("STUB_CLAUDE_VERSION", "2.1.286")
+VERSION = E("STUB_CLAUDE_VERSION", "2.1.330")
 ARGV = sys.argv[1:]
 if "-v" in ARGV or "--version" in ARGV:
     print(f"{VERSION} (Claude Code)")

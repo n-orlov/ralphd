@@ -395,7 +395,7 @@ BILLING_LABEL_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]+")
 # The minimum Claude Code CLI version required to run iterations on the
 # claude-code harness. The wrapper checks this at startup and refuses to run
 # below it (requirement J.2).
-CLAUDE_CODE_MIN_VERSION = "2.1.280"
+CLAUDE_CODE_MIN_VERSION = "2.1.312"
 
 # The minimum Codex CLI version required to run iterations on the codex
 # harness. The wrapper compares `codex --version` to it before it starts a
