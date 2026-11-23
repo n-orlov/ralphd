@@ -278,15 +278,16 @@ def test_a_per_approach_cap_on_a_non_last_approach_replans_from_every_hat_bearin
     with pytest.raises(_SpendCapSpent) as raised:
         sup._enforce_spend_caps("plan_review")
     assert raised.value.action == "replan"
-    # reflect runs after the outcome is decided: a spent `total` refuses it
-    # too, and the event says the reflection was skipped, not replanned
+    # reflect is a dispatch like any other (cure-01-03): its refusal names
+    # the same outcome rules, never a special "skipped" action. The end-to-end
+    # lifecycle is tests/test_spend_reflection.py.
     sup.cfg.spend_caps = _caps(per_approach={"total": 1.0})
     with pytest.raises(_SpendCapSpent) as raised:
         sup._enforce_spend_caps("reflect")
-    assert raised.value.action == "skipped"
+    assert raised.value.action == "replan"
     assert [(e["action"], e["refusedHat"])
             for e in _events(sup, "spend.exhausted")] == [
-        ("replan", "plan_review"), ("skipped", "reflect")]
+        ("replan", "plan_review"), ("replan", "reflect")]
 
 
 # -- B.2 from the steps with no replan edge of their own (cure-01-01) ----------

@@ -1481,7 +1481,13 @@ last approach, holds the run `exhausted` with `exhaustedBudget` `spend:<hat>`,
 archives the approach and replans, from whichever step was about to dispatch
 (`steer`, the peer plan review and `verify` take an engine-only
 `stagnation_exhausted` edge, `transitions.ENGINE_EDGES`, that no hat or router is
-offered). The interrupt covers an iteration already
+offered). The post-terminal `reflect` iteration is held to the same rules even
+though the job has already settled its outcome: a refused reflection (no
+`FAILED.md`, `reflect_skipped`), and one that a live interrupt or an overshoot
+leaves with a spent cap on `reflect` or `total`, apply them at the boundary after
+it, in place of the settled outcome -- `exhausted` with the spend reason, or the
+approach archived and the job loop re-entered at `replan` (the new approach is
+reflected on within its own counters). An operator abort keeps its veto. The interrupt covers an iteration already
 running: the runner (`pi`, `claude-code`, `codex`) holds a live iteration on a
 capped hat to its caps after each assistant message, and the first message whose
 running cost reaches a cap ends it through the iteration-timeout kill path, with

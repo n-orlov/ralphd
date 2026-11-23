@@ -4922,9 +4922,21 @@ class LoopSupervisor:
         if status.get("state") == "finishing":
             state = self._promote_recorded_finishing_state(status)
         else:
-            state = await self._run_job_core()
-            if self.cfg.reflect and state != EXHAUSTED_STATE:
-                await self._run_reflection()
+            while True:
+                state = await self._run_job_core()
+                if not (self.cfg.reflect and state != EXHAUSTED_STATE):
+                    break
+                spent = await self._run_reflection()
+                if spent is None:
+                    break
+                # v0.39 (#321, B.2/C.2): the reflection hit a spent cap (it
+                # was refused, or it crossed one while it ran). The same
+                # rules as every other capped hat decide the run's ending
+                # instead of the outcome the job had settled.
+                settled = self._apply_reflect_spend(spent)
+                if settled is not None:
+                    state = settled
+                    break
             self._promote_finishing_state()
         self._reap_siblings_at_terminal(state)
         return state
@@ -5367,7 +5379,7 @@ class LoopSupervisor:
     # artifacts/reports/task-008-finishing-tail-budget.md.
     REFLECT_TAIL_TIMEOUT_S = 600.0
 
-    async def _run_reflection(self) -> None:
+    async def _run_reflection(self) -> "_SpendCapSpent | None":
         """One extra 'reflect' iteration after the job has already reached a
         terminal state (PRD req 24). Runs unconditionally (not gated by
         budget_left(), which is normally already exhausted by the time a job
@@ -5400,26 +5412,40 @@ class LoopSupervisor:
         tombstone blaming the reflection for the operator's `docker stop`. On
         that path the phase is recorded as *not attempted* instead
         (_record_reflect_not_attempted()).
+
+        v0.39 (#321, B.2/C.2): returns the `_SpendCapSpent` a spent cap on
+        `reflect` (or `total`) produced -- refused before the dispatch,
+        refused on an internal retry or contract re-ask, or found spent at
+        the boundary after the iteration (a live spend interrupt, or an
+        ordinary overshoot) -- else None. Reflection is a dispatch like
+        every other, so `run_job` applies the cap's outcome rules to it
+        (`_apply_reflect_spend`); a refusal is never read as a reflection
+        that merely did not happen.
         """
         if self._signal_unwind is not None:
             self._record_reflect_not_attempted(attempted=False)
-            return
+            return None
         try:
             self._enforce_spend_caps("reflect")
-        except _SpendCapSpent:
-            # v0.39 (#321): the run's outcome is already settled; a spent cap
-            # on reflect (or `total`) means the reflection is not dispatched.
-            self._record_reflect_not_attempted(attempted=False)
-            return
+        except _SpendCapSpent as refused:
+            self._record_reflect_not_attempted(attempted=False, spent=refused)
+            return refused
+        spent: _SpendCapSpent | None = None
         self.run.emit("phase", phase="reflect")
         window = self._begin_reflect_retry_window()
         result: IterationResult | None = None
         try:
-            await self._reflect_pre_attempt_wait()
-            # Task 016 (requirement I): reflect has no task in hand -- its
-            # ladder's designated tier is `tiers.DEFAULT_TIER`, unaffected
-            # by any task's tier in the plan.
-            result = await self.run_iteration("reflect", tier=tiers.DEFAULT_TIER)
+            try:
+                await self._reflect_pre_attempt_wait()
+                # Task 016 (requirement I): reflect has no task in hand -- its
+                # ladder's designated tier is `tiers.DEFAULT_TIER`, unaffected
+                # by any task's tier in the plan.
+                result = await self.run_iteration(
+                    "reflect", tier=tiers.DEFAULT_TIER)
+            except _SpendCapSpent as refused:
+                # A paid failed attempt spent the cap, and its internal retry
+                # was refused (`_run_iteration_with_infra_retry`).
+                spent = refused
         finally:
             self._end_reflect_retry_window(window)
             self.run.update_status(phase=None)
@@ -5461,8 +5487,70 @@ class LoopSupervisor:
                     # ever reads it as a failure -- see `_reflect_contract_
                     # ladder`'s own docstring for the REFLECT_TAIL_TIMEOUT_S
                     # bound and the v0.12 requirement G guarantee it preserves.
-                    result = await self._reflect_contract_ladder(result)
+                    try:
+                        result = await self._reflect_contract_ladder(result)
+                    except _SpendCapSpent as refused:
+                        # A contract re-ask was refused by a spent cap.
+                        spent = refused
                 self._record_reflect_outcome(result)
+        if spent is None and self._signal_unwind is None:
+            # The boundary after the reflection: its cost is counted, so a
+            # cap it crossed (a live interrupt or an overshoot) is refused
+            # now exactly as the next dispatch of any other hat would be.
+            try:
+                self._enforce_spend_caps("reflect")
+            except _SpendCapSpent as refused:
+                spent = refused
+        return spent
+
+    def _apply_reflect_spend(self, spent: "_SpendCapSpent") -> str | None:
+        """v0.39 (#321, B.2): the outcome a spent cap gives the run once the
+        reflection has been refused or interrupted. The rules are the ones
+        every capped hat gets: an overall cap, or a per-approach cap on the
+        last approach, holds the run `exhausted` with the spend reason
+        (`spend:<hat>`, `spend:<hat>:approach`) in place of the outcome the
+        job had settled; a per-approach cap on any other approach archives
+        it and replans. Returns the run's final state, or None when the run
+        replans (`run_job` re-enters the job loop). An operator abort keeps
+        its veto, as it does everywhere else: the abort stays the ending."""
+        if self._abort_reason:
+            return self._settled_state_kept()
+        if spent.action == "exhausted":
+            self._pending_terminal = None
+            self._spend_exhausted = spent.cap
+            self.run.update_status(endedAt=REMOVE_STATUS_KEY,
+                                   pendingTerminalState=None)
+            return self._finish_exhausted(
+                spent.cap.reason, reason=self._spend_exhausted_note(spent.cap))
+        # Replan: the settled outcome is withdrawn, the approach archived and
+        # the job loop re-entered at `replan` through `stagnation_exhausted`.
+        self._pending_terminal = None
+        self._archive_approach(self._spend_approach())
+        self._reset_tail_flags()
+        self._replan_guard = "stagnation_exhausted"
+        self.run.update_status(pendingTerminalState=None)
+        return None
+
+    def _settled_state_kept(self) -> str:
+        state_, _verdict, _fields = self._pending_terminal or ("aborted", None, {})
+        return state_
+
+    @staticmethod
+    def _spend_exhausted_note(cap) -> str:
+        return (f"{cap.level.replace('_', '-')} cap on {cap.hat}: "
+                f"${cap.spend:.2f} spent of ${cap.cap:.2f}")
+
+    def _reset_tail_flags(self) -> None:
+        """Forget how the job loop ended, before it is re-entered (a spent
+        reflection cap replanned the run)."""
+        self._failed_ending = None
+        self._terminal_reason_note = None
+        self._deadline_beat_verdict_extra = {}
+        self._review_provisional_rejected_extra = {}
+        self._review_deadline_unreviewed = False
+        self._budget_exhausted_tail = False
+        self._spend_exhausted_tail = False
+        self._approaches_exhausted_tail = False
 
     def _record_reflect_engine_cutoff(self, result: IterationResult) -> None:
         """Task 006 (PRD requirement C.1/C.2, #211): names, on `events.
@@ -5517,7 +5605,9 @@ class LoopSupervisor:
         return (f"signal {sig} ended the engine before the reflect phase could "
                 "start, so no reflect iteration was attempted")
 
-    def _record_reflect_not_attempted(self, attempted: bool) -> None:
+    def _record_reflect_not_attempted(self, attempted: bool,
+                                      spent: "_SpendCapSpent | None" = None
+                                      ) -> None:
         """Records "there is no reflection verdict, and that is the engine's
         own doing" (task 016, #47): `reflect: {ok: null, attempted, skipped}`
         in status.json plus a `reflect_skipped` event, and deliberately NO
@@ -5529,7 +5619,12 @@ class LoopSupervisor:
         failure that did not happen (they gain a distinct "not attempted"
         line instead, main.py's _format_reflect_lines).
         """
-        reason = self._reflect_skipped_reason(attempted)
+        if spent is not None:
+            reason = (f"the {spent.cap.reason} spend cap was spent before the "
+                      "reflect phase could start, so no reflect iteration was "
+                      "dispatched")
+        else:
+            reason = self._reflect_skipped_reason(attempted)
         self.run.update_status(reflect={"ok": None, "attempted": attempted,
                                         "error": None, "skipped": reason,
                                         "endedAt": utcnow()},
@@ -6358,12 +6453,7 @@ class LoopSupervisor:
         if spent is None:
             return
         last = approach >= self.cfg.max_approaches
-        if phase == "reflect":
-            # The run's outcome is already decided when reflect runs: the
-            # reflection is simply not dispatched (`_run_reflect`), and the
-            # event says so rather than naming an outcome nobody takes.
-            action = "skipped"
-        elif spent.level == "overall" or last:
+        if spent.level == "overall" or last:
             action = "exhausted"
         else:
             # B.2: a per-approach cap on an approach that is not the last
