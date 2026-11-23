@@ -131,8 +131,10 @@ def test_a_spent_overall_reflect_cap_refuses_the_reflection_and_holds_the_run_ex
     assert (event["hat"], event["level"]) == ("reflect", "overall")
     assert "reflect" not in sup.runner.calls      # zero dispatches past the cap
     # not silently skipped as success: the refusal is on the record
+    assert status["reflect"]["ok"] is None
     assert status["reflect"]["attempted"] is False
     assert "spend cap" in status["reflect"]["skipped"]
+    assert not (sup.run.artifacts_dir / "reflection" / "FAILED.md").exists()
     assert len(_events(sup, "reflect_skipped")) == 1
 
 
@@ -185,6 +187,21 @@ def test_a_spent_per_approach_cap_on_a_non_last_approach_archives_and_replans_in
 
 # -- live interruption: the interrupt applies the rules at the boundary -----------
 
+def _interrupted_record(sup, status, reason=None):
+    """An interrupted reflection is the engine's own kill, not a reflection
+    failure: `ok: null`, attempted, the spend reason, and no tombstone."""
+    record = status["reflect"]
+    assert record["ok"] is None, record
+    assert record["attempted"] is True
+    assert record["error"] is None
+    assert "reached during the reflect iteration" in record["skipped"]
+    if reason is not None:
+        assert f"the {reason} spend cap" in record["skipped"]
+    assert not (sup.run.artifacts_dir / "reflection" / "FAILED.md").exists()
+    assert _events(sup, "reflect_engine_cutoff") == []
+    [skipped] = _events(sup, "reflect_skipped")
+    assert skipped["attempted"] is True and skipped["signal"] is None
+
 def test_a_reflection_interrupted_by_its_overall_reflect_cap_holds_the_run_exhausted(
         tmp_path):
     sup, final, status = _run(
@@ -195,6 +212,7 @@ def test_a_reflection_interrupted_by_its_overall_reflect_cap_holds_the_run_exhau
         "reflect", "overall", 1.2)
     assert sup.runner.calls["reflect"] == 1
     assert status["spend"]["overall"]["reflect"] == 1.2      # counted
+    _interrupted_record(sup, status, "spend:reflect")
 
 
 def test_a_reflection_interrupted_by_the_total_cap_holds_the_run_exhausted(
@@ -205,6 +223,7 @@ def test_a_reflection_interrupted_by_the_total_cap_holds_the_run_exhausted(
     event = _held_exhausted(sup, final, status, "spend:total")
     assert (event["hat"], event["level"]) == ("total", "overall")
     assert sup.runner.calls["reflect"] == 1
+    _interrupted_record(sup, status, "spend:total")
 
 
 def test_a_reflection_interrupted_by_its_per_approach_cap_on_the_last_approach_holds_exhausted(
@@ -213,6 +232,7 @@ def test_a_reflection_interrupted_by_its_per_approach_cap_on_the_last_approach_h
         tmp_path, {"reflect": [_spend_interrupted(1.2)]},
         spend_caps=_caps(per_approach={"reflect": 1.0}), max_approaches=1)
     _held_exhausted(sup, final, status, "spend:reflect:approach")
+    _interrupted_record(sup, status, "spend:reflect:approach")
 
 
 def test_a_reflection_interrupted_by_its_per_approach_cap_on_a_non_last_approach_replans(
@@ -235,6 +255,70 @@ def test_a_reflection_interrupted_by_its_per_approach_cap_on_a_non_last_approach
     assert status["spend"]["byApproach"]["2"].get("reflect", 0.0) == 0.0
 
 
+def test_an_interrupted_reflection_replans_then_an_interrupted_reflection_exhausts_on_total(
+        tmp_path):
+    # approach 1's reflection crosses its per-approach cap (replan); approach
+    # 2's crosses the overall total cap (exhausted): two interrupts, one run
+    calls = []
+
+    def reflect(sup, prompt=""):
+        calls.append(sup._approach)
+        return _result("", 1.2 if sup._approach == 1 else 0.9,
+                       timed_out=True, spend_interrupted=True)
+
+    sup, final, status = _run(
+        tmp_path, {"reflect": [reflect]},
+        spend_caps=_caps(overall={"total": 2.0},
+                         per_approach={"reflect": 1.0}), max_approaches=3)
+    assert calls == [1, 2]
+    assert final == "exhausted" and status["exhaustedBudget"] == "spend:total"
+    actions = [(e["hat"], e["level"], e["action"])
+               for e in _events(sup, "spend.exhausted")]
+    assert actions == [("reflect", "per_approach", "replan"),
+                       ("total", "overall", "exhausted")]
+    assert status["spend"]["overall"]["total"] == 2.1
+    record = status["reflect"]
+    assert (record["ok"], record["attempted"], record["error"]) == (
+        None, True, None)
+    assert "the spend:total spend cap" in record["skipped"]
+    assert not (sup.run.artifacts_dir / "reflection" / "FAILED.md").exists()
+    assert len(_events(sup, "reflect_skipped")) == 2
+
+
+def test_a_reflection_interrupted_by_a_per_approach_total_cap_on_a_non_last_approach_replans(
+        tmp_path):
+    def reflect(sup, prompt=""):
+        if sup._approach == 1:
+            return _spend_interrupted(0.5)(sup, prompt)
+        return _reflected()(sup, prompt)
+
+    # the review spent 0.6 of the 1.0 total; the reflection's 0.5 crosses it
+    sup, final, status = _run(
+        tmp_path, {"review": [_verified(0.6)], "reflect": [reflect]},
+        spend_caps=_caps(per_approach={"total": 1.0}), max_approaches=2)
+    [event] = _events(sup, "spend.exhausted")
+    assert (event["hat"], event["level"], event["action"],
+            event["refusedHat"]) == ("total", "per_approach", "replan",
+                                     "reflect")
+    assert (Path(sup.run.root) / "approaches" / "01").is_dir()
+    assert (final, status["approach"]) == ("succeeded", 2)
+    assert status["reflect"]["ok"] is True       # approach 2's reflection
+    assert not (sup.run.artifacts_dir / "reflection" / "FAILED.md").exists()
+
+
+def test_an_interrupt_the_boundary_does_not_confirm_keeps_the_settled_outcome(
+        tmp_path):
+    # the live watch stopped the reflection, but the counted cost stays under
+    # every cap: no cap outcome applies, and no failure is manufactured
+    sup, final, status = _run(
+        tmp_path, {"reflect": [_spend_interrupted(0.4)]},
+        spend_caps=_caps(overall={"reflect": 1.0}), max_approaches=3)
+    assert (final, status["state"]) == ("succeeded", "succeeded")
+    assert _events(sup, "spend.exhausted") == []
+    _interrupted_record(sup, status)
+    assert "a spend cap was reached" in status["reflect"]["skipped"]
+
+
 # -- the other dispatches a reflection makes -------------------------------------
 
 def test_a_paid_failed_reflection_attempt_is_not_retried_past_a_spent_cap(
@@ -248,6 +332,9 @@ def test_a_paid_failed_reflection_attempt_is_not_retried_past_a_spent_cap(
         spend_caps=_caps(overall={"reflect": 1.0}), max_approaches=3)
     _held_exhausted(sup, final, status, "spend:reflect")
     assert sup.runner.calls["reflect"] == 1          # no internal retry
+    # the attempt itself failed, so it is recorded as a reflection failure
+    assert status["reflect"]["ok"] is False
+    assert (sup.run.artifacts_dir / "reflection" / "FAILED.md").exists()
 
 
 def test_a_contract_reask_of_the_reflection_is_not_dispatched_past_a_spent_cap(

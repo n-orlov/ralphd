@@ -5431,6 +5431,7 @@ class LoopSupervisor:
             self._record_reflect_not_attempted(attempted=False, spent=refused)
             return refused
         spent: _SpendCapSpent | None = None
+        boundary_checked = False
         self.run.emit("phase", phase="reflect")
         window = self._begin_reflect_retry_window()
         result: IterationResult | None = None
@@ -5453,6 +5454,20 @@ class LoopSupervisor:
                 # The signal arrived mid-attempt: whatever the iteration
                 # returned describes the teardown, not the reflection.
                 self._record_reflect_not_attempted(attempted=True)
+            elif result is not None and getattr(
+                    result, "spend_interrupted", False) is True:
+                # v0.39 (#321, C.2): a live spend cap cut the reflection. Like
+                # a signal mid-attempt, the result describes the engine's own
+                # kill, not the reflection: no failure verdict, no tombstone,
+                # no contract ladder over a discarded claim. The boundary
+                # check runs here (once) so the record names the cap.
+                boundary_checked = True
+                try:
+                    self._enforce_spend_caps("reflect")
+                except _SpendCapSpent as refused:
+                    spent = refused
+                self._record_reflect_not_attempted(
+                    attempted=True, spent=spent, spend_interrupted=True)
             else:
                 # Task 006 (PRD requirement C.1, #211): `_iteration_cut_
                 # short_by_engine` gates the ladder call here exactly as it
@@ -5493,7 +5508,8 @@ class LoopSupervisor:
                         # A contract re-ask was refused by a spent cap.
                         spent = refused
                 self._record_reflect_outcome(result)
-        if spent is None and self._signal_unwind is None:
+        if (spent is None and self._signal_unwind is None
+                and not boundary_checked):
             # The boundary after the reflection: its cost is counted, so a
             # cap it crossed (a live interrupt or an overshoot) is refused
             # now exactly as the next dispatch of any other hat would be.
@@ -5606,7 +5622,8 @@ class LoopSupervisor:
                 "start, so no reflect iteration was attempted")
 
     def _record_reflect_not_attempted(self, attempted: bool,
-                                      spent: "_SpendCapSpent | None" = None
+                                      spent: "_SpendCapSpent | None" = None,
+                                      spend_interrupted: bool = False
                                       ) -> None:
         """Records "there is no reflection verdict, and that is the engine's
         own doing" (task 016, #47): `reflect: {ok: null, attempted, skipped}`
@@ -5618,8 +5635,19 @@ class LoopSupervisor:
         status` and the hub both act on `ok is False`, so neither reports a
         failure that did not happen (they gain a distinct "not attempted"
         line instead, main.py's _format_reflect_lines).
+
+        v0.39 (#321, C.2): `spend_interrupted` is the reflection a live
+        spend cap stopped mid-attempt (`attempted: true`); `spent` names the
+        cap the boundary check found spent, when it found one.
         """
-        if spent is not None:
+        if spend_interrupted:
+            cap = (f"the {spent.cap.reason} spend cap" if spent is not None
+                   else "a spend cap")
+            reason = (f"{cap} was reached during the reflect iteration, so "
+                      "this engine stopped it before it finished; the "
+                      "interrupted attempt is not read as a reflection "
+                      "failure")
+        elif spent is not None:
             reason = (f"the {spent.cap.reason} spend cap was spent before the "
                       "reflect phase could start, so no reflect iteration was "
                       "dispatched")

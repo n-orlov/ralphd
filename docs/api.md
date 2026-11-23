@@ -573,6 +573,16 @@ on `ok === false` (this CLI, the hub) from reporting a failure that did not
 happen; both cases emit a `reflect_skipped` event and print their own
 `reflection: not attempted (…)` / `not completed (…)` line in `ralphctl status`.
 
+A run with `spend_caps` (#321) records the same shape when a spend cap withheld
+or cut the reflection: `attempted: false` when a spent cap on `reflect` or
+`total` refused the dispatch, `attempted: true` when a live spend interrupt
+stopped the attempt, with `skipped` naming the cap (e.g. `the spend:total spend
+cap was reached during the reflect iteration, ...`). Neither writes
+`FAILED.md`. A reflection attempt that failed on its own (an outage whose
+retry, or a malformed payload whose contract re-ask, a spent cap refused) keeps
+its ordinary `ok: false` record and tombstone. Either way the cap's action then
+decides the run (`exhausted`, or archive and replan).
+
 #### `termination`
 
 Absent from `status.json` (and `null` in `GET /status`) unless something told
@@ -878,7 +888,7 @@ then follows. When the engine process's job ends in the `exhausted` hold (resuma
 | the provider-refusal event (named like the refusal `ending`; SPEC.md §5.2's identifier table) | an iteration was classified `"refused"` and the run ends `failed` with the refusal `ending`: phase, `iteration`, `family`, `description`, `match` (the matched text), `httpStatus`, `errorType`, `harness`, `message` (the provider's error, scrubbed); the notifier is told, quoting that message. Never an `operator_escalation` |
 | `reflect_infra_delay` | the job ended on an infra-shaped failure, so the post-terminal `reflect` iteration waits before its first attempt instead of firing into the same dead endpoint: `delayS`, `error`, `budgetS` (reflect's own, capped, outage budget). Followed by an ordinary `infra_wait` with `attempt: 0` |
 | `reflect_done` | the post-terminal `reflect` iteration finished: `ok`, plus `error`/`errorClass` when it failed (same verdict as status.json's `reflect`) |
-| `reflect_skipped` | the post-terminal `reflect` phase produced no verdict because a signal was already taking the engine down, or a spend cap on `reflect`/`total` was spent (`signal` is null, and the cap's action then decides the run): `attempted` (false = never started, true = cut short mid-attempt), `signal`, `reason`. No `FAILED.md` is written on this path — see status.json's `reflect` |
+| `reflect_skipped` | the post-terminal `reflect` phase produced no verdict because a signal was already taking the engine down, or a spend cap on `reflect`/`total` refused it before dispatch or a live spend interrupt stopped it mid-attempt (`signal` is null, and the cap's action then decides the run): `attempted` (false = never started, true = cut short mid-attempt), `signal`, `reason`. No `FAILED.md` is written on this path — see status.json's `reflect` |
 | `reflect_tombstone_cleared` | a successful `reflect` attempt removed a stale `reflection/FAILED.md` written by an earlier one: `path`. The alias `reflect-failed` disappears from `artifacts ls` with the file |
 | `task.undeferred` | an operator's `POST /tasks/{task_id}/undefer` was applied on the loop: `taskId`, `until` and `reason` (the cleared deferral), `by: "operator"` |
 | `input.parked` | the run entered `awaiting_input` on a question (v0.36 requirement C.1/H.2). On a findings question: the `inputQuestion` fields `kind`, `trigger`, `judge`, `findings`, `cureRoundsUsed`, `cureRoundsAllowed`, `approach`, `maxApproaches`, `expiresAt`, `onTimeout` (and `planPhase` on a park a plan phase's gate raised, PRD v0.37 D.3), emitted once per park after `status.json` already reads `state: "awaiting_input"` and after the `operator_escalation` event carrying the full text; with `operator_input_needed_pause: false` the run never leaves `running`: the event carries `timeoutAtPark: true` and an `expiresAt` equal to the park time. On a `petition_hold` park (v0.38 A.5) and a `verified_unchanged` park (B.2/B.3) the payload is the whole `inputQuestion` except `parkedAt` (the event's own `ts`): the findings fields with `findings: []`, `judge` `null` (`petition_hold`) or `"review"`/`"verdict_gate"` (`verified_unchanged`), `expiresAt: null`, `onTimeout: "never"`, plus `heldTasks` and `text` (and `reviewStateKey` on `verified_unchanged`); never `planPhase` or `timeoutAtPark`. These two parks emit NO `operator_escalation` event: the order is the `status.json` write, `run.paused` (`reason` is the park kind), `input.parked`, a `log` event, then the park's one notification attempt (a `notification.sent`/`notification.failed` event when a notifier URL is configured) |
