@@ -1424,14 +1424,32 @@ def test_a_cap_kill_keeps_the_workspace_edit_and_discards_the_completion_claim(
     assert _gone(int(pidfile.read_text()))
 
 
+def _live_in_group(pgid: int) -> bool:
+    """True when a process that is not a zombie still belongs to group `pgid`
+    (read from /proc; an unreaped zombie counts as gone, as in `_gone`)."""
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+        except (OSError, IndexError):
+            continue
+        if fields[0] not in ("Z", "X") and int(fields[2]) == pgid:
+            return True
+    return False
+
+
 def _group_gone(pgid: int, timeout_s: float = 15.0) -> bool:
-    """True once no process is left in group `pgid`, probed with
-    `os.killpg(pgid, 0)` (never `pgrep`)."""
+    """True once no live process is left in group `pgid`: probed with
+    `os.killpg(pgid, 0)`, then a /proc scan so a zombie nobody has reaped yet
+    does not count as alive (never `pgrep`)."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         try:
             os.killpg(pgid, 0)
         except ProcessLookupError:
+            return True
+        if not _live_in_group(pgid):
             return True
         time.sleep(0.05)
     return False
