@@ -47,6 +47,9 @@ STUB_CODEX_SILENT         set (non-empty) to emit nothing at all in hang and
 STUB_CODEX_SLEEP_BEFORE   seconds slept before the first event.
 STUB_CODEX_CHILD_PIDFILE  hang scenarios spawn a sleeping child in the same
                           process group and write its pid here.
+STUB_CODEX_LEAVE_CHILD    set (non-empty) to make a hang scenario's SIGINT handler exit the
+                          stub WITHOUT killing its child, so only a signal to the
+                          whole process group (never the leader pid alone) reaches it.
 STUB_CODEX_WRITE_FILE     hang scenarios write this file (relative to cwd) before
                           sleeping (shows a cap kill keeps workspace edits).
 STUB_CODEX_HANG_CLAIM     set (non-empty) to make hang scenarios emit an
@@ -149,7 +152,7 @@ def hang(ignore_sigint):
             f.write(str(child.pid))
 
     def on_int(*_):
-        if child is not None:
+        if child is not None and not E("STUB_CODEX_LEAVE_CHILD"):
             child.kill()
         os._exit(1)
 

@@ -1424,6 +1424,66 @@ def test_a_cap_kill_keeps_the_workspace_edit_and_discards_the_completion_claim(
     assert _gone(int(pidfile.read_text()))
 
 
+def _group_gone(pgid: int, timeout_s: float = 15.0) -> bool:
+    """True once no process is left in group `pgid`, probed with
+    `os.killpg(pgid, 0)` (never `pgrep`)."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_an_abort_takes_the_whole_process_group_of_codex_and_discards_the_claim(
+        tmp_path, monkeypatch):
+    # The fake codex streams a full completion claim, starts a child of its own
+    # and, on SIGINT, exits WITHOUT killing that child: only a signal sent to the
+    # whole process group (not to the leader pid alone) can reach the child. The
+    # iteration is aborted by the engine's own cap (`timeout_s`).
+    pidfile = tmp_path / "child.pid"
+    observe = _setup(monkeypatch, tmp_path, STUB_CODEX_SCENARIO="hang",
+                     STUB_CODEX_HANG_CLAIM="1", STUB_CODEX_TEXT=_CLAIM_TEXT,
+                     STUB_CODEX_LEAVE_CHILD="1",
+                     STUB_CODEX_CHILD_PIDFILE=str(pidfile))
+    monkeypatch.setattr(runner_mod, "SHUTDOWN_GRACE_S", 0.5)
+    (tmp_path / "ws").mkdir()
+    (tmp_path / "it").mkdir()
+    transcript = tmp_path / "it" / "output.jsonl"
+    raw_path = tmp_path / "it" / "output.codex.jsonl"
+    runner = CodexRunner(tmp_path / "ws", home_fn=lambda: tmp_path / "home")
+    seen: dict = {}
+
+    async def go():
+        task = asyncio.ensure_future(runner.run(
+            "the prompt", transcript, model=MODEL_REF, timeout_s=6))
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not (
+                pidfile.exists() and observe.exists() and raw_path.exists()
+                and "<promise>COMPLETE</promise>" in raw_path.read_text()):
+            await asyncio.sleep(0.05)
+        seen["child"] = int(pidfile.read_text())
+        seen["leader"] = json.loads(observe.read_text())["pid"]
+        seen["pgid"] = os.getpgid(seen["child"])
+        return await task
+
+    result = asyncio.run(go())
+    child, leader, pgid = seen["child"], seen["leader"], seen["pgid"]
+    # codex and its child share one group, led by codex itself
+    assert pgid == leader
+    assert result.timed_out
+    # the claim really streamed before the abort...
+    assert "<promise>COMPLETE</promise>" in raw_path.read_text()
+    # ...and is discarded: the engine reads neither a verdict nor the plan marker
+    assert result.final_text == ""
+    assert runner_mod.last_nonblank_line(result.final_text) == ""
+    # the whole group is gone, the child included
+    assert _group_gone(pgid), "a process of codex's group outlived the abort"
+    assert _gone(child)
+
+
 def test_a_claim_on_a_finished_turn_is_kept(tmp_path, monkeypatch):
     # the discard is the cap's alone: the same text on a completed turn stands
     _setup(monkeypatch, tmp_path, STUB_CODEX_TEXT=_CLAIM_TEXT)
