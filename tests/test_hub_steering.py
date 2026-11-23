@@ -408,9 +408,10 @@ def test_an_entry_with_no_timestamp_claims_no_arrival_time(tmp_path, ui):
 
     server = ui(registry)
     try:
-        _, body = server.get("/api/runs/run-ghost-ts/steering")
+        code, body = server.get("/api/runs/run-ghost-ts/steering")
     finally:
         engine.close()
+    assert code == 200, body
     (entry,) = body["entries"]
     assert "ts" not in entry and "tsLocal" not in entry
 
@@ -428,9 +429,10 @@ def test_a_forged_tslocal_from_a_live_answer_is_recomputed(tmp_path, ui):
 
     server = ui(registry)
     try:
-        _, body = server.get("/api/runs/run-forged/steering")
+        code, body = server.get("/api/runs/run-forged/steering")
     finally:
         engine.close()
+    assert code == 200, body
     (entry,) = body["entries"]
     assert entry["tsLocal"] == format_local_time("2026-01-02T03:04:05Z")
 
