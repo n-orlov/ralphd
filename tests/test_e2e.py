@@ -352,7 +352,8 @@ def test_steering_during_review_iteration_never_silently_dropped(engine_factory,
 
     hold_file.touch()  # release: let the held review iteration proceed
 
-    status = e.wait_state(("succeeded", "failed", "aborted"), timeout=90)
+    status = e.wait_state(("awaiting_input", "succeeded", "failed", "aborted"),
+                          timeout=90)
 
     consumed = json.loads((e.run_dir / "steering" / ".consumed.json").read_text()) \
         if (e.run_dir / "steering" / ".consumed.json").exists() else []
@@ -371,15 +372,22 @@ def test_steering_during_review_iteration_never_silently_dropped(engine_factory,
     # nothing left to do once its one task is already completed) the fix in
     # task 005 routes the run back to a worker iteration specifically to
     # consume the steering before re-reviewing, so the expected concrete
-    # outcome is full consumption and a clean VERIFIED success -- assert
-    # that too, not just the weaker either/or.
-    assert status["state"] == "succeeded"
-    assert status["verdict"] == "verified"
+    # outcome is full consumption -- assert that too, not just the weaker
+    # either/or. v0.38 B.2 (#320): the steer settled the message without
+    # moving HEAD or the task, so the review state key equals the one the
+    # deferred VERIFIED already judged: the run never goes terminal on the
+    # remembered verdict, it parks `verified_unchanged` for the operator.
+    assert status["state"] == "awaiting_input"
+    assert status["pauseReason"] == "verified_unchanged"
+    assert status.get("verdict") is None
     assert consumed_it, f"expected steering to be consumed, not merely reported: {status}"
     assert not reported_it
-
-    e.api("POST", "/shutdown")
-    wait_engine_exit(e, timeout=10)
+    phases = [json.loads((d / "meta.json").read_text())["phase"]
+              for d in sorted((e.run_dir / "iterations").iterdir())]
+    assert phases.count("review") == 1, phases
+    # `/shutdown` is refused (409) while the run is parked; the fixture's
+    # teardown stops the engine, as for the parked run in
+    # test_verified_review_refused_while_steering_pending.
 
 
 def test_huge_output_line_does_not_kill_job(engine_factory):
@@ -577,8 +585,8 @@ def test_verified_review_refused_while_steering_pending(engine_factory, tmp_path
     stranded by a terminal-succeeded run. The engine must discard that verdict,
     route back so the steering is actually settled, then re-review -- only
     succeeding once no steering is left pending (v0.38 B.2: on the state the
-    deferred VERIFIED already judged, that verdict is reused rather than the
-    review re-dispatched).
+    deferred VERIFIED already judged the review is not re-dispatched, and the
+    run parks `verified_unchanged` rather than going terminal).
 
     Task 013 (requirement I, #98) strengthens WHAT settles it. The old claim
     was `phases == [planning, worker, review, worker, review]` with the file
@@ -621,18 +629,20 @@ def test_verified_review_refused_while_steering_pending(engine_factory, tmp_path
 
     hold_file.touch()  # release: let the held review iteration proceed
 
-    status = e.wait_state(("succeeded", "failed", "aborted"), timeout=90)
-    assert status["state"] == "succeeded" and status["verdict"] == "verified"
-
-    iters = sorted((e.run_dir / "iterations").iterdir())
-    metas = [json.loads((d / "meta.json").read_text()) for d in iters]
-    phases = [m["phase"] for m in metas]
+    status = e.wait_state(("awaiting_input", "succeeded", "failed", "aborted"),
+                          timeout=90)
     # The engine must NOT go terminal after the first review: it defers and
     # the dispatch loop routes to `steer` (task 012/013). v0.38 B.2 (#320):
     # the steer settled the message without moving HEAD or any task, so the
     # state is the one the deferred VERIFIED already judged -- the review is
-    # not dispatched a second time; its remembered verdict stands
-    # (`review_verdict_reused`) once nothing holds it.
+    # not dispatched a second time, and no remembered verdict is taken in its
+    # place: the run parks `verified_unchanged` for the operator.
+    assert status["state"] == "awaiting_input"
+    assert status["pauseReason"] == "verified_unchanged"
+
+    iters = sorted((e.run_dir / "iterations").iterdir())
+    metas = [json.loads((d / "meta.json").read_text()) for d in iters]
+    phases = [m["phase"] for m in metas]
     assert phases == ["planning", "worker", "review", "steer", "worker"]
 
     review1_meta = metas[2]
@@ -641,13 +651,13 @@ def test_verified_review_refused_while_steering_pending(engine_factory, tmp_path
     steer_meta = metas[3]
     assert steer_meta["phase"] == "steer"
     assert "001-lastcall.md" in steer_meta["steeringConsumed"]
+
     # ...and the worker iteration that follows it is handed nothing to
     # consume, because the steer hat already settled it.
     assert metas[4]["phase"] == "worker"
     assert metas[4]["steeringConsumed"] == []
 
-    # It was never silently discarded: recorded consumed, and the run only
-    # went terminal-succeeded once it was.
+    # It was never silently discarded: recorded consumed.
     consumed_final = json.loads((e.run_dir / "steering" / ".consumed.json").read_text())
     assert "001-lastcall.md" in consumed_final
 
@@ -658,9 +668,7 @@ def test_verified_review_refused_while_steering_pending(engine_factory, tmp_path
                 and "deferring" in ev.get("message", "")]
     assert warnings, "expected a deferred-VERIFIED warning log event"
     assert "001-lastcall.md" in warnings[0]["message"]
-    reused = [ev for ev in events if ev.get("type") == "review_verdict_reused"]
-    assert len(reused) == 1 and reused[0]["verdict"] == "VERIFIED"
-    assert events.index(reused[0]) > events.index(warnings[0])
+    assert not [ev for ev in events if ev.get("type") == "review_verdict_reused"]
 
 
 def test_vigilant_verify_fail_then_recovery(engine_factory):

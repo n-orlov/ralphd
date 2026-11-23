@@ -75,7 +75,13 @@ def test_steer_hub_and_cli_land_the_same_bytes_in_the_steering_record(
     assert cli_res.returncode == 0, cli_res.stderr
 
     hold_file.touch()
-    run.wait_terminal()
+    # v0.38 B.2 (#320): the steer hat settles the message without moving
+    # HEAD or the task, so the deferred VERIFIED's review state key is
+    # unchanged and the run parks `verified_unchanged` rather than ending.
+    settled = run.wait_state(("awaiting_input", "succeeded", "failed",
+                              "aborted"))
+    assert settled["state"] == "awaiting_input", settled
+    assert settled["pauseReason"] == "verified_unchanged", settled
 
     entries = {e["name"]: e for e in steering_entries(run.run_dir)}
     assert "via-hub" in entries, entries.keys()

@@ -9860,18 +9860,25 @@ class LoopSupervisor:
         with no bespoke re-invocation mechanism needed.
         """
         approach = self._approach
+        # v0.38 B.3: the final peer gate shares the review state key with the
+        # final review. A dispatch on the key an earlier verdict of its own
+        # already judged is not made: the run parks `verified_unchanged`.
+        # Compared BEFORE the budget: the park dispatches nothing and charges
+        # nothing, and the key alone decides, so neither an iteration budget
+        # lowered to what is already used nor a passed deadline turns an
+        # equal key into an `exhausted` tail. An operator abort is not a
+        # budget change: it still ends the run through the tail below.
+        gate_key = self._review_state_key()
+        if (self._abort_reason is None
+                and self._verdict_gate_key_unchanged(approach, gate_key)):
+            self.run.emit("phase", phase="verdict_gate", approach=approach)
+            return self._park_for_verified_unchanged(
+                approach, gate_key, judge="verdict_gate")
         if not self.budget_left():
             # Task 011 (requirement C.1, #169): plain out-of-budget.
             self._budget_exhausted_tail = True
             return ("tail",)
         self.run.emit("phase", phase="verdict_gate", approach=approach)
-        # v0.38 B.3: the final peer gate shares the review state key with the
-        # final review. A dispatch on the key an earlier verdict of its own
-        # already judged is not made: the run parks `verified_unchanged`.
-        gate_key = self._review_state_key()
-        if self._verdict_gate_key_unchanged(approach, gate_key):
-            return self._park_for_verified_unchanged(
-                approach, gate_key, judge="verdict_gate")
         result = await self._dispatch_verdict_gate()
         while True:
             approved, payload, no_verdict = await self._verdict_gate_verdict(
@@ -11171,40 +11178,45 @@ class LoopSupervisor:
                 # starved" -- reached this line only when `doom_fault`
                 # just above is `None` (the actionable remainder is NOT
                 # entirely dead-doomed). If it is instead entirely
-                # blocked on a `petitioned` ancestor (`state.
-                # task_blocked_by(..., include_petitioned=True)`, the
-                # SAME derivation task 013 wired into every display
-                # surface, here read for a fifth purpose: deciding
-                # whether the only reason nothing is schedulable this pass
-                # is a hold, never a stuck plan), the engine runs the SAME
-                # bounded, off-budget mid-run adjudication episode
-                # (`_maybe_run_midrun_adjudication_episode`, already
-                # deduped per obligation by `self._petition_adjudication_
-                # seen` so calling it here on every held pass is a cheap
-                # no-op once an obligation has had its bounded shot)
-                # IMMEDIATELY -- right here, rather than waiting for a
-                # `pending_verify` cycle that will never arrive while
-                # nothing is being worked on -- instead of just letting the
-                # loop idle along to the ordinary "nothing selectable"
-                # worker dispatch a few lines below. `petition_held_this_
-                # pass` is read further down (right where the
-                # infra/signal fault-class carve-outs already skip the
-                # stagnation diff formula) so THIS pass's lack of
-                # tasks.json/commit/contract/tool-activity progress is
-                # never charged to the stagnation counter either -- the
-                # ordinary worker dispatch below still runs (a held plan
-                # still gets its normal chance to report `plan_complete`/
-                # a fresh petition/etc.), only the STAGNATION bookkeeping
-                # is exempted.
-                blocked_incl_petitioned = state.task_blocked_by(
-                    tasks_before.get("tasks", []), include_petitioned=True,
-                    settled=settled_petitioned)
+                # held on unsettled `petitioned` tasks -- directly or
+                # through a chain of dependents (`state.task_blocked_by_
+                # chain`, v0.38 A.4: each held task lists every petitioned
+                # or dead root it reaches, on every branch) -- the engine
+                # handles the hold on THIS pass, before any no-task worker
+                # dispatch: it runs the bounded, off-budget mid-run
+                # adjudication episode (`_maybe_run_midrun_adjudication_
+                # episode`, deduped per obligation by `self._petition_
+                # adjudication_seen`), re-selects in the same pass when the
+                # episode moved the hold, and otherwise parks with the A.5
+                # `petition_hold` question (`_park_for_petition_hold`) --
+                # also when nothing could be adjudicated (no petition on
+                # file). The one exception is a hold on a state a deferred
+                # VERIFIED already judged (B.2): that routes to `review`
+                # (guard `petition_held_no_task_bound`), which parks
+                # `verified_unchanged` without dispatching the review hat.
+                # `petition_held_this_pass` also exempts the pass from the
+                # stagnation diff formula.
+                # The phase gate counts as a dependency (v0.37 B.1): a
+                # pending task of a later phase waits on the open phase's
+                # held tasks, so it is held too, edge or no edge. The hold
+                # needs at least one unsettled petitioned root; a remainder
+                # held only by dead roots is the doomed route's business.
+                blocked_incl_petitioned = state.task_blocked_by_chain(
+                    tasks_before.get("tasks", []),
+                    settled=settled_petitioned,
+                    phases=tasks_before.get("phases"))
                 actionable_ids = {
                     str(t["id"]) for t in tasks_before.get("tasks", [])
                     if isinstance(t, dict) and t.get("id") not in (None, "")
                     and task_is_actionable(t)}
                 if actionable_ids and actionable_ids <= set(
-                        blocked_incl_petitioned.keys()):
+                        blocked_incl_petitioned.keys()) and (
+                        self._unsettled_petitioned_among(
+                            tasks_before, sorted({
+                                r for roots in
+                                blocked_incl_petitioned.values()
+                                for r in roots}),
+                            settled_petitioned)):
                     petition_held_this_pass = True
                     self.run.emit(
                         "log", level="info",
@@ -11247,10 +11259,10 @@ class LoopSupervisor:
                         await self._maybe_run_midrun_adjudication_episode())
                     if episode_ran:
                         after_doc = self.run.read_tasks()
-                        after_blocked = state.task_blocked_by(
+                        after_blocked = state.task_blocked_by_chain(
                             after_doc.get("tasks", []),
-                            include_petitioned=True,
-                            settled=self._settled_petitioned_ids(after_doc))
+                            settled=self._settled_petitioned_ids(after_doc),
+                            phases=after_doc.get("phases"))
                         after_actionable = {
                             str(t["id"]) for t in after_doc.get("tasks", [])
                             if isinstance(t, dict)
@@ -11285,6 +11297,19 @@ class LoopSupervisor:
                         # operator and do not route to the final review.
                         self._park_for_petition_hold(
                             after_doc, after_blocked, after_hold)
+                        continue
+                    if self.budget_left() and not self._review_key_unchanged(
+                            approach, self._review_state_key()):
+                        # A.5: nothing could be adjudicated (no petition on
+                        # file for the held task, say), so the hold is
+                        # unsettled and unchanged. Park for the operator
+                        # instead of spending a no-task worker iteration
+                        # or reaching the final review on it.
+                        self._park_for_petition_hold(
+                            tasks_before, blocked_incl_petitioned,
+                            self._unsettled_petitioned_among(
+                                tasks_before, held_task_ids,
+                                settled_petitioned) or held_task_ids)
                         continue
                 # v0.20 task 022 (PRD requirement C.1, #156): the sleep-
                 # and-wake mechanism task 021's own scheduler docstring
@@ -14524,15 +14549,10 @@ class LoopSupervisor:
         # here, so one comparison covers them all.
         review_key = self._review_state_key()
         if self._review_key_unchanged(approach, review_key):
-            if not self._terminal_success_blockers():
-                # Nothing holds the remembered VERIFIED any more (the only
-                # blocker was a steering message the `steer` hat consumed
-                # without moving HEAD or a task): the verdict already
-                # returned for this exact state stands. Not dispatched, and
-                # not a park either -- a park with no blocker would name
-                # nothing an answer could change.
-                return self._reuse_verified_on_unchanged_key(
-                    approach, review_key)
+            # The key alone decides (B.2): a blocker that went away outside
+            # the key (a steering message the `steer` hat consumed, say) is
+            # not a change of the judged state, so there is no exception --
+            # the run parks and the operator answers.
             return self._park_for_verified_unchanged(approach, review_key)
         # The dispatch key itself is recorded per ATTEMPT, by
         # `_run_one_review_dispatch`: a retry (an interrupted attempt, a
@@ -15414,31 +15434,43 @@ class LoopSupervisor:
         attempt, retries included, by `_run_one_review_dispatch`). A new
         attempt supersedes the remembered deferral: only the verdict this
         attempt returns can set one again."""
-        self._write_review_key_entry(approach, {"dispatched": key})
+        entry: dict = {"dispatched": key}
+        # The gate's own judgement belongs to the gate, not to the review
+        # attempt: it stays on record so a gate entry on that same key parks.
+        judged = self._review_key_entry(approach).get("gateJudged")
+        if isinstance(judged, dict):
+            entry["gateJudged"] = judged
+        self._write_review_key_entry(approach, entry)
 
     def _verdict_gate_key_unchanged(self, approach: int, key: dict) -> bool:
         """True iff the final peer gate of this approach already returned a
-        verdict on a key equal to `key` (v0.38 B.3) under the same cure-round
-        allowance. An operator top-up (`ralphctl budget --cure-passes`) since
-        that verdict changes what the same rejection leads to -- a cure
-        round instead of a park on a spent allowance -- so the gate is asked
-        again rather than held."""
+        verdict on a key equal to `key` (v0.38 B.3). The key alone decides,
+        exactly as B.1's does for the final review: neither a budget change
+        (an operator cure-round top-up) nor anything else outside the key
+        re-opens a judgement the gate already gave on that HEAD and those
+        task triples."""
         judged = self._review_key_entry(approach).get("gateJudged")
-        if not (isinstance(judged, dict) and judged.get("key") == key):
-            return False
-        allowed = judged.get("cureRoundsAllowed")
-        return (allowed is None
-                or allowed == self._cure_rounds_allowed(approach))
+        return isinstance(judged, dict) and judged.get("key") == key
+
+    @staticmethod
+    def _is_verdict_gate_unchanged_park(status: dict) -> bool:
+        """True iff `status` records the final peer gate's own
+        `verified_unchanged` park (v0.38 B.3): `pauseReason:
+        verified_unchanged` with an `inputQuestion` whose `judge` is
+        `verdict_gate`. Review's own B.2 park (`judge: review`) is not
+        this park."""
+        question = status.get("inputQuestion")
+        return (status.get("pauseReason")
+                == state.VERIFIED_UNCHANGED_INPUT_TRIGGER
+                and isinstance(question, dict)
+                and question.get("judge") == "verdict_gate")
 
     def _record_gate_judged_key(self, approach: int, key: dict) -> None:
         """The final peer gate returned a usable verdict on `key`: remember
         it, so a later dispatch on the same key is held. A no-verdict outcome
         records nothing -- nothing was judged."""
         entry = dict(self._review_key_entry(approach))
-        entry["gateJudged"] = {
-            "key": key,
-            "cureRoundsAllowed": self._cure_rounds_allowed(approach),
-        }
+        entry["gateJudged"] = {"key": key}
         self._write_review_key_entry(approach, entry)
 
     def _record_deferred_verified_key(
@@ -15461,32 +15493,20 @@ class LoopSupervisor:
             "blockers": list(blockers)}
         self._write_review_key_entry(approach, entry)
 
-    def _reuse_verified_on_unchanged_key(self, approach: int,
-                                         key: dict) -> tuple:
-        """v0.38 B.2: the key equals a deferred VERIFIED's and no terminal-
-        success blocker remains. The review hat is not dispatched; the
-        remembered VERIFIED takes review's own verified edge through the
-        same ladder a fresh one climbs (a spent budget holds `exhausted`)."""
-        self.run.emit("review_verdict_reused", approach=approach,
-                      verdict="VERIFIED", reviewStateKey=key)
-        self.run.emit("log", level="info", message=(
-            "the final review already returned VERIFIED on this HEAD and "
-            "these task statuses, and nothing holds it any more -- taking "
-            "that verdict instead of dispatching the review again "
-            "(v0.38 B.2, #320)"))
-        outcome = self._run_rejection_ladder(
-            "review", approach, None, verified=True)
-        return (self._review_verified_edge(approach) if outcome is None
-                else outcome)
-
     def _verified_unchanged_entries(self) -> list[dict]:
         """The non-terminal tasks that held the earlier VERIFIED, and what
-        blocks each: the dead/petitioned ancestors, else its own status."""
+        blocks each: its own `dependsOn` entries that are not satisfied
+        (`state.task_dependency_satisfied`, with the settled-petition rule)
+        -- a dead or unsettled petitioned prerequisite, an unfinished live
+        one (pending, in-progress, validation-failed, awaiting-validation)
+        or an id the plan does not hold. A satisfied dependency is never a
+        blocker. A task with none left is simply not done."""
         doc = self.run.read_tasks()
         tasks = doc.get("tasks") or []
-        blocked = state.task_blocked_by(
-            tasks, include_petitioned=True,
-            settled=self._settled_petitioned_ids(doc))
+        settled = self._settled_petitioned_ids(doc)
+        status_by_id = {str(t["id"]): t.get("status", "pending")
+                        for t in tasks if isinstance(t, dict)
+                        and t.get("id") not in (None, "")}
         held = {str(t.get("id")): t for t in
                 (self._steering_origin_outstanding()
                  + self._review_cure_origin_outstanding())}
@@ -15496,10 +15516,18 @@ class LoopSupervisor:
             if (isinstance(t, dict) and t.get("id") not in (None, "")
                     and not state.task_is_terminal(t)):
                 held.setdefault(str(t["id"]), t)
+
+        def unsatisfied(t: dict) -> list[str]:
+            raw = t.get("dependsOn")
+            deps = [str(d) for d in raw] if isinstance(raw, list) else []
+            return sorted({d for d in deps
+                           if not state.task_dependency_satisfied(
+                               d, status_by_id.get(d), settled)})
+
         return [{
             "taskId": tid, "title": str(t.get("title") or ""),
             "status": t.get("status"),
-            "blockedBy": sorted(blocked.get(tid, [])),
+            "blockedBy": unsatisfied(t),
         } for tid, t in sorted(held.items())]
 
     def _verified_unchanged_question_text(
@@ -15538,6 +15566,11 @@ class LoopSupervisor:
             lines.append(f"  task {e['taskId']} [{e['status']}]"
                          + (f" ({e['title']})" if e["title"] else "")
                          + f": blocked by {blockers}")
+        if not entries:
+            lines.append(
+                "  no task is non-terminal now: what held the verdict "
+                "(a steering message, say) is gone, but nothing about the "
+                "judged state changed.")
         lines += [
             "",
             "Change something, then answer: rule a blocking task "
@@ -15977,12 +16010,24 @@ class LoopSupervisor:
         shares this one entry point and gets the identical fix for free --
         none of them has a reason to keep parking once the run's own
         clock is what would decide there is nothing left to wait for.
+
+        v0.38 B.3 is the one exception: the final peer gate's own
+        `verified_unchanged` park (`judge: verdict_gate`). The gate compares
+        its judged key BEFORE the budget and parks on an equal key whatever
+        the budget allows; turning that park into the `exhausted` tail here,
+        one step later, would make the budget decide after all. The park
+        dispatches and charges nothing, and its answer re-enters
+        `_step_verdict_gate`, where a changed key still meets the budget
+        check. An operator abort is not a budget change and still takes the
+        tail.
         """
-        if not self.budget_left():
-            self._budget_exhausted_tail = True
-            return ("tail",)
         opening = self.run.read_status()
         reason = opening.get("pauseReason")
+        if not self.budget_left() and not (
+                self._abort_reason is None
+                and self._is_verdict_gate_unchanged_park(opening)):
+            self._budget_exhausted_tail = True
+            return ("tail",)
         phase_park = (isinstance(opening.get("inputQuestion"), dict)
                       and bool(opening["inputQuestion"].get("planPhase")))
         if (opening.get("state") == AWAITING_INPUT_STATE
@@ -16034,9 +16079,7 @@ class LoopSupervisor:
             self._advance("paused", "worker",
                           "paused_resumed_unresolvable_edge")
             return ("advance", "worker", "paused_resumed_unresolvable_edge")
-        if (reason == state.VERIFIED_UNCHANGED_INPUT_TRIGGER
-                and isinstance(opening.get("inputQuestion"), dict)
-                and opening["inputQuestion"].get("judge") == "verdict_gate"):
+        if self._is_verdict_gate_unchanged_park(opening):
             # v0.38 B.3: the final peer gate's own unchanged-key park
             # re-enters `verdict_gate`, which compares the key again.
             self._advance("paused", "verdict_gate",

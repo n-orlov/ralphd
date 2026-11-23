@@ -1495,9 +1495,9 @@ the run; the run goes on by itself, or ends with a named cause.
 | **Rate-limit ceiling** (a rate-limit wait that would take the run's rate-limit waiting past `rate_limit_max_wait_s`) | The wait does not start; `rate_limit_ceiling_reached` is emitted and the notifier names the window's reset | `failed`, with the rate-limit-ceiling `ending` (§5.2's identifier table); `ralphctl resume <run> --rate-limit-wait +N` raises the ceiling and resumes |
 | **Provider refusal** (a refused iteration, §8.2) | Not retried, the outage budget untouched; the provider-refusal event is emitted with the scrubbed provider message | `failed`, with the refusal `ending` (§5.2's identifier table); the `reason` names `PUT /config/llm` (fix the LLM profile or credentials) and `ralphctl resume` |
 | **A secret in a commit** (the task-boundary or hook commit scan hits) | The assigned task is faulted and the run parks (§4.6) | `awaiting_input`, `inputQuestion.kind: secret` -- a non-findings park (the petition hold and the unchanged-review park, below, are the other two); `ralphctl answer <run> --secret-handled` |
-| **A held petitioned task the prompt adjudication did not settle** (every actionable task waits only on unsettled `petitioned` tasks; the one episode returned no adjudication or left the hold unchanged) | The run parks; it does not route to the final review | `awaiting_input`, `inputQuestion.kind: petition_hold`, never expires; `ralphctl amend <run> --waive <task>` or `ralphctl amend <run> <task> --status validated\|skipped`, then `ralphctl answer <run>` |
-| **A final review that would judge a state a deferred VERIFIED already judged** (the review state key -- workspace HEAD plus the sorted `(task id, status, settled)` triples -- equals the one stored with the earlier VERIFIED that deferred to the worker) and something still blocks terminal success | The review hat is not dispatched; the run parks | `awaiting_input`, `pauseReason: verified_unchanged`, `inputQuestion.kind: verified_unchanged`, never expires; change something (an `amend` ruling, a commit), then `ralphctl answer <run>`; an answer with nothing changed parks again |
-| **A final peer verdict gate that would judge a state its own earlier usable verdict already judged** (the review state key equals the `gateJudged` key stored with that verdict, and the approach's cure-round allowance is the one recorded with it) | The gate hat is not dispatched; the run parks | `awaiting_input`, `pauseReason: verified_unchanged`, `inputQuestion.judge: verdict_gate`, never expires; change something (an `amend` ruling, a commit), then `ralphctl answer <run>`, which resumes at `verdict_gate`; an answer with nothing changed parks again |
+| **A held petitioned task the prompt adjudication did not settle** (every actionable task waits only on unsettled `petitioned` tasks, directly or through a chain of dependents; the one episode returned no adjudication or left the hold unchanged, or there was no open petition to adjudicate) | The run parks; it does not route to the final review | `awaiting_input`, `inputQuestion.kind: petition_hold`, never expires; `ralphctl amend <run> --waive <task>` or `ralphctl amend <run> <task> --status validated\|skipped`, then `ralphctl answer <run>` |
+| **A final review that would judge a state a deferred VERIFIED already judged** (the review state key -- workspace HEAD plus the sorted `(task id, status, settled)` triples -- equals the one stored with the earlier VERIFIED that deferred to the worker), whatever blocks terminal success now: the key alone decides, and a blocker that went away outside the key (a steering message since consumed, a deferred redelivery drained, an origin marker cleared) is no exception | The review hat is not dispatched and the remembered VERIFIED is never taken in its place; the run parks | `awaiting_input`, `pauseReason: verified_unchanged`, `inputQuestion.kind: verified_unchanged`, never expires; change something (an `amend` ruling, a commit), then `ralphctl answer <run>`; an answer with nothing changed parks again |
+| **A final peer verdict gate that would judge a state its own earlier usable verdict already judged** (the review state key equals the `gateJudged` key stored with that verdict), whatever the budget now allows: the key alone decides, and it is compared before the budget, so a cure-round top-up, an iteration budget lowered to what is already used or a passed deadline is no exception | The gate hat is not dispatched and no `exhausted` hold is taken; the run parks (an operator abort still ends the run) | `awaiting_input`, `pauseReason: verified_unchanged`, `inputQuestion.judge: verdict_gate`, never expires; change something (an `amend` ruling, a commit), then `ralphctl answer <run>`, which resumes at `verdict_gate`; an answer with nothing changed parks again |
 
 None of the rows above the judge-fault row pauses the run, notifies, or writes an
 `operator_escalation`; none of the judge, rate-limit or refusal rows pauses it
@@ -2116,8 +2116,12 @@ The second is the petition hold (v0.38 A.5):
 `LoopSupervisor._park_for_petition_hold` writes `pauseReason: petition_hold`
 and `inputQuestion` with `kind: petition_hold`, `trigger: petition_hold`,
 `expiresAt: null` and `onTimeout: never` when the prompt adjudication episode
-left a held petitioned task unsettled; `ralphctl answer <run>` releases it once
-an `amend` waiver or status ruling is recorded.
+left a held petitioned task unsettled, or found no open petition to adjudicate;
+the hold covers every actionable task that waits on an unsettled `petitioned`
+task directly or through a chain of dependents (`state.task_blocked_by_chain`),
+a pending task of a phase behind the open phase's closed gate included.
+`ralphctl answer <run>` releases it once an `amend` waiver or status ruling is
+recorded.
 
 The third is the unchanged-review park (v0.38 B.1/B.2). Every final-review
 dispatch, and every retry attempt inside one (an attempt the engine cut short, a
@@ -2139,17 +2143,23 @@ for the park question, never part of the comparison, so a steering message the
 `steer` hat consumed without moving HEAD or a task is no change. On the
 petition-held route the worker spends no no-task iteration when the key equals the
 stored one: it goes straight to `review` (guard `petition_held_no_task_bound`). An
-equal key does not dispatch. When no terminal-success blocker remains (the only
-one was a steering message since consumed), the remembered VERIFIED stands:
-`review_verdict_reused` is emitted and review's own verified edge is taken through
-the same ladder a fresh VERIFIED climbs. Otherwise
+equal key does not dispatch, and there is no exception for a blocker that went away
+outside the key (a steering message since consumed, a blocker that is gone from the
+recorded list): the key alone decides, and the remembered VERIFIED is never taken
+in place of a dispatch.
 `LoopSupervisor._park_for_verified_unchanged` writes
 `pauseReason: verified_unchanged` and `inputQuestion` with `kind:
 verified_unchanged`, `trigger: verified_unchanged`, `judge: review`, `expiresAt:
 null` and `onTimeout: never`, and takes `review -> paused` (guard
 `verified_unchanged`). `inputQuestion.heldTasks` names each non-terminal task
 (`taskId`, `title`, `status`, `blockedBy`) and `inputQuestion.text` says what
-blocks each. A changed HEAD, or a changed status of any task (including one an
+blocks each. `blockedBy` is the task's own `dependsOn` entries that are not
+satisfied: an unfinished live prerequisite (`pending`, `in-progress`,
+`validation-failed`, `awaiting-validation`), a `failed`/`skipped` one, an
+unsettled `petitioned` one, or an id the plan does not hold; a satisfied
+dependency (`completed`, `validated`, `superseded`, a settled petitioned task)
+is never listed, and the text prints exactly the same ids (`blocked by nothing`
+when the list is empty). A changed HEAD, or a changed status of any task (including one an
 operator ruling applies at the top of `review`), dispatches the review normally.
 `ralphctl answer <run>` with no option releases the park (`input.answered`,
 `outcome: "verified_unchanged_released"`); the run re-enters `review`, which
@@ -2160,7 +2170,7 @@ review dispatch. Both releases share one answer contract (`POST /answer`, docs/a
 (`JobConfig.peer_verdict_gate`) returns a usable verdict (approved or rejected),
 `_step_verdict_gate` stores the key it was entered on under `gateJudged` in the same
 approach entry of `reviewStateKeys` (a dispatch that yielded no usable verdict
-stores nothing: it judged nothing; a later final-review dispatch supersedes it). A
+stores nothing: it judged nothing). A
 later entry into the gate on an equal key, for instance a release of the gate's own
 operator-input park with nothing changed, does not dispatch the gate hat: it parks
 `awaiting_input` with the same `verified_unchanged` question (`judge:
@@ -2168,11 +2178,27 @@ verdict_gate`, no `heldTasks` unless a task is not terminal), taking `verdict_ga
 -> paused` (guard `verified_unchanged`). `ralphctl answer <run>` with no option
 releases it and the run re-enters `verdict_gate` (guard
 `paused_resumed_verdict_gate`), never `review`, which compares the key again. A
-changed HEAD or task status dispatches the gate normally, and so does an operator
-cure-round top-up (`ralphctl budget <run> --cure-passes`) since that verdict:
-`gateJudged` also records the approach's cure-round allowance it was judged under,
-and a different allowance changes what the same rejection leads to (a cure round
-instead of a park on a spent allowance).
+changed HEAD or task status dispatches the gate normally. The key alone decides, as it
+does for the final review: `gateJudged` records the key and nothing else, so a
+budget change since that verdict (an operator cure-round top-up through `ralphctl
+budget <run> --cure-passes`, or a lowered allowance) never re-opens a key the gate
+already judged. The key is compared before the budget: the park dispatches and
+charges nothing, so an iteration budget lowered to (or below) the iterations
+already used (`ralphctl budget <run> --iterations`, `PATCH /config/budget`) or a
+passed job deadline parks `verified_unchanged` on an equal key rather than taking
+the `exhausted` hold; only a changed key meets the budget check, and an operator
+abort still ends the run through its own tail. The park also holds with no
+budget left: `_step_paused` takes the out-of-budget tail over every other park
+(review's own `verified_unchanged` park included) but not over the gate's, so
+each release with nothing changed re-enters `verdict_gate` and parks again. A
+cure round on a rejection the gate already returned is spent by answering the
+gate's own operator-input park (`ralphctl answer <run>`, optionally after
+`ralphctl budget <run> --cure-passes`), which takes the cure-pass edge from the
+recorded rejection with no second gate dispatch; a top-up followed by a plain
+release of that park re-enters the gate and parks `verified_unchanged`. Another attempt on the same HEAD and task triples parks
+`verified_unchanged` without another gate dispatch, whether the earlier verdict
+approved or rejected, and a final-review attempt on that key leaves the gate's
+record in place (it only supersedes the review's own remembered deferral).
 
 **The key applies to the final review and the final peer gate only.** A phase
 review and a phase's peer gate (v0.37) never read or write it: they keep their own
@@ -2782,7 +2808,7 @@ The single answer to "what is this run doing". One document, patched field by fi
 | `inputQuestion` | object \| null | present while `state` is `awaiting_input` (v0.36 requirement C.1), `null` otherwise; written in the same status write as `state`, before the engine waits, and cleared by `resume()`. `kind` (`"findings"` \| `"secret"` \| `"petition_hold"` \| `"verified_unchanged"`; the three non-findings kinds have `trigger` equal to `"commit_secret"`, `"petition_hold"` and `"verified_unchanged"`, an empty `findings`, `expiresAt` `null` and `onTimeout` `"never"`; the secret park carries `judge: null` and the hit's `sha`, `part`, `variable`, `baseSha` and `headSha`; the petition hold carries `judge: null`, `heldTasks` -- each held task with its petition and dependents -- and the question `text`; the unchanged-review park carries `judge` `"review"` or `"verdict_gate"` (the judge that would have been dispatched), `heldTasks` -- each non-terminal task with what blocks it --, `reviewStateKey` (the unchanged key, the `reviewStateKeys` shape) and `text`), `trigger` (on a findings park `"incurable"` \| `"reviewer_escalation"` \| `"cure_rounds_spent"`), `judge` (`"review"` \| `"verdict_gate"` \| `null`), `findings` (one `{id, clause, severity, curable, text}` per blocking finding, `id` = `F<n>` in the judge's finding order, `text` = the finding's evidence), `cureRoundsUsed` / `cureRoundsAllowed` (this approach's cure passes taken -- review's plus the gate's -- and `cure_pass_ceiling`), `approach` / `maxApproaches`, `parkedAt`, `expiresAt` (park time plus the input timeout, 60 minutes by default; `null` when the timeout is `0` and on every non-findings kind), `onTimeout` (`"cure_now"` \| `"next_approach"` \| `"exhausted_approaches"`, what the engine does when `expiresAt` passes unanswered, or `"never"` on a non-findings kind) and, only on a park a plan phase's gate raised (PRD v0.37 requirement D.3, §4.2), `planPhase` (the phase's id; `judge` then names the phase review or the phase peer gate, and the answer is carried out inside that phase). A park from the final review or the final peer gate has no `planPhase` key |
 | `planPhase` | object \| null | PRD v0.37 requirement F.2/F.3 (#313): the active plan phase, `{id, title, index, count, gate}` -- `id`/`title` of the earliest `phases[]` entry whose gate is not `passed` (the last phase once every earlier gate has passed), `index` its 1-based position of `count` phases, `gate` its gate state (`closed`, `reviewing` or `passed`, §4.2) -- and `null` while the plan has no `phases`. Every `status.json` the engine publishes carries the key: `RunDir.update_status`, the one writer of the file, derives it from the persisted plan on each write, so it is present as an explicit `null` from the first write of initial planning (no `tasks.json` yet) and on a resumed run dir with no phases, never merely missing, and `RunDir.write_tasks` republishes it on every plan write (the new plan, every gate move), so it never disagrees with `tasks.json`; `GET /status` and `ralphctl status --json` carry the same object, and `ralphctl status` prints it as `plan:      phase <index>/<count> <title> · gate <state>` on a phased plan only. The `phase_gate.due`, `phase_gate.passed` and `phase_gate.rejected` events (§5.4) each carry `planPhase`, `approach` and `round`, and `phase_gate.rejected` also the blocking-finding count |
 | `inputAnswer` | object \| null | the answer `LoopSupervisor.answer` accepted (v0.36 requirement C.3) -- `outcome`, `judge`, `approach`, `waived`, `accepted`, `cureRounds`, `approachesGranted` -- written before the park is released and cleared by `_step_paused` as it carries the outcome out; `null` otherwise |
-| `reviewStateKeys` | object | v0.38 B.1 -- `{"<approach>": {"dispatched": key, "verifiedDeferred": {"key": key, "verdict": "VERIFIED", "blockers": [...]}}}`; a `key` is `{"head": "<workspace HEAD sha>", "tasks": [["<task id>", "<status>", <settled>], ...]}` sorted by task id. `dispatched` is written before every final-review attempt, retries included (and drops the earlier `verifiedDeferred` and `gateJudged`); `gateJudged` (`{"key": key, "cureRoundsAllowed": n}`) is written when the final peer verdict gate returns a usable verdict (v0.38 B.3), and a gate entry on an equal key under an equal cure-round allowance parks `verified_unchanged` with `judge: verdict_gate` instead of dispatching; `verifiedDeferred` is written when a VERIFIED verdict defers to the worker and carries that dispatch's own `dispatched` key. A dispatch on a key equal to `verifiedDeferred.key` is not made: it parks `verified_unchanged`, or, when no terminal-success blocker remains, takes the remembered VERIFIED (`review_verdict_reused`). Absent until the first dispatch |
+| `reviewStateKeys` | object | v0.38 B.1 -- `{"<approach>": {"dispatched": key, "verifiedDeferred": {"key": key, "verdict": "VERIFIED", "blockers": [...]}}}`; a `key` is `{"head": "<workspace HEAD sha>", "tasks": [["<task id>", "<status>", <settled>], ...]}` sorted by task id. `dispatched` is written before every final-review attempt, retries included (and drops the earlier `verifiedDeferred`, never `gateJudged`); `gateJudged` (`{"key": key}`) is written when the final peer verdict gate returns a usable verdict (v0.38 B.3), and a gate entry on an equal key parks `verified_unchanged` with `judge: verdict_gate` instead of dispatching, whatever the budget now allows (an earlier record's `cureRoundsAllowed` is ignored); `verifiedDeferred` is written when a VERIFIED verdict defers to the worker and carries that dispatch's own `dispatched` key. A dispatch on a key equal to `verifiedDeferred.key` is not made: it always parks `verified_unchanged`, whatever blockers remain. Absent until the first dispatch |
 | `rejectionSignatures` | object | `{"<approach>": "<signature>"}` -- per-approach findings-channel REJECTION signature: the sorted, normalised blocking-clause set (`LoopSupervisor._review_rejection_signature`) of a review rejection, written the moment the rejection ladder (§4.2) parks it or resolves it as an unanswered park. An operator ruling filed against the park resolves its own `signature` from this entry (`RunDir.add_ruling`). It is bookkeeping for that reader only: the ladder never compares it with an earlier approach's, so a repeated signature parks or cures like any other rejection. Disk-backed and survives a resume. Absent for a run that has never recorded a review rejection |
 | `curePasses` | object | `{"<approach>": <count>}` — v0.18 requirement C.1/C.2 (#141) per-approach cure-pass counter: a `rejected` review whose blocking findings are all `curable: true` and which is an ACTUAL first review of that approach (no `kind: "granted"` `cure-lineage.json` entry names it, so `LoopSupervisor._is_confirmation_review` is false; a REFUTED-remedy insertion's own `kind: "remedy"` entry alone never makes it a confirmation review) takes the `review -> worker` cure-pass edge (cure tasks appended, `origin: "review-cure"`) instead of replanning, as long as the approach's own cure rounds are not spent. This counter's entry reading `0` is NOT on its own a first review: a pass the peer verdict gate grants increments `gateCurePasses`, never this counter, so a confirmation review that follows a gate-only pass still reads `0` here and is nonetheless a confirmation review (`_review_rejection_curable_ignoring_ceiling` checks `_is_confirmation_review` BEFORE it consults this counter); one that reopens every root that gate pass targeted is a no-progress rejection, which spends one more round and cures while the approach has rounds left. Cure rounds are counted per approach (v0.36 requirement C.2): this counter plus `gateCurePasses`' entry for the same approach (`LoopSupervisor._cure_rounds_used`) must be below that approach's allowance (`_cure_rounds_allowed`: `JobConfig.cure_pass_ceiling`, job.yaml key `cure_pass_ceiling`, default 3, plus the approach's `cureRoundTopUps` entry), so a freshly replanned approach starts at zero. A same-set or superset (no-progress) rejection with rounds left spends one round and cures; it never archives directly. The run-wide total of this counter and `gateCurePasses` (`_cure_passes_for_run`) stays readable for display and gates nothing. Disk-backed and survives a resume. Absent for a run that has never taken a cure pass |
 | `cureBlocking` | object | `{"<approach>": [<clause>, ...]}` — v0.20 requirement E.1 (#167, task 030) companion to `curePasses`: the blocking clause set (`findings.blocking_finding_clauses`, sorted) the MOST RECENT granted cure pass for that approach recorded, written by `LoopSupervisor._take_cure_pass` in the same status update that increments `curePasses[approach]`. `_cure_pass_blocking_clauses` reads it back for an ORDINARY (non-confirmation) review's `blockingBefore` bookkeeping; a confirmation review's targeted roots come from `cure-lineage.json` instead (v0.27 requirement B.4, #274, task 007, `_cure_pass_targeted_roots`), never this field. Neither comparison refuses a cure (v0.36 requirement C.2): a later rejection in the same approach that repeats or is a superset of this set spends one round and cures like any other while the approach has rounds left. Still written unconditionally by every granted pass, confirmation review or not, so a later approach that never takes another confirmation review still has it available. Disk-backed and survives a resume; absent for a run that has never taken a cure pass |
@@ -3219,8 +3245,11 @@ map for the fourth (a worker reading its own blocked dependents).
 **A settled `petitioned` task satisfies its dependents (v0.38, #306, #320).**
 A `petitioned` task is *settled* when any one of three sources covers it: an
 applied task-level operator waiver (`ralphctl amend <run> <task> --waive`; the
-last ruling recorded against the task is the operator's current word, and a
-ruling pinned to another approach does not bind this one), a run-level
+last criteria ruling -- a waiver or a criteria replacement -- recorded against
+the task is the operator's current word, so a later replacement revokes the
+waiver while a `--status` ruling, which carries no criteria text, never does,
+whether or not the engine applied it; a ruling pinned to another approach does
+not bind this one), a run-level
 clause-bound waiver (`<run>/waivers/`) whose clause matches the obligation the
 task's petition carries (`petitions.task_petition_obligation`, the same
 substring-either-direction match a CONFIRMED adjudication uses), or a CONFIRMED
@@ -3242,7 +3271,9 @@ satisfies nothing, waiver or not.
 
 **A held petitioned task is adjudicated at once, and parks the run when the
 judge cannot settle it (v0.38 A.4/A.5, #306, #320).** When every actionable
-remaining task waits only on unsettled `petitioned` tasks, `_step_worker` runs
+remaining task waits only on unsettled `petitioned` tasks, directly or through a
+chain of dependents (some of the remainder may instead wait on a dead task),
+`_step_worker` runs
 `_maybe_run_midrun_adjudication_episode` on the FIRST hold, before it spends any
 no-task worker iteration. The episode's adjudications apply as before: CONFIRMED
 settles the task, and REFUTED moves it to `failed` with its remedy. When the
@@ -3261,7 +3292,9 @@ the run parks: `status.json` `state: "awaiting_input"`, `pauseReason:
 park does not route to the final review, and emits no `operator_escalation`
 event with an `approach` field. `inputQuestion.heldTasks` has one entry per
 petitioned task (`taskId`, `title`, `petition` -- `obligation`, `type`,
-`evidence`, or `null` -- and `dependents`), and `inputQuestion.text` names each
+`evidence`, or `null` -- and `dependents`, every actionable task that waits on it
+directly or through a chain, a task that also waits on another petitioned task on
+a different branch included), and `inputQuestion.text` names each
 task, its petition, its dependents and the two operator answers:
 `ralphctl amend <run> --waive <task> <reason>` and `ralphctl amend <run> <task>
 --status validated|skipped <reason>`. `amend` writes the ruling file on the host and never applies it
@@ -3275,8 +3308,24 @@ unpause` is refused with the same two answers named, and a hold the ruling did
 not move parks again without a second adjudication. A restarted engine over the
 park resumes at `worker` (`paused -> worker`, guard `paused_resumed_petition_hold`).
 A hold with no open petition to adjudicate at all (a `petitioned` task whose
-petition is not on file) keeps the earlier bound: three no-task worker iterations,
-then `petition_held_no_task_bound`.
+petition is not on file) cannot be settled by the judge either, so it parks
+`petition_hold` the same way on that first pass: no no-task worker iteration is
+dispatched and the final review is not reached. The engine reads the hold through
+`state.task_blocked_by_chain`, which lists for each held task every unsettled
+`petitioned` or dead root it reaches across all of its `dependsOn` branches (the
+display surfaces keep the one-hop `taskBlockedBy`). The open phase's gate counts
+as a dependency (v0.37 B.1): a `pending` task of a later phase is never scheduled
+while that gate is closed, and the gate cannot pass while a task of the open
+phase is held, so the later-phase task is held by the same roots with no
+`dependsOn` edge naming them, and is listed among their `dependents`. A
+later-phase task already claimed (`in-progress`, `validation-failed`) is not
+gated, and with no held open-phase task the gate adds nobody. The hold needs at
+least one unsettled `petitioned` root: a remainder held only by dead roots is
+not a petition hold and never parks `petition_hold`. The one exception is a hold on
+a state a deferred VERIFIED of this approach already judged (equal review state
+key, B.2): the worker spends no no-task iteration and goes straight to `review`
+(guard `petition_held_no_task_bound`), which parks `verified_unchanged` without
+dispatching the review hat.
 
 The `taskBlockedBy` overlay reads the same rule on every surface, so a settled
 task is never shown as a blocker its dependent has already been scheduled past.
@@ -3561,7 +3610,6 @@ The three `phase_gate.*` events (PRD v0.37 requirement F.1, #313) each carry `pl
 | `review.retry` | `hat`, `attempt`, `cap`, `reason` (`"output_truncated"` \| `"empty_reply"`, review's also its two contract-fault reasons (spelled in §5.2's identifier table), and in a phase review's scope `"judge_crashed"` \| `"judge_timed_out"`, §4.2) | the review hat's reply was cut off by the provider (`stopReason: length`, no text), was empty after the whole contract ladder, was non-empty but left unreadable by the ladder (the two contract-fault reasons), or -- in a phase review's scope -- the engine cut the iteration short by a crash (an abnormal exit, a death by signal included) or its own timeout (`judge_crashed` / `judge_timed_out`, no ladder run: there is no reply to repair); the engine re-dispatches review as a fresh, uncharged iteration through the same retry helper as `verdict_gate.retry`; `attempt` counts from 1, `cap` is `judge_retry_max` (§8.2), so the retries stay bounded and a crash or timeout that outlives them is `review.no_verdict` (an infra fault, never a rejection) |
 | `verdict_gate.retry` | `hat`, `attempt`, `cap`, `reason` (`"output_truncated"` \| `"empty_reply"`, and for a phase-scoped peer gate `"judge_crashed"` \| `"judge_timed_out"`, §4.2) | the peer verdict gate's reply was cut off by the provider or empty after the contract ladder, or -- for a phase-scoped peer gate -- the engine cut the iteration short by a crash (an abnormal exit, a death by signal included) or its own timeout; the engine re-dispatches the same hat as a fresh, uncharged iteration; `attempt` counts from 1, `cap` is `judge_retry_max` (§8.2), so the retries stay bounded and a crash or timeout that outlives them is `verdict_gate.no_verdict` (an infra fault, never a rejection) |
 | `operator_ruling_honoured` | `approach`, `signature`, `rulingSeq`, `rulingFile`, `verdict` (review's own raw `verdict` string for this pass) | v0.23 requirement A.4 (#224, task 015): once review's `awaiting_input` park (above) has held a rejection and review is re-asked over the SAME approach, a LEGIBLE fresh verdict (never on a pass whose review contract faulted, which never rendered one) that lands over a signature a recorded operator ruling (task 013's `ralphctl rule`/`POST /rule`/hub textarea, `LoopSupervisor._ruling_honoured_for_approach`) answers is named here — the auditable trace of which ruling review actually honoured, whatever the fresh verdict turned out to be. Plain equality on the same content-derived signature `_repeated_rejection_signature` already compares; the ruling's own TEXT is never read, parsed or classified to decide this |
-| `review_verdict_reused` | `approach`, `verdict` (`"VERIFIED"`), `reviewStateKey` | v0.38 B.2 (#320): the final review would be dispatched on the review state key a deferred VERIFIED of this approach already judged, and no terminal-success blocker remains (the only one was a steering message the `steer` hat consumed without moving HEAD or a task). The review hat is not dispatched; the remembered VERIFIED takes review's verified edge through the same ladder a fresh one climbs |
 | `repair` | `action`, plus the names/ids involved | appended host-side by `ralphctl repair`, which records only names, never values |
 | `workspace_version_mismatch` | `workspaceVersion`, `engineVersion` | v0.20.1 requirement E.3 (#190/#191, task 017): emitted once per process start, from `LoopSupervisor.__init__`, when the workspace's own recorded `__version__` (`src/ralphd/__init__.py` under the workspace, read as text, never imported) differs from the running engine's -- alerted through the same `self.notifier` path an `operator_escalation` pause already uses (D.1/E.5), never a second channel. Silent (no event, no alert) when the workspace's version literal is unreadable/absent or matches exactly |
 | `notification.escalation_undelivered` | `reason` (the escalating pause's own `reason` string, same vocabulary as `operator_escalation` above) | v0.26 requirement A.4 (task 004, #269): an operator-escalation notification (never a `petition_hold` or `verified_unchanged` park's single best-effort one) never reached the notifier after `LoopSupervisor._ESCALATION_DELIVERY_MAX_ATTEMPTS` (3) delivery attempts with bounded backoff between them (§4.6). Each attempt still emits its own honest `notification.sent`/`notification.failed` event (task 009, requirement B.1, #197, unchanged); this is the ADDITIONAL, distinct signal that the escalation itself was never delivered at all, so a reader watching only `notification.failed` cannot mistake a transient blip for a pause nobody was ever told about |
@@ -4971,8 +5019,9 @@ error type.
 
 **The three probe outcomes.** Both harnesses' `cli_version` (claude-code runs
 `<cli> -v`, codex `<cli> --version`) tells three outcomes apart, and `version_gate`
-maps each to its own in-band error: (1) a version read: it is compared to the
-minimum, and below it (or unparseable) is `*_version_too_old`, refused; (2) no
+maps each to its own in-band error: (1) a version read from either captured
+stream (stdout first, then stderr): it is compared to the minimum whichever stream
+carried it, and below it (or unparseable) is `*_version_too_old`, refused; (2) no
 version in the output: output that is present (on stdout or stderr) with no version
 in it is `*_version_too_old` ("could not read the version"), refused, while a CLI
 that ran and printed nothing at all is `claude_code_version_probe_empty` or

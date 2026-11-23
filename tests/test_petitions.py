@@ -530,19 +530,22 @@ def test_repeated_held_passes_never_trip_the_stagnation_counter(tmp_path):
     agent.sup = sup  # type: ignore[attr-defined]
     sup.runner = agent  # type: ignore[assignment]
 
-    outcome = asyncio.run(sup._step_worker())
+    # v0.38 A.5 rewrote this node: the unadjudicable hold used to dispatch
+    # three no-task worker iterations that ended on the run's own budget.
+    # It now parks `awaiting_input` (`petition_hold`) on the first pass,
+    # spending no iteration, and the park is never a stagnation verdict.
+    class _Parked(Exception):
+        pass
 
-    # Every one of the 3 charged iterations dispatched the ordinary
-    # worker -- none of them was skipped -- and NONE of them tripped
-    # guard 10: the outcome is the ordinary budget-exhaustion tail, never
-    # an approach failure/replan over a hold that was always going to
-    # resolve on its own. Landing exactly on task 011's own bound means
-    # the run's OWN `iterations` budget is what ends this pass, one beat
-    # before that bound's own "already spent N held passes" check would
-    # otherwise have fired on a hypothetical 4th pass.
-    assert agent.calls.get("worker") == 3
-    assert outcome == ("tail",)
+    async def parked():
+        raise _Parked()
 
+    sup._park_until_resumed = parked
+    with pytest.raises(_Parked):
+        asyncio.run(asyncio.wait_for(sup._step_worker(), 30.0))
+
+    assert agent.calls.get("worker") is None
+    assert sup.run.read_status()["inputQuestion"]["kind"] == "petition_hold"
     # No open petition, so no episode ran at all; the once-per-obligation
     # dedupe is pinned in tests/test_petition_hold_prompt_adjudication.py
     # (test_the_park_is_released_by_an_answer_and_the_loop_reparks_an_unmoved_hold).

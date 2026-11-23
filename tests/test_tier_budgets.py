@@ -1050,8 +1050,51 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.38 task cure-01-01-3 retry: +10 tests in that same module (the
     # configured-notifier POST counts and the doc overclaim guards), in both
     # tiers -> fast 9285/575, smoke 7504/448.
-    "fast": {"tests": 9285, "modules": 575},
-    "smoke": {"tests": 7504, "modules": 448},
+    # v0.38 task cure-01-01-4: +7 tests / +1 module (tests/test_petition_
+    # hold_chain_and_unfiled.py: chain holds, a hold beside a doomed task, an
+    # unfiled petition), in both tiers -> fast 9292/576, smoke 7511/449.
+    # v0.38 task cure-01-01-4 retry: +6 tests in that same module (every
+    # root on every branch: two-root fan-in, deep two-branch joins, a join of
+    # a petitioned and a dead branch, a cycle, the SPEC guard), in both
+    # tiers -> fast 9298/576, smoke 7517/449.
+    # v0.38 task cure-01-01-4 second retry: +8 tests / +1 module (tests/
+    # test_petition_hold_phase_gate.py: a hold behind a closed phase gate),
+    # in both tiers -> fast 9306/577, smoke 7525/450.
+    # v0.38 task cure-01-02: +15 tests / +1 module (tests/test_waiver_survives_
+    # status_ruling.py: a status-only ruling does not revoke a waiver), in
+    # both tiers -> fast 9321/578, smoke 7540/451.
+    # v0.38 task cure-01-03: net +2 tests, no module (tests/test_review_state_
+    # key.py: the reuse-on-equal-key node became three parking nodes), in both
+    # tiers -> fast 9323/578, smoke 7542/451.
+    # v0.38 task cure-01-03 retry: +3 tests, no module (tests/test_review_
+    # state_key.py: an origin marker cleared x2, a withdrawn steering file),
+    # in both tiers -> fast 9326/578, smoke 7545/451.
+    # v0.38 task cure-01-04: +12 tests / +1 module (tests/test_verified_
+    # unchanged_blockers.py), in both tiers -> fast 9338/579, smoke 7557/452.
+    # v0.38 task cure-01-05: +7 tests net, no module (tests/test_review_state_
+    # key.py: the gate's cure_top_up case dropped, 8 nodes on the key-alone
+    # rule added), in both tiers -> fast 9345/579, smoke 7564/452.
+    # v0.38 task cure-01-05 retry: +6 tests, no module (tests/test_review_
+    # state_key.py: the key is compared before the budget -- an equal key
+    # parks with the iteration budget spent x2 or the deadline passed, an
+    # approved key after the deadline; a changed key takes the budget tail;
+    # an abort still ends the run), in both tiers -> fast 9351, smoke 7570.
+    # v0.38 task cure-01-05 red-test cure: +1 test net, no module (tests/
+    # test_budget_cure_passes.py: the top-up-then-unpause node rewritten to
+    # park verified_unchanged, plus the answer path taking the cure pass), in
+    # both tiers -> fast 9352, smoke 7571.
+    # v0.38 task cure-01-05 second retry: +7 tests, no module (tests/test_
+    # review_state_key.py: the gate park holds through the paused step with
+    # no budget left x2, an abort over it still ends the run, other parks
+    # still take the budget tail x2, a raised iteration/approach budget does
+    # not reopen the key x2), in both tiers -> fast 9359, smoke 7578.
+    # v0.38 task cure-01-06: +12 tests, no module (tests/test_cli_version_
+    # probe_outcomes.py: a version on stderr alone at/below the minimum, on
+    # stderr after unparseable stdout, stdout winning over stderr, both
+    # streams below, a bare number on stderr not a version; x2 harnesses), in
+    # both tiers -> fast 9371, smoke 7590.
+    "fast": {"tests": 9371, "modules": 579},
+    "smoke": {"tests": 7590, "modules": 452},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

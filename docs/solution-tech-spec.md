@@ -566,9 +566,19 @@ petition_hold`, never expires) and does not route to the final review. The
 question names each petitioned task, its petition, its dependents and the two
 operator answers, `ralphctl amend <run> --waive <task>` and `ralphctl amend <run>
 <task> --status validated|skipped`; once the ruling is recorded, `ralphctl answer
-<run>` releases the park and the worker re-reads the plan. A hold with no open
-petition to adjudicate keeps the earlier bound: three no-task passes, then review
-(`petition_held_no_task_bound`).
+<run>` releases the park and the worker re-reads the plan. The hold reaches
+through dependency chains: a task that waits on a task that waits on a
+`petitioned` one is held too (the engine reads the hold through
+`state.task_blocked_by_chain`, which names every petitioned or dead root a task
+reaches on every branch, so a task waiting on two petitioned tasks is a dependent
+of both; the display surfaces keep the one-hop map). The open phase's closed
+gate counts as a dependency: a pending task of a later phase cannot run until
+that gate passes, which no held open-phase task allows, so it is held by the
+same roots without a `dependsOn` edge. A hold
+with no open petition to adjudicate (none on file) cannot be settled by the judge
+either, so it parks the same way, never through a no-task worker iteration or the
+final review; the one exception is a hold on a state a deferred VERIFIED already
+judged, which goes to `review` and parks `verified_unchanged` (B.2).
 
 The same state is never judged twice. Each final-review dispatch, and each retry
 attempt inside one, records a review state key in the approach's state (`status.json` `reviewStateKeys`): the workspace
@@ -579,9 +589,9 @@ stores, with the verdict, the key the attempt that returned it was dispatched on
 edge into `review`, the engine compares the current key with the stored one, the key
 alone (a steering message consumed without moving HEAD or a task is no change); if
 they are equal it does not dispatch. The petition-held route spends no no-task
-worker iteration on an equal key and goes straight to `review`. When nothing blocks
-terminal success any more, the remembered VERIFIED stands (`review_verdict_reused`)
-and review's verified edge is taken. Otherwise it parks in `awaiting_input`
+worker iteration on an equal key and goes straight to `review`. There is no
+exception when nothing blocks terminal success any more: the remembered VERIFIED is
+never taken in place of a dispatch, and the run parks in `awaiting_input`
 (`pauseReason: verified_unchanged`, `inputQuestion.kind: verified_unchanged`, never
 expires) naming the non-terminal tasks that held the earlier VERIFIED and what
 blocks each. A changed HEAD or a changed task status dispatches the review as
@@ -594,8 +604,10 @@ its own earlier verdict judged (`judge: verdict_gate`, re-entering `verdict_gate
 The phase review is not keyed.
 
 A `petitioned` task is **settled** when an applied operator waiver covers it (a
-task-level `ralphctl amend <run> <task> --waive`, or a run-level clause waiver
-whose clause matches the obligation its petition carries) or a CONFIRMED
+task-level `ralphctl amend <run> <task> --waive`, which stays binding until a
+later criteria replacement; a `--status` ruling never revokes it -- or a
+run-level clause waiver whose clause matches the obligation its petition
+carries) or a CONFIRMED
 adjudication names that obligation. A settled task keeps the status
 `petitioned`, satisfies every `dependsOn` that names it, and never blocks
 `plan_complete` or a terminal-success verdict. One rule,

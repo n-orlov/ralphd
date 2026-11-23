@@ -28,8 +28,9 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
+
 from ralphd.engine import transitions
-from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from tests.conftest import ScriptedRunner, attach_runner, make_supervisor
 
@@ -72,39 +73,37 @@ def _supervisor(root, **cfg):
         infra_outage_budget_s=0.0, approach=1, tasks=_held_plan(), **cfg)
 
 
-def test_a_petition_only_hold_keeps_the_no_task_iteration_count_under_the_stated_bound(tmp_path):
-    """A run whose ENTIRE actionable remainder (002, 003) is blocked on a
-    single petitioned ancestor (001), given a run-wide iteration budget
-    (20) far larger than the bound, still stops dispatching no-task
-    worker iterations at exactly `LoopSupervisor.PETITION_HELD_MAX_NO_TASK_
-    ITERATIONS` -- stated here as 3 -- rather than spinning until the run's
-    overall budget itself runs out."""
-    BOUND = LoopSupervisor.PETITION_HELD_MAX_NO_TASK_ITERATIONS
-    assert BOUND == 3, "the stated bound this test measures against"
+class _Parked(Exception):
+    """Raised by the stubbed park wait: the run reached `awaiting_input`."""
 
+
+def test_a_petition_only_hold_spends_no_no_task_iteration_and_parks(tmp_path):
+    """A run whose ENTIRE actionable remainder (002, 003) is blocked on a
+    single petitioned ancestor (001) with no petition on file -- so the
+    judge has nothing to adjudicate -- spends NO no-task worker iteration.
+
+    v0.38 A.5 (#306, #320) rewrote this node: it used to pin that such a hold
+    dispatched `PETITION_HELD_MAX_NO_TASK_ITERATIONS` no-task worker
+    iterations and then routed to `review` (`petition_held_no_task_bound`).
+    A hold the engine cannot settle now parks `awaiting_input` with the
+    `petition_hold` question first, however large the iteration budget.
+    Covered by tests/test_petition_hold_chain_and_unfiled.py::
+    test_an_unfiled_direct_hold_parks_too as well."""
     sup = _supervisor(tmp_path / "run", iterations=20)
     runner = attach_runner(sup, ScriptedRunner({"worker": [_no_verdict_worker]}))
 
-    outcome = asyncio.run(sup._step_worker())
+    async def parked():
+        raise _Parked()
 
-    worker_calls = runner.phases_seen.count("worker")
-    assert worker_calls <= BOUND, (
-        f"expected the held no-task worker dispatch count to stay at or "
-        f"under the stated bound ({BOUND}), got {worker_calls}: "
-        f"{runner.phases_seen!r}")
-    assert worker_calls == BOUND, (
-        "expected the bound to actually be REACHED (not merely never "
-        f"exceeded) given a budget (20) far larger than it: "
-        f"{runner.phases_seen!r}")
-    # the run did NOT burn its whole configured iteration budget getting
-    # there -- the bound, not `budget_left()`, is what stopped it.
-    assert sup.iterations_used < 20
-    # instead of spinning further, the engine took a real decision --
-    # routed to `review` for a verdict, the exact same edge a doomed or
-    # blocked-with-failures plan already takes (declared in
-    # `transitions.TABLE["worker"]`, never a bare literal at the call site).
-    assert outcome[:2] == ("advance", "review")
-    assert outcome[2] == "petition_held_no_task_bound"
+    sup._park_until_resumed = parked
+    with pytest.raises(_Parked):
+        asyncio.run(asyncio.wait_for(sup._step_worker(), 30.0))
+
+    assert runner.phases_seen == [], runner.phases_seen
+    status = sup.run.read_status()
+    assert status["state"] == "awaiting_input"
+    assert status["inputQuestion"]["kind"] == "petition_hold"
+    # the guard stays declared for the unchanged-review route (B.2)
     assert transitions.is_legal("worker", "review", vigilant=False)
     assert "petition_held_no_task_bound" in transitions.guard_names(
         "worker", vigilant=False)

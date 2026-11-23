@@ -67,19 +67,38 @@ def _supervisor(root, **cfg):
     return sup
 
 
+class _Parked(Exception):
+    """Raised by the stubbed park wait: the run reached `awaiting_input`."""
+
+
+def _park_run(sup):
+    """Run `_step_worker` to the v0.38 A.5 park (no petition is on file, so
+    nothing can be adjudicated and the hold parks the run) without sleeping
+    through the park's wait."""
+    async def parked():
+        raise _Parked()
+
+    sup._park_until_resumed = parked
+    with pytest.raises(_Parked):
+        asyncio.run(asyncio.wait_for(sup._step_worker(), 30.0))
+
+
 def _petition_held_events(root) -> list[dict]:
     return [ev for ev in state.read_events(root, types={"operator_escalation"})
             if ev.get("reason") == "petition_held"]
 
 
 def test_petition_hold_reports_once_across_two_held_passes(tmp_path):
-    """Budget for exactly TWO worker iterations, both held -- the second
-    pass through `_step_worker`'s own `while` loop must not repeat the
-    report the first pass already made."""
+    """Two held passes (the second after the park was answered) -- the second
+    pass through `_step_worker` must not repeat the report the first pass
+    already made. v0.38 A.5: an unadjudicable hold parks instead of idling a
+    no-task worker, so the two passes are two parks (the former two no-task
+    worker iterations, which an unadjudicable hold no longer spends)."""
     sup = _supervisor(tmp_path / "run", iterations=2)
-    attach_runner(sup, ScriptedRunner({"worker": [_no_verdict_worker]}))
+    runner = attach_runner(sup, ScriptedRunner({
+        "worker": [_no_verdict_worker]}))
 
-    asyncio.run(sup._step_worker())
+    _park_run(sup)
 
     events = _petition_held_events(sup.run.root)
     assert len(events) == 1, (
@@ -91,16 +110,15 @@ def test_petition_hold_reports_once_across_two_held_passes(tmp_path):
     assert HELD_TASK_ID in ev["escalation"]
     assert DIRECT_DEP_A in ev["escalation"]
     assert DIRECT_DEP_B in ev["escalation"]
+    assert runner.phases_seen == [], runner.phases_seen
 
-    # `notifier` (the operator-facing text) is what a real notifier gets
-    # handed, exactly like the pause/escalation sites this reuses.
+    # A SECOND pass, still held (the operator answered without moving it):
+    # the park repeats, the dedup must never fire the report again.
+    sup.answer()
     sent = []
     sup.notifier = sent.append
-    # A THIRD pass, still held, still within budget-exhausted territory --
-    # nothing left to spend, so this call is a no-op either way, but the
-    # dedup must never fire the notifier retroactively either.
-    asyncio.run(sup._step_worker())
-    assert sent == []
+    _park_run(sup)
+    assert not any(ev["escalation"] == text for text in sent)
     assert len(_petition_held_events(sup.run.root)) == 1
 
 
@@ -114,18 +132,20 @@ def test_petition_hold_report_does_not_repeat_on_a_fresh_process(tmp_path):
     sent1 = []
     sup1.notifier = sent1.append
     attach_runner(sup1, ScriptedRunner({"worker": [_no_verdict_worker]}))
-    asyncio.run(sup1._step_worker())
+    _park_run(sup1)
 
-    assert len(sent1) == 1
+    report = _petition_held_events(root)[0]["escalation"]
+    assert sent1.count(report) == 1
     assert len(_petition_held_events(root)) == 1
 
     sup2 = _supervisor(root, iterations=2)
     sent2 = []
     sup2.notifier = sent2.append
     attach_runner(sup2, ScriptedRunner({"worker": [_no_verdict_worker]}))
-    asyncio.run(sup2._step_worker())
+    sup2.answer()
+    _park_run(sup2)
 
-    assert sent2 == [], (
+    assert report not in sent2, (
         "a fresh process resuming the same held run re-sent the "
         "petition-held report instead of reading the earlier one back "
         "off events.jsonl")

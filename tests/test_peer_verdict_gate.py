@@ -910,15 +910,17 @@ async def _drive_until_parked(sup: LoopSupervisor) -> None:
     """Start `_run_job_core()` in the background, poll status.json for
     `awaiting_input`, then cancel the task still parked at the gate."""
     task = asyncio.ensure_future(sup._run_job_core())
-    for _ in range(500):
-        if sup.run.read_status().get("state") == "awaiting_input":
-            break
-        if task.done():
-            break
-        await asyncio.sleep(0.01)
-    else:
+    # No inner wall-clock cap: a loaded CI host can take longer than any
+    # fixed window to reach the park. The caller's `_bounded` (30 s) is the
+    # one bound; a run that never parks raises TimeoutError there.
+    try:
+        while not task.done():
+            if sup.run.read_status().get("state") == "awaiting_input":
+                break
+            await asyncio.sleep(0.01)
+    except BaseException:
         task.cancel()
-        raise AssertionError("run never reached `awaiting_input`")
+        raise
     task.cancel()
     try:
         await task

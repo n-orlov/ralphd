@@ -178,7 +178,18 @@ def test_step_worker_dispatches_adjudication_not_a_no_task_worker_iteration(tmp_
                 "worker": [_worker_reply]}
     runner = attach_runner(sup, ScriptedRunner(handlers))
 
-    asyncio.run(sup._step_worker())
+    # v0.38 A.5: the empty adjudication leaves the hold unsettled, so the run
+    # parks `awaiting_input` (the wait is replaced; nothing sleeps) instead
+    # of idling a no-task worker iteration.
+    class _Parked(Exception):
+        pass
+
+    async def parked():
+        raise _Parked()
+
+    sup._park_until_resumed = parked
+    with pytest.raises(_Parked):
+        asyncio.run(asyncio.wait_for(sup._step_worker(), 30.0))
 
     phases = runner.phases_seen
     assert "review" in phases, (
@@ -192,6 +203,9 @@ def test_step_worker_dispatches_adjudication_not_a_no_task_worker_iteration(tmp_
         "the adjudication episode did not dispatch immediately off the "
         "verify call that exhausted the task into `petitioned` -- "
         f"phases: {phases!r}")
+
+    assert phases[review_ix + 1:] == [], (
+        f"a dispatch followed the adjudication episode: {phases!r}")
 
     final = sup.run.read_tasks()["tasks"][0]
     assert final["status"] == "petitioned"
