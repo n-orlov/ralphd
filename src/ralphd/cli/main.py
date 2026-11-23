@@ -48,6 +48,7 @@ from ..engine.config import (
     CLAUDE_CODE_MIN_VERSION,
     DEFAULT_BILLING_BASIS,
     DEFAULT_HARNESS,
+    DEFAULT_PRICE_STRATEGY,
     DEFAULT_SUBSCRIPTION_PAYER,
     HARNESS_FORCED_BASIS,
     HARNESS_REFUSED_BASES,
@@ -60,10 +61,13 @@ from ..engine.config import (
 )
 from ..engine import findings
 from ..engine import petitions
+from ..engine import spend_caps as spend_caps_mod
 from ..engine import privsep
 from ..engine.llm import UnroutableHatModel, _tier_leaf_ref, check_hat_routes
 from ..engine.redact import is_secret_name, scrub_text
 from ..engine.tiers import TIERS
+from ..engine.pricing import resolve_pricing
+from ..engine.spend_caps import CAP_KEYS as SPEND_CAP_KEYS
 from ..engine.transitions import OPERATOR_RULEABLE_TASK_STATUSES, TASK_STATUSES
 from ..engine.state import (
     DEFAULT_INPUT_TIMEOUT_MIN,
@@ -2200,6 +2204,17 @@ def _apply_template(args) -> Path | None:
     # `args.model_tiers` is not an argparse field; `cmd_start` reads it
     # from here.
     args.model_tiers = _resolve_model_tiers_table(args, cfg, reg_cfg)
+    # #321: the `spend_caps:` block merges per hat and per level across
+    # registry < template < `--spend-cap`/`--spend-cap-approach`, each entry
+    # keeping the layer that set it. `args.spend_caps` is not an argparse
+    # field; `cmd_start` reads it from here, empty when no layer set a cap.
+    try:
+        args.spend_caps = spend_caps_mod.resolve(
+            reg_cfg.get("spend_caps"), cfg.get("spend_caps"),
+            getattr(args, "spend_cap", None),
+            getattr(args, "spend_cap_approach", None))
+    except spend_caps_mod.SpendCapError as e:
+        die(2, str(e))
     # The `harnesses:` layers can only be merged once the LLM profile (the
     # weakest layer) is resolved in `cmd_start`; keep the template and
     # registry dicts for `_resolve_harness_table`.
@@ -2317,6 +2332,31 @@ def _job_billing(args, llm_profile, registry_billing: dict) -> dict | None:
                                    or DEFAULT_SUBSCRIPTION_PAYER)}
 
 
+def _refuse_unpriceable_spend_caps(args, llm_profile, *, caps=None) -> None:
+    """#321 A.4: exit 2 for a cap on a hat whose resolved model has no price in
+    the pricing chain (the operator `pricing:` map, then the `price_strategy`
+    table). A `total` cap needs the whole lineup priceable and names each hat
+    that is not. Runs before any run directory is created."""
+    caps = args.spend_caps if caps is None else caps
+    if not caps:
+        return
+    pricing_cfg = _registry_config(registry()).get("pricing") or None
+    strategy = args.price_strategy or (
+        llm_profile.get("price_strategy") if llm_profile else None)
+    try:
+        job = JobConfig(
+            model=args.model or (llm_profile.get("model") if llm_profile else None),
+            model_overrides=dict(args.model_overrides or {}),
+            model_tiers=dict(args.model_tiers or {}),
+            pricing=pricing_cfg or {}, price_strategy=strategy or DEFAULT_PRICE_STRATEGY)
+    except (TypeError, ValueError) as e:
+        die(2, f"spend caps: the merged model tables do not load: {e}")
+    refusal = spend_caps_mod.unpriceable_refusal(
+        caps, job, resolve_pricing(job.pricing, job.price_strategy))
+    if refusal:
+        die(2, refusal)
+
+
 def cmd_start(args):
     _apply_template(args)
     # Task 006 (#60 pillar 4 cleanup): `--fast-model`/`--model-strategy` are
@@ -2335,6 +2375,30 @@ def cmd_start(args):
                 "-- an unnamed hat falls back to `model`.")
     if args.prd is None:
         die(2, "--prd is required (or use --template with a prd.md skeleton)")
+    # Named LLM profile (docs/llm-profiles.md): resolved once, here (before any
+    # run directory exists, so the spend-cap refusal below can name each hat's
+    # model and still leave nothing behind), before
+    # anything else touches it -- job.yaml's `model` default and
+    # the later env/mounts/pi wiring both read from this single resolution
+    # so a `${cmd:...}` reference is never shelled out twice.
+    llm_profile = None
+    # Task 010 (#14, D.1): populated by `resolve_profile` with every header
+    # NAME (top-level `headers:` shorthand or a provider's own `headers:`
+    # entry) whose value came from a `${env:}`/`${file:}`/`${cmd:}`
+    # reference, over the profile's OWN headers -- kept apart from the
+    # flag's own `header_ref_names` below until the wiring-only merge a
+    # little further down, so the functional `merge_headers_into_pi_config`
+    # call keeps using the flag-only map it always has (never fanning a
+    # merged, provider-agnostic header value out across every provider).
+    profile_header_ref_names: set[str] = set()
+    if args.llm not in ("host", "none"):
+        try:
+            llm_profile = llm_profiles.resolve_profile(
+                args.llm, registry(), header_ref_names=profile_header_ref_names)
+        except llm_profiles.ProfileError as e:
+            die(2, str(e))
+
+    _refuse_unpriceable_spend_caps(args, llm_profile)
     run_id = args.run_id or gen_run_id()
     rdir = run_root(run_id)
     if rdir.exists() and any(rdir.iterdir()):
@@ -2404,27 +2468,6 @@ def cmd_start(args):
     ctf = ccdir / ".control-token"
     ctf.write_text(control_token)
     os.chmod(ctf, 0o600)
-
-    # Named LLM profile (docs/llm-profiles.md): resolved once, here, before
-    # anything else touches it -- job.yaml's `model` default and
-    # the later env/mounts/pi wiring both read from this single resolution
-    # so a `${cmd:...}` reference is never shelled out twice.
-    llm_profile = None
-    # Task 010 (#14, D.1): populated by `resolve_profile` with every header
-    # NAME (top-level `headers:` shorthand or a provider's own `headers:`
-    # entry) whose value came from a `${env:}`/`${file:}`/`${cmd:}`
-    # reference, over the profile's OWN headers -- kept apart from the
-    # flag's own `header_ref_names` below until the wiring-only merge a
-    # little further down, so the functional `merge_headers_into_pi_config`
-    # call keeps using the flag-only map it always has (never fanning a
-    # merged, provider-agnostic header value out across every provider).
-    profile_header_ref_names: set[str] = set()
-    if args.llm not in ("host", "none"):
-        try:
-            llm_profile = llm_profiles.resolve_profile(
-                args.llm, registry(), header_ref_names=profile_header_ref_names)
-        except llm_profiles.ProfileError as e:
-            die(2, str(e))
 
     # #298: the registry `billing:` block (for `--llm host` and the
     # subscription label), validated once for every --llm value.
@@ -2605,6 +2648,10 @@ def cmd_start(args):
         # state, not job config, and lives in host.json.
         "base_image": args.base_image,
         "dockerfile": resolved_image["imageDockerfile"],
+        # #321: the resolved caps with each entry's source. Absent (None is
+        # filtered below) for a run with no caps, so such a job.yaml is
+        # byte-identical to 0.38's.
+        "spend_caps": args.spend_caps or None,
     }
     (cdir / "job.yaml").write_text(
         "".join(f"{k}: {json.dumps(v)}\n" for k, v in job.items() if v is not None))
@@ -9313,6 +9360,17 @@ def build_parser() -> argparse.ArgumentParser:
                         f"(known hats: {', '.join(MODEL_HATS)}); merges into the "
                         "job's models: table over the --template's and the "
                         "registry's own models:/model_overrides: key -- see docs/cli.md")
+    s.add_argument("--spend-cap", action="append", metavar="HAT=USD",
+                   help="overall spend cap in USD for a hat or `total` "
+                        "(repeatable), e.g. --spend-cap review=20 "
+                        f"(valid names: {', '.join(SPEND_CAP_KEYS)}); replaces "
+                        "only that entry of the template's and the registry's "
+                        "spend_caps.overall -- see docs/cli.md")
+    s.add_argument("--spend-cap-approach", action="append", metavar="HAT=USD",
+                   help="per-approach spend cap in USD for a hat or `total` "
+                        "(repeatable), e.g. --spend-cap-approach worker=5; "
+                        "replaces only that entry of the template's and the "
+                        "registry's spend_caps.per_approach -- see docs/cli.md")
     s.add_argument("--harness-for", action="append", metavar="HAT=NAME",
                    help="per-hat agent harness (repeatable), e.g. "
                         "--harness-for worker=claude-code "

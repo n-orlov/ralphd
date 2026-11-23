@@ -1332,6 +1332,22 @@ status` and to the hub header, which renders it as a table with one column per
 tier, and every iteration's `meta.json` records its
 harness, effective tier and, when set, thinking or effort.
 
+Spend caps (#321) are frozen into `job.yaml` the same way, as `spend_caps:` with
+two maps, `overall` and `per_approach`, each from a hat name (the nine model
+hats) or `total` to `{usd, source}`. `engine/spend_caps.py` owns the shape and
+the validation: an unknown key is refused with the valid names, and a zero or
+negative amount is refused. `start` merges per hat and per level, weakest to
+strongest: registry `config.yaml`, the `--template`'s `job.yaml`, then
+`--spend-cap HAT=USD` (overall) and `--spend-cap-approach HAT=USD`, and records
+each entry's source (`registry`, `template`, `flag`, later `budget`). A run with
+no caps writes no key. Before any run directory exists, `start` builds the
+lineup's `JobConfig`, resolves the pricing chain (operator `pricing:` map, then
+the `price_strategy` table) and refuses with exit `2` any cap on a hat whose
+resolved model, or any tier leaf of it, has no rate and is not declared free:
+the message names the hat, the model and `no price in the pricing chain`, and a
+`total` cap names every unpriceable hat. `JobConfig.spend_caps` is the one
+engine read of the recorded block.
+
 Route validation before iteration 1 (`check_hat_routes` in
 [`llm.py`](../src/ralphd/engine/llm.py)) checks every hat's plain ref and every
 configured tier rung against the profile's local `models.json` providers plus its

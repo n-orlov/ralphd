@@ -89,6 +89,8 @@ ralphctl start --prd <file|-> [options]
 | `--model-for HAT=REF` | — | per-hat model override (task 008, #60 pillar 4 requirement A), repeatable — e.g. `--model-for worker=amazon-bedrock/eu.anthropic.claude-sonnet-5`. Known hats: `planning\|worker\|verify\|review\|reflect\|router` (`MODEL_HATS`; an unrecognised name still resolves via `model_for`'s anti-downgrade rule rather than erroring). Writes/merges into the run's `job.yaml` `models:` table — the mechanism `model_overrides`/`models:` always was ([llm-profiles.md](llm-profiles.md) unaffected, `docs/api.md`'s `GET /config` `model.overrides`) — the ONLY thing this flag adds is a way to *reach* that table from `start` without hand-editing `job.yaml` and `resume`-ing. Unlike every other `start` scalar above, the table is **merged key by key across levels, not replaced whole**: explicit `--model-for` flags (last one wins for a repeated hat) > the `--template`'s own `job.yaml` `models:`/`model_overrides:` key > `<registry>/config.yaml`'s own `models:`/`model_overrides:` key (a nested mapping, edited directly like `pricing:` below — there is no scalar `ralphctl config set` for a table) > (a named LLM profile has no per-hat table of its own yet, so this rung is presently always empty) > absent, i.e. each hat falls through to `model_for`'s other rungs exactly as before. A malformed value (no `=`) exits `2` naming the expected `HAT=REF` shape |
 | `--harness-for HAT=NAME` | — | per-hat agent harness, repeatable — e.g. `--harness-for worker=claude-code`. `NAME` is `pi`, `claude-code` or `codex`; `HAT` is one of the `MODEL_HATS`. Merges per hat into the run's `job.yaml` `harnesses:` table, weakest to strongest: the LLM profile's `harness:` < `<registry>/config.yaml`'s `harnesses:` < the `--template`'s `harnesses:` < this flag. `start` writes every hat's resolved harness, and `resume` replays it. An unknown hat or harness name, or a value without `=`, exits `2`; see "Per-hat harness" below |
 | `--model-for-tier HAT:TIER=REF` | — | per-(hat, tier) rung override (task 002/004, #68), repeatable — e.g. `--model-for-tier worker:hard=amazon-bedrock/eu.anthropic.claude-opus-5`. `TIER` is one of the three declared tiers, `trivial\|normal\|hard` (`tiers.TIERS`); `HAT` is the same `MODEL_HATS` vocabulary `--model-for` uses. Merges rung by rung — hat AND tier both have to match for one flag to overwrite another — into the run's `job.yaml` `model_tiers:` table, over the `--template`'s and `<registry>/config.yaml`'s own `model_tiers:` key, the identical three-level order `--model-for` merges `models:` across; see "Per-(hat, tier) override table" below. A hat/tier this flag never names falls through to that hat's plain `--model-for`/`models:` answer (`bundle_for`), not to some cheaper tier — there is no second per-hat table this could conflict with. A malformed value (no `:` before the `=`, or no `=` at all) exits `2` naming the expected `HAT:TIER=REF` shape |
+| `--spend-cap HAT=USD` | — | overall spend cap in USD for a hat or `total`, repeatable — e.g. `--spend-cap review=20`. `HAT` is one of the `MODEL_HATS` or `total`. Merges per hat into the run's `job.yaml` `spend_caps.overall`, weakest to strongest: `<registry>/config.yaml`'s `spend_caps:` < the `--template`'s `spend_caps:` < this flag, so it replaces only its own hat's entry. An unknown name (the message lists the valid ones), a zero or negative amount, a value without `=`, or a cap on a hat with no price in the pricing chain exits `2` and creates no run directory; see "Spend caps" below |
+| `--spend-cap-approach HAT=USD` | — | the same for the cap on one approach, repeatable — e.g. `--spend-cap-approach worker=5`; merges into `spend_caps.per_approach` the same way |
 | `--thinking <level>` | — | pi thinking level; falls back to the `--template`'s value, then the registry's `thinking` (`ralphctl config`) |
 | `--price-strategy none\|aws` | none | derive a cost for routes the provider does not price (or prices with an implausible `$0`): `aws` uses ralphd's built-in AWS Bedrock rate table, `none` leaves such a cost `unavailable`. Written to the run's `job.yaml` as `price_strategy` (so `resume` replays it) and visible in `GET /config` (`priceStrategy`); falls back to the `--template`'s value, then the registry's `price_strategy` (`ralphctl config`), then the `--llm` profile's own `price_strategy:` — see "Built-in AWS Bedrock rate table" below |
 | `--notifier-url <url>` | unset | endpoint the engine's notify hat tool POSTs operator updates to (task 010, PRD requirement B.2, #197) -- configuring the channel no longer requires `start` -> `docker stop` -> hand-edit `job.yaml` -> `resume`. Written to the run's `job.yaml` as `notifier_url` (so `resume` replays it) exactly like `--price-strategy` above; when the flag is absent it falls back to the `--template`'s own `notifier_url:` key (`notifier_url` is one of the template scalar fields, see "Templates" below), and a `notifier_url:` key hand-added to a started run's own `job.yaml` reaches the config the same way. It has no registry-wide level of its own (`ralphctl config`), unlike `--price-strategy`: an endpoint is one operator's channel for one job, not a fleet-wide default. Precedence: `RALPHD_NOTIFIER_URL`, read by the engine inside the container at load time, overrides everything below unconditionally (a single-run override with no job.yaml edit); then the flag, then the template's key; unset means unconfigured, and the notify hat tool answers "no notifier URL configured" instead of raising |
@@ -3593,6 +3595,44 @@ model_tiers:
 
 See `--model-for-tier` above and "`ralphctl config get/set`" above for both
 settable levels.
+
+#### Spend caps
+
+`spend_caps:` bounds dollars per hat and for the whole run (#321). It has two
+maps, `overall` (the run so far) and `per_approach` (one approach), each from a
+hat name to a positive USD amount. The names are `planning`, `worker`,
+`verify`, `review`, `plan_review`, `reflect`, `router`, `steer`,
+`verdict_gate` and `total` (every hat together); anything else is refused with
+that list.
+
+```yaml
+# <registry>/config.yaml, or a template's job.yaml
+spend_caps:
+  overall:      {review: 20, total: 150}
+  per_approach: {worker: 5}
+```
+
+Resolution is per hat and per level, weakest to strongest: the registry
+`config.yaml`, then the template's `job.yaml`, then `--spend-cap HAT=USD`
+(overall) and `--spend-cap-approach HAT=USD` (per approach), both repeatable.
+A flag for `review` overall replaces only the overall `review` entry.
+
+`start` writes the result to the run's `job.yaml`, each entry with the layer
+that set it (`registry`, `template`, `flag`; a later `ralphctl budget` writes
+`budget`):
+
+```yaml
+spend_caps: {"overall": {"review": {"usd": 20.0, "source": "flag"}}}
+```
+
+The engine reads caps from there and nowhere else. A run with no caps writes
+no `spend_caps:` key.
+
+A cap on a hat whose resolved model has no rate in the operator `pricing:` map
+or the `price_strategy` table is refused: `start` exits `2` naming the hat, the
+model and `no price in the pricing chain`, before any run directory exists. A
+`total` cap is refused when any hat of the lineup is unpriceable, naming each.
+A model declared in `pricing: free:` counts as priced.
 
 #### Optional host-side pricing map (`pricing:`)
 
