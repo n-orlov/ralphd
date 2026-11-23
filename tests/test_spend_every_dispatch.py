@@ -22,6 +22,9 @@ from ralphd.engine.loop import _SpendCapSpent
 from ralphd.engine.runner import COMPLETE, IterationResult, PiRunner
 from tests.conftest import ScriptedRunner, make_supervisor
 from tests.test_rate_limit_wait import _rate_limited
+from tests.test_spend_enforcement import _plan
+from tests.test_spend_enforcement import _run as _run_job
+from tests.test_spend_enforcement import _work as _work_forever
 from tests.test_spend_interrupt import (
     PRICING,
     _caps,
@@ -135,6 +138,97 @@ def test_a_run_without_caps_retries_exactly_as_before(tmp_path):
     sup, _ = _harness(tmp_path, steps)
     assert _run(sup, sup.run_iteration("worker")).final_text == "done"
     assert _events(sup, "spend.exhausted") == []
+
+
+# -- a paid failure that spends a cap AND reaches an infra terminal exit ----------
+# The cap decides the outcome (B.2: `exhausted` with its spend reason, or the
+# approach archived and replanned), never an infra abort, and nothing is
+# dispatched after it -- whichever infra stop (the retry limit, the outage
+# budget) the same attempt also reached.
+
+PLAN_503 = "503 Service Unavailable: upstream overloaded"
+
+
+def _paid_planning_failure(cost: float, *, duration: float = 30.0):
+    def step(sup, prompt=""):
+        r = _paid(cost, error=PLAN_503)
+        r.duration_s = duration
+        return r
+    return step
+
+
+def test_a_paid_failure_on_the_infra_retry_limit_and_an_overall_cap_ends_exhausted(
+        tmp_path):
+    sup, final, status = _run_job(
+        tmp_path, {"planning": [_paid_planning_failure(0.75), _plan(0.0)]},
+        spend_caps=_caps(overall={"planning": 0.5}), infra_retry_max=1,
+        max_approaches=2)
+    assert final == "exhausted", status
+    assert status["exhaustedBudget"] == "spend:planning"
+    assert "infra fault" not in (status.get("reason") or "")
+    assert sup.runner.calls == {"planning": 1}
+    (event,) = _events(sup, "spend.exhausted")
+    assert (event["hat"], event["level"], event["cap"], event["action"],
+            event["refusedHat"]) == ("planning", "overall", 0.5, "exhausted",
+                                     "planning")
+    assert event["spend"] == pytest.approx(0.75)
+    assert status["spend"]["overall"] == {"planning": pytest.approx(0.75),
+                                          "total": pytest.approx(0.75)}
+
+
+def test_a_paid_failure_on_the_infra_retry_limit_and_a_per_approach_cap_replans(
+        tmp_path):
+    seen: dict = {}
+
+    def second_plan(sup, prompt=""):
+        seen["approach"] = sup.run.read_status()["approach"]
+        return _plan(0.0)(sup, prompt)
+
+    sup, final, status = _run_job(
+        tmp_path, {"planning": [_paid_planning_failure(0.75), second_plan],
+                   "worker": [_work_forever(0.0)]},
+        spend_caps=_caps(per_approach={"planning": 0.5}), infra_retry_max=1,
+        max_approaches=2)
+    assert seen.get("approach") == 2, status
+    assert (Path(sup.run.root) / "approaches" / "01").is_dir()
+    first = _events(sup, "spend.exhausted")[0]
+    assert (first["hat"], first["level"], first["action"]) == (
+        "planning", "per_approach", "replan")
+    assert first["spend"] == pytest.approx(0.75)
+    assert status["spend"]["byApproach"]["1"]["planning"] == pytest.approx(0.75)
+    assert not any("infra fault" in (e.get("message") or "")
+                   for e in _events(sup, "log") if e.get("level") == "error")
+
+
+def test_a_paid_failure_that_spends_the_outage_budget_and_a_total_cap_ends_exhausted(
+        tmp_path):
+    # infra_outage_budget_s=0: the first infra attempt alone exhausts the
+    # outage budget -- the other infra terminal exit, beside the retry limit.
+    sup, final, status = _run_job(
+        tmp_path, {"planning": [_plan(0.0)],
+                   "worker": [_step(_paid(0.9, error=INFRA_ERROR))]},
+        spend_caps=_caps(per_approach={"total": 0.5}), infra_outage_budget_s=0.0,
+        max_approaches=1)
+    assert final == "exhausted", status
+    assert status["exhaustedBudget"] == "spend:total:approach"
+    assert sup.runner.calls == {"planning": 1, "worker": 1}
+    (event,) = _events(sup, "spend.exhausted")
+    assert (event["hat"], event["level"], event["refusedHat"]) == (
+        "total", "per_approach", "worker")
+    assert status["spend"]["byApproach"]["1"]["total"] == pytest.approx(0.9)
+
+
+def test_a_paid_instant_failure_handed_to_the_phase_retry_spends_no_further_dispatch(
+        tmp_path):
+    # Under INSTANT_FAILURE_MAX_DURATION_S with tokens billed: the wrapper hands
+    # it back to the phase's own bounded error retry -- after the cap check.
+    steps = [_paid_planning_failure(0.8, duration=0.3), _step(_paid(0.1))]
+    sup, waits = _harness(tmp_path, steps, spend_caps=_caps(overall={"worker": 0.5}))
+    with pytest.raises(_SpendCapSpent) as raised:
+        _run(sup, sup.run_iteration("worker"))
+    assert raised.value.action == "exhausted"
+    assert sup.runner.calls["worker"] == 1 and waits == []
+    assert _spend(sup)["overall"]["worker"] == pytest.approx(0.8)
 
 
 # -- router and contract calls on a real runner -------------------------------------

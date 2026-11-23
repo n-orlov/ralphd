@@ -2863,7 +2863,10 @@ class LoopSupervisor:
                 # without consuming a validation attempt. Task 010 only
                 # moves the *zero-work* instant shape (nothing observable
                 # at all: the refused-connection / broken-credential shape)
-                # into this wrapper.
+                # into this wrapper. v0.39 (#321, B.2): that attempt was
+                # paid, so a cap it spent ends the step here instead of
+                # being handed to the phase's own retry.
+                self._enforce_spend_caps(phase)
                 return result
             # Score this attempt against the broken-environment carve-out (a
             # streak of identical instant zero-work failures). True == the
@@ -2917,6 +2920,17 @@ class LoopSupervisor:
             # unchargedness this requirement asks for.
             self.run.update_status(
                 iterationsUsed=self.iterations_used_charged)
+            # v0.39 (#321, B.2): the attempt that just failed may have been
+            # paid, and a cap it spent decides the outcome ahead of every
+            # infra terminal exit below (the retry limit, the outage budget,
+            # the broken-environment carve-out) and ahead of any backoff: the
+            # run ends `exhausted` or replans, never an infra abort.
+            try:
+                self._enforce_spend_caps(phase)
+            except _SpendCapSpent:
+                if broken_env:
+                    self._abort_reason = None
+                raise
             if broken_env:
                 # _check_instant_failure() has already set _abort_reason to
                 # the broken-environment diagnosis and logged it: the
@@ -2939,9 +2953,6 @@ class LoopSupervisor:
             if self._abort_reason is not None:
                 self.run.emit("log", level="error", message=self._abort_reason)
                 return result
-            # v0.39 (#321): no backoff is sat out for a retry a spent cap
-            # refuses.
-            self._enforce_spend_caps(phase)
             cap_note = f"/{retry_max}" if retry_max is not None else ""
             self.run.update_status(currentIteration={
                 "phase": phase,

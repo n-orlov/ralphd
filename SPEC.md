@@ -1967,7 +1967,12 @@ the first attempt of an iteration, each internal retry of it (the infra-fault
 backoff retry, the rate-limit wait and re-run, the provider-refusal re-run:
 the check runs again before each runner starts, and again right after a paid
 failed attempt, so a retry the failed attempt's own cost made unaffordable is
-neither backed off for nor dispatched), and the uncounted side channels, the
+neither backed off for nor dispatched; that check comes ahead of every infra
+stop the same attempt may also reach -- the explicit retry limit, the outage
+budget, the broken-environment carve-out -- and ahead of handing a paid
+instant failure back to the phase's own retry, so a cap that attempt spent
+ends the run `exhausted` with its spend reason, or archives the approach and
+replans, never as an infra abort), and the uncounted side channels, the
 router's call and the contract re-ask (`_run_side_call`). A side call is held
 to the cap of the hat it belongs to (`router`, or the hat whose payload is
 being repaired) and of `total`, runs under the same live cap watch, and its
