@@ -960,7 +960,14 @@ def cost_view(reg: Path, run_id: str) -> dict:
     -- there is no live answer to prefer and hence no `live` flag and no
     snapshot notice.
     """
-    bd = cost_breakdown(reg / "runs" / run_id)
+    from ..engine import spend_caps as spend_caps_mod
+    root = reg / "runs" / run_id
+    job_path = _config_dir(reg, run_id) / "job.yaml"
+    caps = []
+    if job_path.is_file():
+        status = _read_json(root / "status.json", {})
+        caps = spend_caps_mod.run_entries(JobConfig.load(job_path), status, cost=True)
+    bd = cost_breakdown(root, caps)
     return {"runId": run_id, **bd, "text": cost_breakdown_text(bd)}
 
 

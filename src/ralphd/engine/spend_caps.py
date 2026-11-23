@@ -21,7 +21,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from . import state
-from .config import MODEL_HATS
+from .config import HARNESS_FORCED_BASIS, MODEL_HATS, ZERO_PRICED_BASES
 from .llm import _tier_leaf_ref
 from .pricing import RATE_KEYS
 
@@ -487,3 +487,146 @@ class SpendWatch:
                                   iterationHat=self.hat)
                     return self.crossed
         return None
+
+
+# ---------------------------------------------------------------------------
+# Display (#321 E): spend against caps on status, GET /status and cost
+# ---------------------------------------------------------------------------
+
+NOTIONAL_NOTE = "notional, list-equivalent"
+
+
+def notional_hats(job) -> set[str]:
+    """The cap keys whose counted spend is notional under `job`: a hat whose
+    route bills nothing per token (a subscription, or a route declared free)
+    counts its list-equivalent price, so its figure is never a bill. `total`
+    is notional when any hat is."""
+    out: set[str] = set()
+    for hat in MODEL_HATS:
+        harness = job.harness_for(hat)
+        basis = HARNESS_FORCED_BASIS.get(harness)
+        if basis is None:
+            billing = job.billing_for(harness)
+            basis = billing[1] if billing else None
+        if basis in ZERO_PRICED_BASES:
+            out.add(hat)
+    if out:
+        out.add(TOTAL)
+    return out
+
+
+def _counters(spend: object, approach: object) -> tuple[dict, dict]:
+    doc = spend if isinstance(spend, dict) else {}
+    overall = doc.get("overall") if isinstance(doc.get("overall"), dict) else {}
+    by_approach = (doc.get("byApproach")
+                   if isinstance(doc.get("byApproach"), dict) else {})
+    key = str(approach if isinstance(approach, int)
+              and not isinstance(approach, bool) and approach > 0 else 1)
+    bucket = by_approach.get(key) if isinstance(by_approach.get(key), dict) else {}
+    return overall, bucket
+
+
+def _level_cell(entries: object, name: str, counters: dict) -> dict | None:
+    usd = _cap_usd(entries.get(name)) if isinstance(entries, dict) else None
+    if usd is None:
+        return None
+    entry = entries.get(name)
+    source = entry.get("source") if isinstance(entry, dict) else None
+    return {"cap": usd, "spend": round(float(counters.get(name) or 0), 6),
+            "source": source or "unknown"}
+
+
+def _ordered_keys(caps: dict) -> list[str]:
+    named = {name for level in LEVELS if isinstance(caps.get(level), dict)
+             for name in caps[level]}
+    return [k for k in CAP_KEYS if k in named]
+
+
+def format_cap_usd(usd: float) -> str:
+    """`$150` for a whole cap, `$7.50` otherwise."""
+    return f"${usd:.0f}" if float(usd).is_integer() else f"${usd:.2f}"
+
+
+def format_cell(cell: dict) -> str:
+    return f"${cell['spend']:.2f} / {format_cap_usd(cell['cap'])}"
+
+
+def status_entries(caps: object, spend: object, approach: object,
+                   notional: set[str] | frozenset[str] = frozenset()) -> list[dict]:
+    """One entry per capped hat (and `total`) for `status`, `status --json`
+    and `GET /status`: `{hat, notional, overall, perApproach, line}`, each
+    level `{cap, spend, source}` or null when that level carries no cap;
+    `perApproach` is the current approach's bucket. A run with no caps gives
+    `[]`, so the surfaces print nothing and publish no key."""
+    if not isinstance(caps, dict) or not any(
+            isinstance(caps.get(level), dict) and caps[level] for level in LEVELS):
+        return []
+    overall, bucket = _counters(spend, approach)
+    entries = []
+    for name in _ordered_keys(caps):
+        entries.append({
+            "hat": name,
+            "notional": name in notional,
+            "overall": _level_cell(caps.get("overall"), name, overall),
+            "perApproach": _level_cell(caps.get("per_approach"), name, bucket),
+        })
+    width = max((len(e["hat"]) for e in entries), default=0)
+    for e in entries:
+        e["line"] = format_status_line(e, width)
+    return entries
+
+
+def format_status_line(entry: dict, width: int = 0) -> str:
+    """`review  $38.10 / $150 overall · $12.40 / $50 this approach`, with a
+    trailing ` (notional, list-equivalent)` on a notional hat. A level with
+    no cap is left out."""
+    parts = []
+    if entry.get("overall"):
+        parts.append(f"{format_cell(entry['overall'])} overall")
+    if entry.get("perApproach"):
+        parts.append(f"{format_cell(entry['perApproach'])} this approach")
+    line = f"{entry['hat']:<{max(width, len(entry['hat']))}}  " + " · ".join(parts)
+    if entry.get("notional"):
+        line += f"  ({NOTIONAL_NOTE})"
+    return line
+
+
+def cost_entries(caps: object, spend: object,
+                 notional: set[str] | frozenset[str] = frozenset()) -> list[dict]:
+    """One entry per capped hat for `ralphctl cost`: `{hat, notional,
+    overall, approaches}`, `overall` as in `status_entries` and `approaches`
+    a list of `{approach, cap, spend, source}` for every approach with
+    counters (or the first, when none ran) -- empty when the hat has no
+    per-approach cap. No caps gives `[]`."""
+    if not isinstance(caps, dict) or not any(
+            isinstance(caps.get(level), dict) and caps[level] for level in LEVELS):
+        return []
+    doc = spend if isinstance(spend, dict) else {}
+    overall = doc.get("overall") if isinstance(doc.get("overall"), dict) else {}
+    by_approach = (doc.get("byApproach")
+                   if isinstance(doc.get("byApproach"), dict) else {})
+    numbers = sorted(int(k) for k in by_approach if str(k).isdigit()) or [1]
+    out = []
+    for name in _ordered_keys(caps):
+        approaches = []
+        for n in numbers:
+            bucket = by_approach.get(str(n))
+            cell = _level_cell(caps.get("per_approach"), name,
+                               bucket if isinstance(bucket, dict) else {})
+            if cell is not None:
+                approaches.append({"approach": n, **cell})
+        out.append({"hat": name, "notional": name in notional,
+                    "overall": _level_cell(caps.get("overall"), name, overall),
+                    "approaches": approaches})
+    return out
+
+
+def run_entries(job, status: object, *, cost: bool = False) -> list[dict]:
+    """The display entries for a run from its `JobConfig` and status
+    document: `status_entries`, or `cost_entries` with `cost=True`."""
+    status = status if isinstance(status, dict) else {}
+    caps = job.spend_caps
+    notional = notional_hats(job)
+    if cost:
+        return cost_entries(caps, status.get("spend"), notional)
+    return status_entries(caps, status.get("spend"), status.get("approach"), notional)

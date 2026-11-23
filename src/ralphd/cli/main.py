@@ -4452,6 +4452,15 @@ def cmd_status(args):
     status["provisioning"] = _provisioning
     status["provisioningLines"] = format_provisioning_lines(_provisioning)
 
+    # #321: spend against each cap. A live engine answered `spendCaps` in
+    # GET /status; the on-disk fallback derives the same entries from this
+    # run's job.yaml and status.json. No caps, no key, no lines.
+    if "spendCaps" not in status and not live and _cfg_path.is_file():
+        _spend_entries = spend_caps_mod.run_entries(
+            JobConfig.load(_cfg_path), status)
+        if _spend_entries:
+            status["spendCaps"] = _spend_entries
+
     # Task 047 (#177): this run's own `--llm-header` map, live from
     # `<cdir>/llm-wiring.json` (never job.yaml's own static `llm_headers`
     # snapshot -- the wiring file is the one a header-changing `resume`
@@ -4726,6 +4735,11 @@ def cmd_status(args):
         lines.append("provisioning:")
         for prov_line in status["provisioningLines"]:
             lines.append(f"  {prov_line}")
+    # #321: one line per capped hat, spend against its caps.
+    if status.get("spendCaps"):
+        lines.append("spend caps:")
+        for _cap in status["spendCaps"]:
+            lines.append(f"  {_cap.get('line')}")
     # Task 036 (#20 H4): and which job image it is running it on -- the
     # reference plus the daemon's short id for the image the container actually
     # got, so "is this the engine I think it is?" and "what will a resume run?"
@@ -5387,6 +5401,15 @@ def cmd_fault(args):
     print("\n".join([f"run:       {args.run_id}", *exp["summaryLines"]]))
 
 
+def _cost_spend_caps(job_path: Path, root: Path) -> list[dict]:
+    """The cost entries of a run's spend caps (#321), `[]` for a run with no
+    caps or no job.yaml."""
+    if not job_path.is_file():
+        return []
+    status = _read_json(root / "status.json")
+    return spend_caps_mod.run_entries(JobConfig.load(job_path), status, cost=True)
+
+
 def cmd_cost(args):
     """What this run spent, per phase and per approach (task 027, #18.5).
 
@@ -5405,7 +5428,9 @@ def cmd_cost(args):
     no snapshot notice.
     """
     _require_run(args.run_id)
-    bd = cost_breakdown(run_root(args.run_id))
+    bd = cost_breakdown(run_root(args.run_id),
+                        _cost_spend_caps(config_root(args.run_id) / "job.yaml",
+                                         run_root(args.run_id)))
     if args.json:
         # `text` is the same complete rendering the human output prints (and
         # the hub dialog shows), `summaryLines` its lines -- the `fault`/

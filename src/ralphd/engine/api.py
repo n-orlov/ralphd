@@ -237,6 +237,11 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         pending = len(run.pending_steering())
         consumed = len(list(run.steering_dir.glob(STEERING_GLOB))) - pending
         s["steering"] = {"pending": pending, "consumed": consumed}
+        # #321: spend against each cap, one entry per capped hat; no key at
+        # all for a run with no caps.
+        entries = spend_caps_mod.run_entries(cfg, s)
+        if entries:
+            s["spendCaps"] = entries
         return s
 
     @app.get("/tasks")

@@ -1984,6 +1984,20 @@ per-approach case on a non-last approach, `exhausted` for the other three. A
 refused `reflect` dispatch (the run has already ended) is recorded as
 `reflect_skipped` and does not change the run's outcome.
 
+Spend against caps is shown on four surfaces, all shaped by one function
+(`engine/spend_caps.py`), so the figures agree. `ralphctl status` prints a
+`spend caps:` block with one line per capped hat (and `total`), e.g.
+`review  $38.10 / $150 overall · $12.40 / $50 this approach` (spend / cap; a
+level with no cap is left out). `status --json` and `GET /status` carry the
+same figures as `spendCaps`, one `{hat, notional, overall, perApproach, line}`
+entry per capped hat, each level `{cap, spend, source}` or `null`. A hat whose
+route bills nothing per token counts its list-equivalent price, so its line
+ends `(notional, list-equivalent)` and its entry has `notional: true`; `total`
+is notional when any hat is. `ralphctl cost` prints a `spend caps:` group with
+each cap beside its spend, overall and then per approach (`spendCaps` entries
+`{hat, notional, overall, approaches}` in `--json`). A run with no caps prints
+none of it and carries no `spendCaps` key.
+
 An iteration that comes back **unpriced** on a capped hat -- tokens billed that
 nothing priced (`state` marks it: `costPriced: false`, an implausible zero quote,
 `listEquivalentUnpricedTokens`, or a subscription iteration with no

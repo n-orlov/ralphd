@@ -586,6 +586,21 @@ approach segment is omitted entirely (it used to read `approach None`).
 `--json` always carries both raw numbers, `approach` and `maxApproaches`,
 the latter `null` when unknown.
 
+On a run with spend caps (`--spend-cap`, `--spend-cap-approach`, #321), a
+`spend caps:` block follows the `provisioning:` block, one indented line per
+capped hat (and `total`), spend against each of its caps:
+`review  $38.10 / $150 overall · $12.40 / $50 this approach`. The first figure
+of each pair is what the run has spent, the second the cap; a hat with only one
+level of cap shows only that level, and "this approach" is the current
+approach's counter. A hat whose route bills nothing per token (a subscription,
+or a route declared free) counts its list-equivalent price, so its line ends
+`(notional, list-equivalent)`: the figure is what the tokens would cost at list
+price, never a bill. `total` is marked when any hat is. `--json` carries the
+same figures as `spendCaps`, one `{hat, notional, overall, perApproach, line}`
+entry per capped hat, each level `{cap, spend, source}` or `null` when that
+level has no cap, on the live and on-disk fallback paths alike. A run with no
+caps prints no `spend caps:` block and carries no `spendCaps` key.
+
 On a plan with `phases`, a `plan:` line names the active plan phase
 (PRD v0.37 F.3, #313): `plan:      phase 2/3 Wiring · gate closed`. The phase is
 the earliest one whose gate is not `passed` (the last phase once every earlier
@@ -1655,6 +1670,13 @@ much of this figure is actually known" meant reading JSON by hand.
   iterations dispatched at that tier), the one field no other bucket has.
   A bucket that recorded nothing renders `(none)` — never `$0.00`, which
   would read like a phase that ran for free.
+- **`spend caps:`** (#321) appears only on a run with spend caps: one row per
+  capped hat (and `total`) and level, columns hat, `overall` or `approach <n>`,
+  then `spend / cap`, so each cap sits beside its spend for the run so far and
+  for every approach that has spent anything. A notional (list-equivalent)
+  figure ends `(notional, list-equivalent)`. `--json` carries the same as
+  `spendCaps`, `{hat, notional, overall, approaches: [{approach, cap, spend,
+  source}]}` per hat. A run with no caps has no such group and no key.
 - **`by payer:`** (#298) groups the same total by whatever payer labels the
   run's profiles declared — never by model prefix, so two gateways' routes or
   a subscription and a gateway on the same `anthropic/` model land in their

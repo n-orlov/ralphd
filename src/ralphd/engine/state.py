@@ -11000,7 +11000,7 @@ def payer_view(usage: dict | None) -> dict | None:
             "notices": notices, "columns": list(PAYER_COLUMNS), "rows": rows}
 
 
-def cost_breakdown(run_root: Path) -> dict:
+def cost_breakdown(run_root: Path, spend_caps: list | None = None) -> dict:
     """Everything status.json knows about what this run spent, per phase and
     per approach (task 027, #18.5).
 
@@ -11052,6 +11052,10 @@ def cost_breakdown(run_root: Path) -> dict:
     pv = payer_view(usage)
     if pv is not None:
         out["payerView"] = pv
+    # #321: the run's spend against each cap, handed in by the caller that
+    # knows the run's job.yaml; absent (no key at all) for a run with no caps.
+    if spend_caps:
+        out["spendCaps"] = spend_caps
     out["summaryLines"] = cost_breakdown_lines(out)
     return out
 
@@ -11128,8 +11132,37 @@ def cost_breakdown_lines(bd: dict) -> list[str]:
     A group is omitted rather than printed empty, and a run with no usage at
     all gets the single `COST_NO_USAGE` line instead of a table of zeros.
     """
-    if not isinstance(bd, dict) or not bd.get("hasUsage"):
+    if not isinstance(bd, dict):
         return [COST_NO_USAGE]
+    if not bd.get("hasUsage"):
+        return [COST_NO_USAGE, *spend_cap_cost_lines(bd.get("spendCaps"))]
+    return [*_cost_breakdown_body(bd), *spend_cap_cost_lines(bd.get("spendCaps"))]
+
+
+def spend_cap_cost_lines(entries: Any) -> list[str]:
+    """The `spend caps:` group of `ralphctl cost` (#321): each capped hat's
+    cap beside its spend, overall and then per approach, a notional hat's
+    rows marked. Nothing for a run with no caps."""
+    if not isinstance(entries, list) or not entries:
+        return []
+    rows: list[tuple[str, str, str]] = []
+    for e in entries:
+        mark = "  (notional, list-equivalent)" if e.get("notional") else ""
+        cells = []
+        if e.get("overall"):
+            cells.append(("overall", e["overall"]))
+        cells += [(f"approach {a['approach']}", a) for a in e.get("approaches") or []]
+        for label, c in cells:
+            cap = c["cap"]
+            cap_s = f"${cap:.0f}" if float(cap).is_integer() else f"${cap:.2f}"
+            rows.append((e["hat"], label, f"${c['spend']:.2f} / {cap_s}{mark}"))
+    hat_w = max((len(r[0]) for r in rows), default=0)
+    lab_w = max((len(r[1]) for r in rows), default=0)
+    return ["spend caps:"] + [f"  {h:<{hat_w}}  {lab:<{lab_w}}  {cell}"
+                              for h, lab, cell in rows]
+
+
+def _cost_breakdown_body(bd: dict) -> list[str]:
     total = bd.get("total") or {}
     pv = bd.get("payerView")
     lines = [f"cost:      {total.get('costDisplay') or USAGE_NONE}"]
