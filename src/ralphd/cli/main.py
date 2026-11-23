@@ -2351,10 +2351,75 @@ def _refuse_unpriceable_spend_caps(args, llm_profile, *, caps=None) -> None:
             pricing=pricing_cfg or {}, price_strategy=strategy or DEFAULT_PRICE_STRATEGY)
     except (TypeError, ValueError) as e:
         die(2, f"spend caps: the merged model tables do not load: {e}")
+    _refuse_unpriceable_for_job(job, caps)
+
+
+def _refuse_unpriceable_for_job(job, caps) -> None:
+    """Exit 2 with the unpriceable refusal for `caps` under `job`."""
     refusal = spend_caps_mod.unpriceable_refusal(
         caps, job, resolve_pricing(job.pricing, job.price_strategy))
     if refusal:
         die(2, refusal)
+
+
+def _budget_spend_caps(args, run_id: str) -> tuple[dict, dict, dict]:
+    """`budget --spend` / `--spend-approach` (#321 D): the parsed specs
+    `{level: [(hat, kind, usd)]}`, the caps `job.yaml` records now and the
+    caps after the specs. Exit 2 for a malformed spec, a top-up of a cap that
+    is not there, and (A.4) a cap on a hat whose model has no price. The
+    unpriceable check is made against the run's own `job.yaml` (its models,
+    `pricing:` map and price strategy), and only for the entries the specs
+    set or top up: removing a cap is never refused."""
+    specs: dict[str, list] = {}
+    try:
+        for level, flag, raw in (
+                ("overall", "--spend", args.spend),
+                ("per_approach", "--spend-approach", args.spend_approach)):
+            if raw:
+                specs[level] = [spend_caps_mod.parse_budget_spec(flag, r)
+                                for r in raw]
+        job_path = config_root(run_id) / "job.yaml"
+        job = _read_job_yaml(job_path) if job_path.is_file() else {}
+        before = spend_caps_mod.normalize_recorded(job.get("spend_caps"))
+        after = spend_caps_mod.apply_budget_specs(before, specs)
+    except spend_caps_mod.SpendCapError as e:
+        die(2, str(e))
+    touched: dict[str, dict] = {}
+    for level, items in specs.items():
+        for hat, kind, _usd in items:
+            if kind != spend_caps_mod.BUDGET_REMOVE and hat in after.get(level, {}):
+                touched.setdefault(level, {})[hat] = after[level][hat]
+    if touched:
+        try:
+            cfg = JobConfig(
+                model=job.get("model"),
+                model_overrides=dict(job.get("model_overrides") or {}),
+                models=dict(job.get("models") or {}),
+                model_tiers=dict(job.get("model_tiers") or {}),
+                pricing=job.get("pricing") or {},
+                price_strategy=job.get("price_strategy") or DEFAULT_PRICE_STRATEGY)
+        except (TypeError, ValueError) as e:
+            die(2, f"spend caps: the run's model tables do not load: {e}")
+        _refuse_unpriceable_for_job(cfg, touched)
+    return specs, before, after
+
+
+def _spend_cap_lines(before: dict, after: dict) -> list[str]:
+    """One report line per cap the change touched."""
+    lines = []
+    for level, label in (("overall", "spend cap"),
+                         ("per_approach", "spend cap per approach")):
+        old, new = before.get(level, {}), after.get(level, {})
+        for hat in dict.fromkeys((*old, *new)):
+            a = (old.get(hat) or {}).get("usd")
+            b = (new.get(hat) or {}).get("usd")
+            if a == b and (old.get(hat) or {}).get("source") == (
+                    new.get(hat) or {}).get("source"):
+                continue
+            was = f"${a:g}" if a is not None else "none"
+            now = f"${b:g}" if b is not None else "none"
+            lines.append(f"{label} {hat}: {was} -> {now}")
+    return lines
 
 
 def cmd_start(args):
@@ -3369,11 +3434,32 @@ def _exhausted_resume_refusal(run_id: str, status: dict, args) -> str | None:
     if budget is None:
         return None
     if budget.startswith("spend:"):
-        # v0.39 (#321): a spent spend cap; only lifting the cap resumes it.
-        spend = status.get("spend") if isinstance(status.get("spend"), dict) else {}
-        return (f"exhausted: {budget} \u2014 a spend cap is spent "
-                f"(recorded spend: {json.dumps(spend.get('overall') or {})}); "
-                f"raise or remove the cap, then ralphctl resume {run_id}")
+        # v0.39 (#321 D.3): a run ended by a spent cap resumes once a top-up
+        # (`budget --spend`, `--spend-approach`) lifts every cap above its
+        # spend; each cap still spent is named with its spend. Read from the
+        # job.yaml the engine will load, so a cap lifted by hand counts too.
+        job_path = config_root(run_id) / "job.yaml"
+        try:
+            caps = spend_caps_mod.normalize_recorded(
+                _read_job_yaml(job_path).get("spend_caps")
+                if job_path.is_file() else None)
+        except (spend_caps_mod.SpendCapError, ValueError):
+            caps = {}
+        still = spend_caps_mod.spent_caps(
+            caps, status.get("spend"), status.get("approach"))
+        if not still:
+            return None
+        lines = []
+        for cap in still:
+            flag = "--spend-approach" if cap.level == "per_approach" else "--spend"
+            where = "per approach" if cap.level == "per_approach" else "overall"
+            lines.append(
+                f"{where} cap on {cap.hat}: ${cap.spend:.2f} spent of "
+                f"${cap.cap:.2f} (source {cap.source}); "
+                f"ralphctl budget {run_id} {flag} {cap.hat}=+USD")
+        return (f"exhausted: {budget} \u2014 {len(still)} spend cap(s) still "
+                "spent:\n  " + "\n  ".join(lines)
+                + f"\nraise or remove each, then ralphctl resume {run_id}")
     attr, example = _EXHAUSTED_TOPUP_FLAG[budget]
     if getattr(args, attr, None):
         return None
@@ -7089,11 +7175,36 @@ def cmd_budget(args):
         if not re.fullmatch(r"\+?-?\d+", spec):
             die(2, f"{flag}: invalid value {spec!r} (expected e.g. +10 or 30)")
         body[api_key] = spec
+    spend_specs = None
+    if args.spend or args.spend_approach:
+        spend_specs, caps_before, caps_after = _budget_spend_caps(
+            args, args.run_id)
+        body["spendCaps"] = {
+            level: list(raw) for level, raw in (
+                ("overall", args.spend), ("per_approach", args.spend_approach))
+            if raw}
     if not body:
         die(2, "budget: nothing to change -- pass an iteration spec, "
                "--approaches, --timeout, --iteration-timeout, --cure-passes "
-               "--rate-limit-wait or --input-timeout")
-    res = api(args.run_id, "PATCH", "/config/budget", body)
+               "--rate-limit-wait, --input-timeout, --spend or "
+               "--spend-approach")
+    if (spend_specs is not None and list(body) == ["spendCaps"]
+            and _container_running(job_container_name(args.run_id)) is not True):
+        # No live engine to tell: the caps are recorded in job.yaml, which is
+        # what the next `resume` reads (an exhausted run has no container).
+        res = {"spendCaps": caps_after, "previousSpendCaps": caps_before}
+    else:
+        res = api(args.run_id, "PATCH", "/config/budget", body)
+    if "spendCaps" in res:
+        # #321 D: written to the run's job.yaml (host side; the engine's
+        # /config mount is read-only) with source `budget` on every entry
+        # the change touched, so a resume keeps it. The engine's answer is
+        # what it applied to its live caps.
+        job_path = config_root(args.run_id) / "job.yaml"
+        if job_path.is_file():
+            job = _read_job_yaml(job_path)
+            job["spend_caps"] = res["spendCaps"] or None
+            _write_job_yaml(job_path, job)
     if "inputTimeoutMin" in res:
         # v0.36 E.1: persisted to the run's job.yaml (host side; the engine's
         # /config mount is read-only), so a resume keeps the new timeout.
@@ -7126,6 +7237,9 @@ def cmd_budget(args):
         lines.append(f"input timeout: {res.get('previousInputTimeoutMin')} min "
                      f"-> {res.get('inputTimeoutMin')} min"
                      + (" (never)" if res.get("inputTimeoutMin") == 0 else ""))
+    if "spendCaps" in res:
+        lines += _spend_cap_lines(res.get("previousSpendCaps") or {},
+                                  res["spendCaps"] or {})
     out(args, res, "\n".join(lines) if lines else json.dumps(res))
 
 
@@ -9948,6 +10062,19 @@ def build_parser() -> argparse.ArgumentParser:
                         "(v0.36 E.1; 0 = never). Moves the expiry of a run "
                         "already awaiting input, and is written to the run's "
                         "job.yaml so a resume keeps it")
+    s.add_argument("--spend", action="append", metavar="HAT=+USD|USD|none",
+                   default=None,
+                   help="the overall spend cap of a hat (or `total`): "
+                        "`HAT=+5` tops it up, `HAT=20` sets it, `HAT=0` or "
+                        "`HAT=none` removes it (#321). Repeatable. Applies at "
+                        "the next boundary and is written to the run's "
+                        "job.yaml with source `budget`, so a resume keeps it; "
+                        "also the way to resume a run `exhausted` by spend")
+    s.add_argument("--spend-approach", action="append",
+                   metavar="HAT=+USD|USD|none", default=None,
+                   help="the same three forms for the per-approach cap, "
+                        "which then applies to the current approach and "
+                        "every later one (#321). Repeatable")
     s.set_defaults(func=cmd_budget)
 
     s = sub.add_parser("abort", help="terminate a job")

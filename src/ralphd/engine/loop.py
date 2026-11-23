@@ -16366,6 +16366,15 @@ class LoopSupervisor:
             return await self._step_paused()
         return taken
 
+    def set_spend_caps(self, caps: dict) -> None:
+        """v0.39 (#321): replace the spend caps of a LIVE run
+        (`ralphctl budget <run> --spend ...`). `_enforce_spend_caps` and
+        `_spend_watch_for` read `cfg.spend_caps` at every dispatch, so the
+        change applies at the next boundary; an iteration already running
+        keeps the caps it was dispatched with. The caller (api.py) owns
+        validation and the audit event."""
+        self.cfg.spend_caps = caps
+
     def set_input_timeout_min(self, value: float) -> None:
         """v0.36 E.1: change the input timeout of a LIVE run
         (`ralphctl budget <run> --input-timeout N|+N`). A run already parked

@@ -448,7 +448,8 @@ spent spend cap, `exhausted (spend:<hat>)` (also `spend:total`,
 `--json` rows carry `exhaustedBudget` beside the rendered `stateDisplay`).
 `ralphctl status` prints the same text on its `state:` line, and the hub run
 list and run page show it too. `ralphctl resume` leaves the hold only with a
-top-up of that budget, see below.
+top-up of that budget (for a spent cap, `budget --spend` or `--spend-approach`),
+see below.
 
 Columns: run ID, state, verdict, phase, approach, tasks, iterations
 used/budget, started (absolute local time via the shared formatter, see
@@ -2583,6 +2584,54 @@ $ ralphctl budget my-run --input-timeout +30    # half an hour longer to answer
 $ ralphctl budget my-run --input-timeout 0      # never auto-proceed
 ```
 
+`--spend HAT=…` and `--spend-approach HAT=…` change a spend cap (v0.39, #321;
+see "Spend caps"). `HAT` is a hat name or `total`; the value takes three forms,
+at either level:
+
+| value | meaning |
+| --- | --- |
+| `HAT=+USD` | top up: add USD to the cap the run has now (`review=+5`); refused with exit `2` when that hat has no cap at that level |
+| `HAT=USD` | set the cap absolutely (`review=40`) |
+| `HAT=0` or `HAT=none` | remove the cap |
+
+`--spend` is the overall cap, `--spend-approach` the cap on one approach, which
+then applies to the current approach and every later one. Both are repeatable
+and combine with every other `budget` lever in one call. A malformed spec, an
+unknown hat name or a non-positive amount exits `2` with nothing changed, and a
+cap that is set or topped up on a hat whose resolved model has no price in the
+pricing chain is refused the way `start --spend-cap` refuses it (exit `2`, the
+hat, its model and `no price in the pricing chain`, checked against the run's own
+`job.yaml`); removing a cap is never refused.
+
+```console
+$ ralphctl budget my-run --spend review=+5 --spend-approach worker=none
+spend cap review: $20 -> $25
+spend cap per approach worker: $5 -> none
+```
+
+On a live run the new caps apply at the next boundary, like the other levers
+(an iteration already running keeps the caps it was dispatched with). Every
+entry the call touches is written to the run's `job.yaml` `spend_caps:` with
+source `budget`, so it is still in force after a `resume`; removing the last cap
+removes the `spend_caps:` key. A run with no live container (an `exhausted` run)
+is changed in `job.yaml` alone.
+
+**`resume` of a run `exhausted` by spend.** A plain `ralphctl resume <run-id>`
+continues the run once a top-up has lifted every cap above its spend. While any
+cap is still spent, `resume` exits `2` and names each such cap with its spend and
+the command that would lift it:
+
+```console
+$ ralphctl resume my-run
+resume refused -- exhausted: spend:review — 1 spend cap(s) still spent:
+  overall cap on review: $20.40 spent of $20.00 (source flag); ralphctl budget my-run --spend review=+USD
+raise or remove each, then ralphctl resume my-run
+$ ralphctl budget my-run --spend review=+5 && ralphctl resume my-run
+```
+
+The capped hat is dispatched again by the resumed engine. The per-approach caps
+are compared with the current approach's spend.
+
 **Persistence across a resume — one row per knob (#94 (d); task 010, v0.27
 requirement C.3 adds the cure-pass row):**
 
@@ -2593,6 +2642,7 @@ requirement C.3 adds the cure-pass row):**
 | job deadline | `--timeout` | `job_timeout_s` | **reverts**: process-only while the container is live; a plain resume reverts to job.yaml's own value unless this resume itself passes `--timeout` |
 | iteration timeout | `--iteration-timeout` | `iteration_timeout_s` | **reverts**: process-only while the container is live; a plain resume reverts to job.yaml's own value unless this resume itself passes `--iteration-timeout` |
 | cure rounds (current approach) | `--cure-passes` | `cure_pass_ceiling` | **live**: persists across a resume — the top-up is recorded in status.json's `cureRoundTopUps` for the current approach and read back from disk |
+| spend caps | `--spend`, `--spend-approach` | `spend_caps` | **live**: persists across a resume — the CLI writes the new caps to job.yaml with source `budget`, which a resume reads back |
 | input timeout | `--input-timeout` | `input_timeout_min` | **live**: persists across a resume — the CLI writes the new value to job.yaml, which a resume reads back |
 | rate-limit wait ceiling | `--rate-limit-wait` | `rate_limit_max_wait_s` | **live**: persists across a resume — the engine's own startup seeds it from `max(status.json's rateLimitMaxWaitS, job.yaml's rate_limit_max_wait_s)` |
 
@@ -3350,7 +3400,8 @@ G).** When a run spends its iteration budget, its job deadline or its approach
 budget it holds in the non-terminal `exhausted` state (`verdict: null`,
 `exhaustedBudget` = `iterations`, `time` or `approaches`; a spent spend cap holds
 with `spend:<hat>`, `spend:total` or `spend:<hat>:approach` instead, v0.39 #321,
-and `resume` refuses that hold naming the spent cap). `resume` refuses it
+and `resume` refuses that hold, naming each cap still spent with its spend,
+until `ralphctl budget <run> --spend` or `--spend-approach` lifts it). `resume` refuses it
 without a top-up of that budget, exits `2` and prints the budget and the exact
 command:
 
@@ -3622,8 +3673,8 @@ Resolution is per hat and per level, weakest to strongest: the registry
 A flag for `review` overall replaces only the overall `review` entry.
 
 `start` writes the result to the run's `job.yaml`, each entry with the layer
-that set it (`registry`, `template`, `flag`; a later `ralphctl budget` writes
-`budget`):
+that set it (`registry`, `template`, `flag`; `ralphctl budget <run> --spend` and
+`--spend-approach` write `budget`):
 
 ```yaml
 spend_caps: {"overall": {"review": {"usd": 20.0, "source": "flag"}}}

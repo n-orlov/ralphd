@@ -28,6 +28,7 @@ from .creds import (
     list_creds,
     place_creds,
 )
+from . import spend_caps as spend_caps_mod
 from .llm import apply_llm, current_env
 from .loop import LoopSupervisor
 from .redact import refresh_redaction_map, scrub_text
@@ -572,9 +573,11 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         has_cure_pass_ceiling = body.get("curePassCeiling") is not None
         has_rate_limit_max_wait = body.get("rateLimitMaxWaitS") is not None
         has_input_timeout = body.get("inputTimeoutMin") is not None
+        has_spend_caps = body.get("spendCaps") is not None
         if not (has_iterations or has_max_approaches or has_iteration_timeout
                 or has_deadline or has_cure_pass_ceiling
-                or has_rate_limit_max_wait or has_input_timeout):
+                or has_rate_limit_max_wait or has_input_timeout
+                or has_spend_caps):
             raise problem(422, "iterations required",
                          'expected {"iterations": "+10"} or {"iterations": 40}')
 
@@ -697,6 +700,29 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
             run.emit("budget_changed", field="inputTimeoutMin", previous=previous,
                      inputTimeoutMin=value, delta=value - previous, source="api")
             result.update(inputTimeoutMin=value, previousInputTimeoutMin=previous)
+
+        if has_spend_caps:
+            raw = body["spendCaps"]
+            if not isinstance(raw, dict) or not raw or any(
+                    k not in spend_caps_mod.LEVELS or not isinstance(v, list)
+                    for k, v in raw.items()):
+                raise problem(422, "invalid spendCaps",
+                             'expected {"overall": ["review=+5"], '
+                             '"per_approach": ["total=none"]}')
+            specs: dict = {}
+            try:
+                for level, items in raw.items():
+                    flag = "--spend" if level == "overall" else "--spend-approach"
+                    specs[level] = [spend_caps_mod.parse_budget_spec(flag, i)
+                                    for i in items]
+                new_caps = spend_caps_mod.apply_budget_specs(cfg.spend_caps, specs)
+            except spend_caps_mod.SpendCapError as exc:
+                raise problem(422, "invalid spendCaps", str(exc)) from exc
+            previous = cfg.spend_caps
+            loop.set_spend_caps(new_caps)
+            run.emit("budget_changed", field="spendCaps", previous=previous,
+                     spendCaps=new_caps, source="api")
+            result.update(spendCaps=new_caps, previousSpendCaps=previous)
 
         return result
 

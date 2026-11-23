@@ -130,6 +130,75 @@ def resolve(registry: object, template: object, flag_overall: list[str] | None,
     return resolved
 
 
+# ---------------------------------------------------------------------------
+# `ralphctl budget --spend` / `--spend-approach` (#321 D)
+# ---------------------------------------------------------------------------
+
+BUDGET_ADD = "add"
+BUDGET_SET = "set"
+BUDGET_REMOVE = "remove"
+_REMOVE_WORDS = ("0", "none")
+
+
+def parse_budget_spec(flag: str, spec: str) -> tuple[str, str, float | None]:
+    """`HAT=+USD` (top up), `HAT=USD` (set) or `HAT=0` / `HAT=none`
+    (remove) from `budget --spend` / `--spend-approach`, as
+    `(hat, kind, usd)` with `usd` None for a removal."""
+    hat, sep, amount = str(spec).partition("=")
+    hat, amount = hat.strip(), amount.strip()
+    if not sep or not hat or not amount:
+        raise SpendCapError(
+            f"{flag} {spec!r} must be HAT=USD, HAT=+USD or HAT=none, e.g. "
+            f"review=+5 (valid names: {', '.join(CAP_KEYS)})")
+    check_key(flag, hat)
+    if amount.lower() in _REMOVE_WORDS:
+        return hat, BUDGET_REMOVE, None
+    kind = BUDGET_ADD if amount.startswith("+") else BUDGET_SET
+    try:
+        value: object = float(amount.lstrip("+"))
+    except ValueError:
+        raise SpendCapError(
+            f"{flag} {spec!r}: {amount!r} is not a number "
+            "(expected e.g. +5, 20, 0 or none)") from None
+    if not isinstance(value, float) or value != value or value in (
+            float("inf"), float("-inf")):
+        raise SpendCapError(f"{flag} {spec!r}: {amount!r} is not a finite number")
+    if not value > 0:
+        raise SpendCapError(
+            f"{flag} {spec!r}: the amount must be a positive USD figure "
+            "(to remove a cap, pass HAT=0 or HAT=none)")
+    return hat, kind, value
+
+
+def apply_budget_specs(caps: object, specs: dict[str, list[tuple[str, str, float | None]]],
+                       ) -> dict[str, dict[str, dict]]:
+    """The recorded caps after `specs` (`{level: [(hat, kind, usd), ...]}`,
+    in order). A top-up of a hat with no cap at that level is refused; every
+    entry a spec touches is recorded with source `budget`, the rest keep
+    their source. Empty levels are left out, so removing the last cap leaves
+    `{}`. `caps` is not modified."""
+    out = {level: {hat: dict(entry) for hat, entry in entries.items()}
+           for level, entries in (caps if isinstance(caps, dict) else {}).items()
+           if isinstance(entries, dict)}
+    for level, items in specs.items():
+        flag = "--spend" if level == "overall" else "--spend-approach"
+        entries = out.setdefault(level, {})
+        for hat, kind, usd in items:
+            if kind == BUDGET_REMOVE:
+                entries.pop(hat, None)
+                continue
+            if kind == BUDGET_ADD:
+                current = _cap_usd(entries.get(hat))
+                if current is None:
+                    raise SpendCapError(
+                        f"{flag} {hat}=+{usd:g}: {hat!r} has no "
+                        f"{level.replace('_', '-')} cap to top up "
+                        f"(set one with {flag} {hat}=USD)")
+                usd = round(current + float(usd or 0), 6)
+            entries[hat] = {"usd": float(usd or 0), "source": "budget"}
+    return {level: entries for level, entries in out.items() if entries}
+
+
 def normalize_recorded(raw: object) -> dict[str, dict[str, dict]]:
     """The engine's read of `job.yaml`'s `spend_caps:` -- the recorded form
     `{level: {hat: {usd, source}}}`. Validates like `parse_block`; an entry
@@ -264,6 +333,25 @@ def spent_cap(caps: object, spend: object, approach: object,
                 source = entry.get("source") if isinstance(entry, dict) else None
                 return SpentCap(name, lvl, usd, float(spent), source or "unknown")
     return None
+
+
+def spent_caps(caps: object, spend: object, approach: object) -> list[SpentCap]:
+    """Every cap, at either level, whose counter has reached it -- what a
+    `resume` of a spend-exhausted run names while it stays refused. The
+    per-approach counters are the bucket of `approach`."""
+    found: list[SpentCap] = []
+    if not isinstance(caps, dict):
+        return found
+    for level in LEVELS:
+        entries = caps.get(level)
+        if not isinstance(entries, dict):
+            continue
+        for name in entries:
+            hit = spent_cap({level: {name: entries[name]}}, spend, approach,
+                            name, level=level)
+            if hit is not None:
+                found.append(hit)
+    return found
 
 
 def is_unpriced(usage: object) -> bool:
