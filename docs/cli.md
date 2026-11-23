@@ -442,7 +442,9 @@ unrecognised value simply matches nothing (exit `0`, empty table), whereas an
 unrecognised `--sort` key is a usage error (exit `2`, below).
 
 A run that spent a budget is `exhausted`, and the state column names it:
-`exhausted (iterations)`, `exhausted (time)` or `exhausted (approaches)` (the
+`exhausted (iterations)`, `exhausted (time)`, `exhausted (approaches)` or, for a
+spent spend cap, `exhausted (spend:<hat>)` (also `spend:total`,
+`spend:<hat>:approach`) (the
 `--json` rows carry `exhaustedBudget` beside the rendered `stateDisplay`).
 `ralphctl status` prints the same text on its `state:` line, and the hub run
 list and run page show it too. `ralphctl resume` leaves the hold only with a
@@ -3346,7 +3348,9 @@ continues the job instead of re-planning; `resume` just has to reproduce
 **An `exhausted` run needs a top-up of the budget it names (v0.36 requirement
 G).** When a run spends its iteration budget, its job deadline or its approach
 budget it holds in the non-terminal `exhausted` state (`verdict: null`,
-`exhaustedBudget` = `iterations`, `time` or `approaches`). `resume` refuses it
+`exhaustedBudget` = `iterations`, `time` or `approaches`; a spent spend cap holds
+with `spend:<hat>`, `spend:total` or `spend:<hat>:approach` instead, v0.39 #321,
+and `resume` refuses that hold naming the spent cap). `resume` refuses it
 without a top-up of that budget, exits `2` and prints the budget and the exact
 command:
 

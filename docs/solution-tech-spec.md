@@ -261,7 +261,10 @@ without a transition-table state.
 or the approach budget is spent, the engine lets the current iteration finish and
 freezes the run in this non-terminal, resume-eligible state with `verdict: null`
 and `exhaustedBudget` set to `iterations`, `time` or `approaches`, instead of
-ending it `failed`. A hold skips the `on_complete` command. `ralphctl resume`
+ending it `failed`. A spent spend cap (v0.39, #321) holds the run the same way,
+before the capped hat is dispatched, with `exhaustedBudget` set to
+`spend:<hat>`, `spend:total` or `spend:<hat>:approach`; `resume` refuses that
+hold naming the spent cap. A hold skips the `on_complete` command. `ralphctl resume`
 refuses it without a top-up of the named budget and then continues the run from
 its recorded position (the replan on the next approach number for `approaches`).
 
@@ -292,7 +295,7 @@ non-terminal states, each with one owner:
 |---|---|---|
 | `paused` | the operator only (`ralphctl pause`, the hub, `POST /pause`); `status.json` records `pausedBy: "operator"` and the optional `pauseNote` | `ralphctl unpause` |
 | `awaiting_input` | the engine, only to ask the operator about findings (`inputQuestion`), about a secret found in a commit, or about a held petitioned task the prompt adjudication did not settle (`kind: petition_hold`, below), or because the final review would judge a state a deferred VERIFIED already judged, or the final peer verdict gate a state its own earlier verdict judged (`kind: verified_unchanged`, below) | an answer (`ralphctl answer`, `POST /answer`, the hub panel) or the input timeout |
-| `exhausted` | the engine, when the iteration, time or approach budget is spent (`exhaustedBudget`) | `ralphctl resume` with a top-up of that budget |
+| `exhausted` | the engine, when the iteration, time or approach budget is spent, or a spend cap is spent (`exhaustedBudget`, `spend:<hat>`, `spend:total` or `spend:<hat>:approach`) | `ralphctl resume` with a top-up of that budget; a spend hold is refused naming the spent cap |
 | `running` with `health: degraded` | the engine, during an infrastructure outage | recovery, or `failed` once the outage budget is spent |
 
 No other engine path parks a run, and every stop is written to `status.json`
