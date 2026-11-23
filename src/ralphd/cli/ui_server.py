@@ -68,6 +68,7 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from .. import __version__, collapse_index, render_index
 from ..engine.config import MUTATING_METHODS, JobConfig
+from ..engine import spend_caps as spend_caps_mod
 from ..engine.state import (
     unpause_refusal,
     docker_access_view,
@@ -1519,6 +1520,33 @@ def _with_provisioning(doc: dict, cfg_path: Path) -> dict:
             "provisioningTable": cells}
 
 
+def _with_spend_bars(doc: dict, cfg_path: Path, recorded_status: dict) -> dict:
+    """#321: the run detail's spend-against-caps bars. `spendCaps` is the very
+    list `GET /status` serves (a live answer's own is kept; otherwise it is
+    derived from the run's job.yaml and recorded status with the same
+    `spend_caps.run_entries`), and `spendBars` is `spend_caps.bar_entries`
+    over it -- one bar per cap, worded server-side. A run with no caps gets
+    neither key."""
+    if not isinstance(doc, dict):
+        return doc
+    entries = doc.get("spendCaps")
+    if not isinstance(entries, list):
+        entries = []
+        if cfg_path.is_file():
+            try:
+                entries = spend_caps_mod.run_entries(
+                    JobConfig.load(cfg_path), recorded_status)
+            except Exception:
+                entries = []
+    bars = spend_caps_mod.bar_entries(entries)
+    out = {k: v for k, v in doc.items() if k not in ("spendCaps", "spendBars")}
+    if entries:
+        out["spendCaps"] = entries
+    if bars:
+        out["spendBars"] = bars
+    return out
+
+
 def _with_llm_headers(doc: dict, cfg_path: Path) -> dict:
     """Task 047 (#177): attach this run's own `--llm-header` map to a status
     doc server-side, the exact same discipline `_with_provisioning` right
@@ -2513,6 +2541,8 @@ def run_detail(reg: Path, run_id: str) -> dict | None:
         shaped_status = _cached_disk_status_block(reg, run_dir, run_id, recorded_status)
     shaped_status = _with_docker_access(
         shaped_status, _config_dir(reg, run_id) / "job.yaml")
+    shaped_status = _with_spend_bars(
+        shaped_status, _config_dir(reg, run_id) / "job.yaml", recorded_status)
 
     # Task 005 (PRD requirement A.5, #269): both markers, on the SAME doc
     # whichever branch produced it -- see `_with_pause_markers`'s own

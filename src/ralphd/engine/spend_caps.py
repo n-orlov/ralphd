@@ -644,6 +644,39 @@ def format_status_line(entry: dict, width: int = 0) -> str:
     return line
 
 
+def bar_entries(entries: object) -> list[dict]:
+    """One bar per cap for the hub's run detail, from `status_entries`' shape
+    (what `GET /status` serves as `spendCaps`): `{hat, level, label, cap,
+    spend, percent, notional, text}`. `level` is `overall` or `per_approach`;
+    `percent` is spend over cap clamped to 0..100; `text` is the figure line
+    (`$38.10 / $150`, marked notional on a notional hat). No entries give
+    `[]`, so a run with no caps draws no bar."""
+    bars: list[dict] = []
+    if not isinstance(entries, list):
+        return bars
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        for level, key, label in (("overall", "overall", "overall"),
+                                  ("per_approach", "perApproach", "this approach")):
+            cell = entry.get(key)
+            if not isinstance(cell, dict) or not cell.get("cap"):
+                continue
+            notional = bool(entry.get("notional"))
+            text = f"{format_cell(cell)} {label}"
+            if notional:
+                text += f" ({NOTIONAL_NOTE})"
+            bars.append({
+                "hat": entry.get("hat"), "level": level,
+                "label": f"{entry.get('hat')} {label}",
+                "cap": cell["cap"], "spend": cell["spend"],
+                "percent": round(min(100.0, max(
+                    0.0, 100.0 * float(cell["spend"]) / float(cell["cap"]))), 1),
+                "notional": notional, "text": text,
+            })
+    return bars
+
+
 def cost_entries(caps: object, spend: object,
                  notional: set[str] | frozenset[str] = frozenset()) -> list[dict]:
     """One entry per capped hat for `ralphctl cost`: `{hat, notional,

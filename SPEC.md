@@ -7247,6 +7247,20 @@ panel's own name/text fields are cleared on a successful answer.
   **cost dialog**: the same per-phase/per-approach/per-tier breakdown
   `ralphctl cost` prints, with quoted, derived and unavailable money each
   labelled as such (§8.6).
+- **Spend bars** (v0.39, #321) — on a run with spend caps, one bar under the
+  summary card per cap: a capped hat's overall cap and, when it has one, its
+  per-approach cap each get their own `.spend-bar` (`data-hat`, `data-level`
+  `overall` or `per_approach`), a filled track over a `$spend / $cap` line, so
+  a hat with both levels shows two. The bars are fed from `status.spendCaps`,
+  the very entries `GET /status` serves (read from the live answer when there is
+  one, otherwise derived from `job.yaml` and `status.json`'s `spend` with the
+  same `spend_caps.run_entries`), worded server-side by `spend_caps.bar_entries`
+  into `status.spendBars`: `{hat, level, label, cap, spend, percent, notional,
+  text}`, `percent` being spend over cap clamped to 0..100 (the bar turns
+  amber from 80% and red when spent). A notional hat's bars say
+  `(notional, list-equivalent)`, because its figure is a list price and not a
+  bill. A run with no caps carries neither `spendCaps` nor `spendBars` and draws
+  no bar.
 - **Task table** — one row per task, each clickable and keyboard-reachable
   (`role="button"`, `tabindex=0`, Enter and Space), opening that task's detail
   in a modal `<dialog>`: `status`, `priority`, `dependsOn` when set,

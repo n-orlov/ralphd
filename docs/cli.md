@@ -4343,7 +4343,7 @@ JSON endpoints served under `/api/`:
   is `true`; a forged `deletable` in somebody's `status.json` is ignored (the
   row is built from the gate, like `approachDisplay`).
 - `GET /api/runs/<id>` — run detail: `{runId, live, containerGone, deletable,
-  deleteRefusal, status, tasks, iterations, parkedQuestion}`. `status`/`tasks` are proxied live from the run's
+  deleteRefusal, status, tasks, iterations, parkedQuestion}`. On a run with spend caps `status` also carries `spendCaps` (the entries `GET /status` serves, derived from `job.yaml` and `status.json` when no engine answers) and `spendBars` (one `{hat, level, label, cap, spend, percent, notional, text}` per cap, which the hub draws as one bar each; notional spend is marked); neither key is present on a run with no caps. `status`/`tasks` are proxied live from the run's
   container API (`GET /status`/`GET /tasks`) when its `apiUrl` (recorded in
   `host.json`) answers; otherwise falls back to the on-disk
   `status.json`/`tasks.json` snapshot with `live: false` — a dead run never

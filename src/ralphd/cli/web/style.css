@@ -762,3 +762,12 @@ a.parked-panel-link { color: inherit; text-decoration: underline; }
 .provisioning-table th, .provisioning-table td {
   text-align: left; padding: 0.15em 0.8em 0.15em 0; font-family: monospace;
 }
+
+/* #321: spend-against-cap bars on the run detail, one per cap. */
+.spend-bars { margin: 0.4em 0; }
+.spend-bar { margin: 0.2em 0; font-family: monospace; font-size: 0.85rem; }
+.spend-bar-track { display: block; height: 0.5em; background: #e5e7eb; border-radius: 3px; overflow: hidden; }
+.spend-bar-fill { display: block; height: 100%; background: var(--accent); }
+.spend-bar.warn .spend-bar-fill { background: #d97706; }
+.spend-bar.spent .spend-bar-fill { background: #b91c1c; }
+.spend-bar.notional .spend-bar-fill { opacity: 0.6; }

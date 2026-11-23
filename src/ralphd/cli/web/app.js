@@ -2714,6 +2714,24 @@ function renderSummary(el, detail) {
     wireCollapsePersistence(provDetails, "provisioning");
     el.appendChild(provDetails);
   }
+  // #321: one bar per spend cap (`spendBars`, worded server-side by
+  // `spend_caps.bar_entries` from the same `spendCaps` `GET /status` serves);
+  // a run with no caps has no `spendBars` and draws nothing.
+  if (Array.isArray(s.spendBars) && s.spendBars.length > 0) {
+    const box = h("div", { class: "spend-bars" }, []);
+    for (const bar of s.spendBars) {
+      const cls = "spend-bar" + (bar.notional ? " notional" : "") +
+        (Number(bar.percent) >= 100 ? " spent" : (Number(bar.percent) >= 80 ? " warn" : ""));
+      const fill = h("span", { class: "spend-bar-fill" }, []);
+      fill.style.width = String(Number(bar.percent) || 0) + "%";
+      const attrs = { class: cls, "data-hat": String(bar.hat), "data-level": String(bar.level) };
+      box.appendChild(h("div", attrs, [
+        h("span", { class: "spend-bar-text" }, [String(bar.hat) + ": " + String(bar.text)]),
+        h("span", { class: "spend-bar-track" }, [fill]),
+      ]));
+    }
+    el.appendChild(box);
+  }
   // Task 001a criterion 4: while an infra-fault retry is backing off,
   // currentIteration.note carries a human-readable "retrying after infra
   // fault (attempt N/max, next in Xs): <error>" message -- surface it on
