@@ -242,22 +242,154 @@ def test_a_run_with_no_caps_writes_no_spend_events(tmp_path):
         assert _events(sup, kind) == []
 
 
-def test_a_per_approach_cap_replans_only_from_a_step_that_has_an_edge_to_replan(
+def test_a_per_approach_cap_on_a_non_last_approach_replans_from_every_hat_bearing_step(
         tmp_path):
+    """B.2: "per-approach cap spent, not the last approach: the approach is
+    archived and the run replans" -- from whichever step was about to
+    dispatch. No step exempts a hat: every hat-bearing step state, in every
+    variant it exists in, has a legal edge into `replan` (its own, or the
+    engine-only one), and the refusal names `replan` whatever the step."""
     import pytest
 
+    from ralphd.engine import transitions
     from ralphd.engine.loop import _SpendCapSpent
+
+    variants = [{"vigilant": v, "peer_plan_review": p, "peer_verdict_gate": g}
+                for v in (False, True) for p in (False, True)
+                for g in (False, True)]
+    for state in transitions.STEP_STATES:
+        if transitions.STATE_HAT.get(state) in (None, "reflect"):
+            continue
+        reachable = [v for v in variants
+                     if transitions.successors(state, **v)]
+        assert reachable, state
+        for v in reachable:
+            assert transitions.is_legal(state, "replan", **v), (state, v)
+            assert transitions.TransitionExecutor(**v).advance(
+                state, "replan", "stagnation_exhausted") == "replan"
+    # the engine-only edge is never offered to a hat or the router
+    assert [e.target for e in transitions.successors("steer", False)] == ["worker"]
 
     sup = _supervisor(tmp_path / "run", {},
                       spend_caps=_caps(per_approach={"plan_review": 1.0}),
                       max_approaches=3)
     sup.run.update_status(approach=1)
     sup.run.record_spend(1, "plan_review", {"costUSD": 1.5})
-    for step, action in (("worker", "replan"), ("review", "replan"),
-                         ("plan_review", "exhausted")):
-        sup._step_now = step
-        with pytest.raises(_SpendCapSpent) as raised:
-            sup._enforce_spend_caps("plan_review")
-        assert raised.value.action == action, step
+    with pytest.raises(_SpendCapSpent) as raised:
+        sup._enforce_spend_caps("plan_review")
+    assert raised.value.action == "replan"
+    # reflect runs after the outcome is decided: a spent `total` refuses it
+    # too, and the event says the reflection was skipped, not replanned
+    sup.cfg.spend_caps = _caps(per_approach={"total": 1.0})
+    with pytest.raises(_SpendCapSpent) as raised:
+        sup._enforce_spend_caps("reflect")
+    assert raised.value.action == "skipped"
+    assert [(e["action"], e["refusedHat"])
+            for e in _events(sup, "spend.exhausted")] == [
+        ("replan", "plan_review"), ("skipped", "reflect")]
+
+
+# -- B.2 from the steps with no replan edge of their own (cure-01-01) ----------
+
+def _malformed(cost: float):
+    """A hat reply that is not its contract's JSON, at `cost`."""
+    return lambda sup, prompt="": _usage_result("not a payload at all", cost)
+
+
+def _plan_noting(seen: list, cost: float = 0.0, steer: str | None = None):
+    def step(sup, prompt=""):
+        seen.append(sup.run.read_status()["approach"])
+        if steer and len(seen) == 1:
+            sup.run.add_steering(steer, "op1")
+        return _plan(cost)(sup, prompt)
+    return step
+
+
+def _assert_replanned_on_spend(sup, seen, status, *, hat, level, refused, spend):
+    assert list(dict.fromkeys(seen))[:2] == [1, 2], (seen, status)
+    assert (Path(sup.run.root) / "approaches" / "01").is_dir()
+    first = _events(sup, "spend.exhausted")[0]
+    assert (first["hat"], first["level"], first["action"],
+            first["refusedHat"]) == (hat, level, "replan", refused)
+    assert abs(first["spend"] - spend) < 1e-9
+    assert abs(status["spend"]["byApproach"]["1"][hat] - spend) < 1e-9
+
+
+def test_a_steer_re_ask_refused_by_its_per_approach_cap_replans_on_a_non_last_approach(
+        tmp_path):
+    """The finding's own probe: steering queued after planning, a malformed
+    steer settlement costing $0.70 against a $0.50 per-approach steer cap,
+    two approaches. The contract re-ask is refused, approach 1 is archived
+    and the run replans -- never `exhausted` on approach 1."""
+    seen: list = []
+    sup, final, status = _run(
+        tmp_path, {"planning": [_plan_noting(seen, steer="reshape it")] * 3,
+                   "steer": [_malformed(0.7)] * 3, "worker": [_work(0.0)]},
+        spend_caps=_caps(per_approach={"steer": 0.5}), max_approaches=2)
+    _assert_replanned_on_spend(sup, seen, status, hat="steer",
+                               level="per_approach", refused="steer", spend=0.7)
+    assert status.get("exhaustedBudget") != "spend:steer:approach"
+    # the refused re-ask never reached a runner: one steer dispatch in all
+    assert sup.runner.calls["steer"] == 1
+    assert abs(status["spend"]["overall"]["steer"] - 0.7) < 1e-9
+
+
+def test_a_steer_first_dispatch_refused_by_a_spent_total_per_approach_cap_replans(
+        tmp_path):
+    """Not in the finding: the steer hat's FIRST dispatch is the refused one
+    (a worker iteration that queued steering spent the per-approach `total`),
+    so the refusal comes from the `steer` step itself."""
+    seen: list = []
+
+    def worker_queues_steering(sup, prompt=""):
+        if not sup.run.pending_steering() and seen == [1]:
+            sup.run.add_steering("change course", "op2")
+        return _usage_result("still working on it", 1.2)
+
+    sup, final, status = _run(
+        tmp_path, {"planning": [_plan_noting(seen)] * 3,
+                   "worker": [worker_queues_steering] + [_work(0.0)] * 5,
+                   "steer": [_malformed(0.0)] * 3},
+        spend_caps=_caps(per_approach={"total": 1.0}), max_approaches=2)
+    _assert_replanned_on_spend(sup, seen, status, hat="total",
+                               level="per_approach", refused="steer", spend=1.2)
+    assert sup.runner.calls.get("steer", 0) <= 1   # never on approach 1
+
+
+def test_a_peer_plan_review_refused_by_its_per_approach_cap_replans(tmp_path):
+    """Not in the finding: the peer plan review objects at $0.70 against its
+    $0.50 per-approach cap; the revised plan's review is refused at the
+    `plan_review` step, approach 1 is archived and approach 2 plans afresh.
+    On approach 2 (the last) the same refusal ends the run exhausted."""
+    seen: list = []
+    objects = lambda sup, prompt="": _usage_result(json.dumps(
+        {"verdict": "objected", "reason": "task 001 is too vague"}), 0.7)
+    sup, final, status = _run(
+        tmp_path, {"planning": [_plan_noting(seen)] * 5,
+                   "plan_review": [objects] * 5, "worker": [_work(0.0)]},
+        spend_caps=_caps(per_approach={"plan_review": 0.5}), max_approaches=2,
+        peer_plan_review=True)
+    _assert_replanned_on_spend(sup, seen, status, hat="plan_review",
+                               level="per_approach", refused="plan_review",
+                               spend=0.7)
+    assert final == "exhausted"
+    assert status["exhaustedBudget"] == "spend:plan_review:approach"
     assert [e["action"] for e in _events(sup, "spend.exhausted")] == [
-        "replan", "replan", "exhausted"]
+        "replan", "exhausted"]
+    assert sup.runner.calls["plan_review"] == 2      # one per approach
+
+
+def test_a_vigilant_verify_re_ask_refused_by_its_per_approach_cap_replans(tmp_path):
+    """Not in the finding: the vigilant verifier's malformed reply spends its
+    per-approach cap; the re-ask is refused and the approach replans."""
+    seen: list = []
+    complete = lambda sup, prompt="": _usage_result(json.dumps(
+        {"verdict": "complete", "task_id": "001"}), 0.0)
+    sup, final, status = _run(
+        tmp_path, {"planning": [_plan_noting(seen)] * 3,
+                   "worker": [complete] * 4, "verify": [_malformed(0.7)] * 4},
+        spend_caps=_caps(per_approach={"verify": 0.5}), max_approaches=2,
+        vigilant=True)
+    _assert_replanned_on_spend(sup, seen, status, hat="verify",
+                               level="per_approach", refused="verify", spend=0.7)
+    assert status["exhaustedBudget"] == "spend:verify:approach"

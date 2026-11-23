@@ -97,6 +97,14 @@ def _rows() -> list[tuple[str, str, str, str, str]]:
                 continue
             seen.add(key)
             rows.append((state, hat_label, "peer verdict gate only", edge.target, edge.guard))
+        # v0.39 (#321, B.2): an edge the engine takes on its own (a spent
+        # per-approach spend cap), never offered to a hat or the router.
+        for edge in transitions.ENGINE_EDGES.get(state, ()):
+            key = (edge.target, edge.guard)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append((state, hat_label, "engine only (spend cap)", edge.target, edge.guard))
         if not non_vigilant and not vigilant and not peer_plan and not peer_verdict:
             rows.append((state, hat_label, "\u2014", "\u2014 (terminal)", "\u2014"))
     return rows

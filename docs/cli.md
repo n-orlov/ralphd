@@ -3723,7 +3723,8 @@ Before every dispatch the engine holds the hat about to run to its own caps and
 `total`'s, at both levels. A spent cap refuses the dispatch: an overall cap, or a
 per-approach cap on the last approach, holds the run `exhausted` with the reason
 `spend:<hat>` (`spend:total`, or `spend:<hat>:approach`), and a per-approach cap
-on any other approach archives that approach and replans. "Every dispatch"
+on any other approach archives that approach and replans, whichever hat was
+about to run (a `steer` pass and the peer plan review included). "Every dispatch"
 includes each internal retry of an iteration (infra fault, rate-limit wait,
 provider refusal) and the router and contract re-ask calls. A paid attempt that
 fails is checked again at once, ahead of any infra retry limit or outage budget

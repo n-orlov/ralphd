@@ -701,8 +701,6 @@ class LoopSupervisor:
         # v0.39 (#321): the `SpentCap` a run held `exhausted` over; the tail
         # reads it back (`_finish_tail_unverified`).
         self._spend_exhausted_tail: bool = False
-        # The FSM position `_run_job_core` is dispatching (None outside it).
-        self._step_now: str | None = None
         # v0.36 requirement G: True iff `_step_replan` found no approach
         # left; the tail then holds `exhausted` (`exhaustedBudget:
         # approaches`) instead of ending the run `failed`.
@@ -6276,7 +6274,6 @@ class LoopSupervisor:
         self._approach = start_approach
         try:
             while True:
-                self._step_now = step
                 try:
                     outcome = await self._run_step(step, skip_planning)
                 except _SpendCapSpent as spent:
@@ -6361,14 +6358,21 @@ class LoopSupervisor:
         if spent is None:
             return
         last = approach >= self.cfg.max_approaches
-        # A per-approach cap replans only from a step with an edge to
-        # `replan` (`worker`, `planning`, `review`, `verdict_gate`); from any
-        # other the run holds, so it never keeps spending past the cap.
-        can_replan = self._step_now is None or transitions.is_legal(
-            self._step_now, "replan", self.cfg.vigilant,
-            self.cfg.peer_plan_review, self.cfg.peer_verdict_gate)
-        action = ("exhausted" if spent.level == "overall" or last
-                  or not can_replan else "replan")
+        if phase == "reflect":
+            # The run's outcome is already decided when reflect runs: the
+            # reflection is simply not dispatched (`_run_reflect`), and the
+            # event says so rather than naming an outcome nobody takes.
+            action = "skipped"
+        elif spent.level == "overall" or last:
+            action = "exhausted"
+        else:
+            # B.2: a per-approach cap on an approach that is not the last
+            # archives it and replans, from whichever step was about to
+            # dispatch. Every hat-bearing step has a `replan` edge -- its own,
+            # or the engine-only one in `transitions.ENGINE_EDGES` -- so the
+            # executor accepts the move; there is no step from which the run
+            # holds `exhausted` instead.
+            action = "replan"
         self._emit_spend_exhausted(spent, action, phase=phase)
         raise _SpendCapSpent(spent, action, phase)
 

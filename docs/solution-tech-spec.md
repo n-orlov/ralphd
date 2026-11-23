@@ -1452,7 +1452,10 @@ adds `state.iteration_spend(usage)` at the end of every iteration: `costUSD` plu
 `costDerivedUSD` plus `listEquivalentUSD`, so a subscription-billed iteration
 counts at its list-equivalent price and not at its $0 cost. `stamp_billing` moves
 money into `listEquivalentUSD` instead of copying it, so nothing counts twice.
-Router and contract-repair calls are not iterations and are not counted. The
+Router and contract-repair calls are not iterations, but their cost is counted
+the same way when the call finishes (`_run_side_call`): a router call into the
+`router` hat's counter, a contract re-ask into the repaired hat's, both into
+`total`; no iteration slot is charged. The
 counters persist with the run, so `resume` keeps them, and a new approach starts a
 new `byApproach` key while `overall` carries on. A 0.38 run dir has no `spend` key:
 engine start (`RunDir.seed_spend`) rebuilds it from `iterations/NNNN/meta.json`
@@ -1475,7 +1478,10 @@ Enforcement runs at two boundaries over the counters above. The dispatch check
 and `total`'s at both levels. A spent overall cap, or a per-approach cap on the
 last approach, holds the run `exhausted` with `exhaustedBudget` `spend:<hat>`,
 `spend:total` or `spend:<hat>:approach`; a per-approach cap on any other approach
-archives the approach and replans. The interrupt covers an iteration already
+archives the approach and replans, from whichever step was about to dispatch
+(`steer`, the peer plan review and `verify` take an engine-only
+`stagnation_exhausted` edge, `transitions.ENGINE_EDGES`, that no hat or router is
+offered). The interrupt covers an iteration already
 running: the runner (`pi`, `claude-code`, `codex`) holds a live iteration on a
 capped hat to its caps after each assistant message, and the first message whose
 running cost reaches a cap ends it through the iteration-timeout kill path, with

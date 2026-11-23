@@ -790,8 +790,9 @@ surfaced as `GET /config`'s `budgets.routerTimeoutS`); a hang or an
 unrecoverable answer falls back to the state's own declared choice
 (`transitions.fallback_guard`/`ROUTER_FALLBACK`) rather than ever taking an
 edge the table does not list. `LoopSupervisor._ask_router()` is deliberately
-uncounted — no iteration slot, no `iterations_used` increment, no
-`meta.json` — but its cost is not hidden: each call gets its own transcript
+uncounted as work — no iteration slot, no `iterations_used` increment, no
+`meta.json` — but its cost is not hidden (and, since v0.39, it is counted into
+the `router` hat's and `total`'s spend counters and held to their caps, §4.5): each call gets its own transcript
 under `artifacts/router/NNNN.jsonl` (a plain counter, not an iteration
 directory) and its usage folds into `usage.byPhase["router"]` (§4.2) exactly
 like the five hat phases, so a run's model mix and cost are auditable even for
@@ -909,7 +910,8 @@ sibling check: it states the validation errors verbatim and asks ONLY for the
 corrected final payload, never the hat's own task prompt again, so a re-ask
 can fix a payload's shape but can never hand the hat a second bite at doing
 more workspace work. Built directly on `_ask_router`'s own precedent, it is
-uncounted the same way, by the same construction: no iteration slot, no
+uncounted as work the same way, by the same construction (its cost still
+counts against the repaired hat's and `total`'s spend caps, §4.5): no iteration slot, no
 `iterations_used` increment, no `meta.json` (`loop.py` never calls
 `_run_iteration_once` or touches `self.iterations_used` from inside it).
 Each call gets its own transcript under `artifacts/contract/NNNN.jsonl` (a
@@ -1986,8 +1988,8 @@ outcome below. What follows depends on the cap:
 |---|---|---|
 | **overall**, on a hat | the run holds `exhausted` exactly as the iteration budget holds it (`_finish_exhausted`) | `spend:<hat>` |
 | **overall**, on `total` | the same | `spend:total` |
-| **per approach**, not the last approach | the approach is archived (`approaches/NN/`) and the run replans as approach + 1 through the same `worker -> replan` path a `stagnation_exhausted` approach takes (`replan -> planning` follows), so the next approach's per-approach counters start at zero while the overall counters carry on | none, the run goes on |
-| **per approach**, last approach (`approach == max_approaches`), or a refusal at a step with no edge to `replan` (the peer plan review, `steer`, the stand-alone `verify` step) | the run holds `exhausted` | `spend:<hat>:approach` (`spend:total:approach` for `total`) |
+| **per approach**, not the last approach | the approach is archived (`approaches/NN/`) and the run replans as approach + 1 through the same `stagnation_exhausted` edge into `replan` a stalled approach takes (`replan -> planning` follows), from whichever step was about to dispatch: `planning`, `worker`, `review` and the peer verdict gate declare that edge themselves, and `steer`, the peer plan review and `verify` carry it as an engine-only edge (`transitions.ENGINE_EDGES`, never offered to a hat or the router). The next approach's per-approach counters start at zero while the overall counters carry on | none, the run goes on |
+| **per approach**, last approach (`approach == max_approaches`) | the run holds `exhausted` | `spend:<hat>:approach` (`spend:total:approach` for `total`) |
 
 The hold's `reason` opens `exhausted: spend:<hat>` and names the level, the hat,
 the spend and the cap; `ralphctl status` shows `exhausted (spend:<hat>)`. A
@@ -2020,7 +2022,8 @@ names the capped hat (or the run total), the spend, the cap and, for an
 exhaustion, the `action`. With no `notifier_url` no request is made and the run
 carries on; a failed send is recorded and never stops the run. A run with no
 caps emits and sends none of it. A refused `reflect` dispatch (the run has already ended) is recorded as
-`reflect_skipped` and does not change the run's outcome.
+`reflect_skipped`, its `spend.exhausted` event carries `action: skipped`, and it
+does not change the run's outcome.
 
 Spend against caps is shown on four surfaces, all shaped by one function
 (`engine/spend_caps.py`), so the figures agree. `ralphctl status` prints a
@@ -3739,7 +3742,7 @@ The three `phase_gate.*` events (PRD v0.37 requirement F.1, #313) each carry `pl
 | `reflect_tombstone_cleared` | `path` | a successful reflect attempt removed a stale `reflection/FAILED.md` left by an earlier one (§12.2) |
 | `reflect_skipped` | `attempted`, `signal`, `reason` | a signal was taking the engine down, so the reflect phase rendered no verdict (§8.4) |
 | `spend.warning` | `hat`, `level`, `approach`, `cap`, `spend`, `threshold`, `source` | v0.39 (#321): a cap's spend first reached 80 % of it (`threshold` is `0.8`), once per overall cap and once per approach for a per-approach cap (§4.5). `hat` is the capped key (a hat or `total`), `level` is `overall` or `per_approach`, `approach` the approach it was reached in. The engine POSTs the same fact to the configured notifier (a `notification.sent`/`notification.failed` event follows). Emitted only on a run with `spend_caps` |
-| `spend.exhausted` | `hat`, `level`, `cap`, `spend`, `action`, `refusedHat`, `source` | v0.39 (#321): a hat was about to be dispatched past a spent spend cap and was not. `hat` is the capped key (a hat or `total`), `level` is `overall` or `per_approach`, `action` is `replan` (a per-approach cap on a non-last approach) or `exhausted` (§4.5). Emitted only on a run with `spend_caps`; the engine also POSTs it to the configured notifier |
+| `spend.exhausted` | `hat`, `level`, `cap`, `spend`, `action`, `refusedHat`, `source` | v0.39 (#321): a hat was about to be dispatched past a spent spend cap and was not. `hat` is the capped key (a hat or `total`), `level` is `overall` or `per_approach`, `action` is `replan` (a per-approach cap on a non-last approach, from any step), `exhausted`, or `skipped` (a refused post-terminal `reflect`) (§4.5). Emitted only on a run with `spend_caps`; the engine also POSTs it to the configured notifier |
 | `spend.unpriced` | `hat`, `model`, `rate`, `counted`, `number` | v0.39 (#321): an iteration on a capped hat came back unpriced and was counted at the highest rate the pricing chain knows for the model's family (`rate`, USD per million tokens per counter), `counted` dollars (§4.5) |
 | `spend.interrupted` | `hat`, `level`, `cap`, `spend`, `overshoot`, `source`, `iterationHat` | v0.39 (#321): a live iteration's running cost plus its hat's prior spend reached a spend cap and the runner ended the iteration through the `iteration_timeout_s` kill path (§4.5). `hat` is the capped key (a hat or `total`), `level` is `overall` or `per_approach`, `spend` is the figure at the crossing, `overshoot` is `spend - cap`, `iterationHat` the hat that was running. Emitted only on a run with `spend_caps`; the next dispatch check then applies B.2 |
 | `budget_changed` | `field`, `previous`, `iterations`\|`maxApproaches`\|`iterationTimeoutS`\|`jobDeadlineEpochS`\|`curePassCeiling`\|`rateLimitMaxWaitS`\|`spendCaps`, `delta`, `iterationsUsed` (`iterations` field only), `source` | a live-engine budget knob was changed in flight via `PATCH /config/budget` -- task 003/#94 (a) widens `field` past `iterations` alone, task 010 (v0.27 requirement C.3) adds `curePassCeiling`, `rateLimitMaxWaitS` is the rate-limit wait ceiling (§8.4), and `spendCaps` (v0.39, #321; carries `previous` and `spendCaps`, the caps before and after, and no `delta`) is a `budget --spend`/`--spend-approach` change |
@@ -5612,7 +5615,10 @@ both levels: the quoted `costUSD`, plus the host-derived `costDerivedUSD`, plus
 `listEquivalentUSD`. A subscription-billed iteration therefore counts at its
 list-equivalent price, never at its `$0` `costUSD`. The payer stamp moves money
 into `listEquivalentUSD` rather than copying it, so nothing counts twice. Router
-and contract-repair calls are not iterations and are not counted. A new approach
+and contract-repair calls are not iterations, but their cost IS counted, the same
+way, when the call finishes (`_run_side_call`): a router call into the `router`
+hat's counter, a contract re-ask into the hat whose payload it repairs, and both
+into `total`, at both levels; neither charges an iteration slot. A new approach
 adds a new `byApproach` key, so its counters start at zero while `overall` carries
 on. The counters live in status.json, so `resume` reads them back unchanged. A run
 dir with iteration records and no `spend` key (0.38) has the counters rebuilt at
