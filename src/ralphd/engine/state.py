@@ -774,6 +774,19 @@ def unpause_refusal(run_id: str, status: dict) -> str | None:
 # leaves it only with a top-up of the named budget.
 EXHAUSTED_STATE = "exhausted"
 EXHAUSTED_BUDGETS = ("iterations", "time", "approaches")
+# v0.39 (#321): a spent spend cap holds the run `exhausted` too, with
+# `exhaustedBudget` spelled `spend:<hat>` (an overall cap; `spend:total` for
+# the run total) or `spend:<hat>:approach` (a per-approach cap on the last
+# approach). `is_exhausted_budget` is the one predicate that accepts both.
+SPEND_BUDGET_PREFIX = "spend:"
+
+
+def is_exhausted_budget(value: Any) -> bool:
+    """True for a budget name an `exhausted` run may carry: one of
+    `EXHAUSTED_BUDGETS` or a `spend:...` reason."""
+    return value in EXHAUSTED_BUDGETS or (
+        isinstance(value, str) and value.startswith(SPEND_BUDGET_PREFIX)
+        and len(value) > len(SPEND_BUDGET_PREFIX))
 # The 0.35 spelling of the same hold. Nothing in the engine enters it any
 # more; a run directory written by 0.35 and still recorded with it loads as
 # `exhausted` (`exhausted_budget_of` / `normalise_legacy_state` below).
@@ -833,7 +846,7 @@ def exhausted_budget_of(status: dict) -> str | None:
     state_value = status.get("state")
     if state_value == EXHAUSTED_STATE:
         budget = status.get("exhaustedBudget")
-        return budget if budget in EXHAUSTED_BUDGETS else None
+        return budget if is_exhausted_budget(budget) else None
     if state_value == LEGACY_TIMED_OUT_STATE:
         reason = str(status.get("reason") or "").lower()
         return "iterations" if "iteration" in reason and "wall" not in reason \
@@ -11955,15 +11968,20 @@ class RunDir:
         return True
 
     def record_spend(self, approach: Any, phase: Any, usage: Any,
-                     number: int | None = None) -> dict:
+                     number: int | None = None, *,
+                     amount: float | None = None) -> dict:
         """Add one finished iteration's spend to the persisted counters.
         `number` names the iteration, whose own record is already on disk:
         counters that must first be rebuilt (a 0.38 run dir) leave it out
-        so it is not counted twice."""
+        so it is not counted twice. `amount` overrides the iteration's own
+        `iteration_spend(usage)`: an unpriced iteration on a capped hat
+        counts at the family rate (`spend_caps.counted_spend`), live only;
+        a rebuilt counter has only the record's own figure to go on."""
         spend = self.read_status().get(SPEND_STATUS_KEY)
         if not isinstance(spend, dict):
             spend = rebuild_spend(self.root, exclude=number)
-        doc = add_spend(spend, approach, phase, iteration_spend(usage))
+        doc = add_spend(spend, approach, phase,
+                        iteration_spend(usage) if amount is None else amount)
         self.update_status(**{SPEND_STATUS_KEY: doc})
         return doc
 

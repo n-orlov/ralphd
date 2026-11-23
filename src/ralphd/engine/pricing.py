@@ -54,6 +54,7 @@ behaviour is byte-identical to pre-v0.6.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 
 log = logging.getLogger("ralphd.pricing")
@@ -111,6 +112,18 @@ class ModelRate:
         if "input" not in vals and "output" not in vals:
             return None  # nothing to price with
         return cls(**vals)
+
+
+def family_of(model: str) -> str:
+    """The family a model id belongs to: the vendor token in front of its
+    first `/` or `.` (`anthropic/claude-opus-5` and
+    `anthropic.claude-opus-5-v1:0` are both `anthropic`). An id with no
+    separator is its own family."""
+    return re.split(r"[/.]", str(model or "").strip(), maxsplit=1)[0]
+
+
+def _height(rate: ModelRate) -> tuple[float, float]:
+    return (rate.output, rate.input)
 
 
 def _match(pattern: str, model: str) -> str | None:
@@ -207,6 +220,34 @@ class PricingMap:
                 return self.models[pattern]
         return None
 
+    def family_rate(self, model: str | None, *,
+                    fallback: bool = True) -> ModelRate | None:
+        """The highest rate this table holds for `model`'s family (#321);
+        when it holds none, the highest rate in the whole table (`fallback`)
+        or None. A rate's height is its output price,
+        then its input price. The family is `family_of` the aliased id; a
+        wildcard key counts for the family its prefix names."""
+        fam = family_of(self.canonical(str(model))) if model else ""
+        if not fam:
+            return self.highest_rate() if fallback else None
+        best: ModelRate | None = None
+        for key, rate in self.models.items():
+            if family_of(key.rstrip("*")) == fam and (
+                    best is None or _height(rate) > _height(best)):
+                best = rate
+        if best is None and fallback:
+            return self.highest_rate()
+        return best
+
+    def highest_rate(self) -> ModelRate | None:
+        """The highest rate anywhere in this table (the fallback of
+        `family_rate` for a model whose family the table does not know)."""
+        best: ModelRate | None = None
+        for rate in self.models.values():
+            if best is None or _height(rate) > _height(best):
+                best = rate
+        return best
+
     def is_free(self, model: str | None) -> bool:
         """True when the operator DECLARED this route free (task 049, v0.6).
 
@@ -295,6 +336,18 @@ class PricingChain:
     def rate_for(self, model: str | None) -> ModelRate | None:
         layer = self._layer_for(model)
         return layer.rate_for(model) if layer else None
+
+    def family_rate(self, model: str | None) -> ModelRate | None:
+        """The highest rate any layer knows for `model`'s family (#321); when
+        no layer knows the family, the highest rate the whole chain holds.
+        None only for a chain with no rates at all."""
+        found = [r for r in (layer.family_rate(model, fallback=False)
+                                  for layer in self.layers)
+                 if r is not None]
+        if not found:
+            found = [r for r in (layer.highest_rate() for layer in self.layers)
+                     if r is not None]
+        return max(found, key=_height) if found else None
 
     def is_free(self, model: str | None) -> bool:
         """True when ANY layer declares the route free. Only an operator map

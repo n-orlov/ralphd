@@ -1101,8 +1101,10 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # both tiers -> fast 9431/581, smoke 7650/454.
     # v0.39 task 003: +27 tests / +1 module (tests/test_cli_spend_caps.py), in
     # both tiers -> fast 9458/582, smoke 7677/455.
-    "fast": {"tests": 9458, "modules": 582},
-    "smoke": {"tests": 7677, "modules": 455},
+    # v0.39 task 005: +13 tests / +1 module (tests/test_spend_enforcement.py),
+    # in both tiers -> fast 9471/583, smoke 7690/456.
+    "fast": {"tests": 9471, "modules": 583},
+    "smoke": {"tests": 7690, "modules": 456},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

@@ -3368,6 +3368,12 @@ def _exhausted_resume_refusal(run_id: str, status: dict, args) -> str | None:
     budget = exhausted_budget_of(status)
     if budget is None:
         return None
+    if budget.startswith("spend:"):
+        # v0.39 (#321): a spent spend cap; only lifting the cap resumes it.
+        spend = status.get("spend") if isinstance(status.get("spend"), dict) else {}
+        return (f"exhausted: {budget} \u2014 a spend cap is spent "
+                f"(recorded spend: {json.dumps(spend.get('overall') or {})}); "
+                f"raise or remove the cap, then ralphctl resume {run_id}")
     attr, example = _EXHAUSTED_TOPUP_FLAG[budget]
     if getattr(args, attr, None):
         return None

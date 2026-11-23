@@ -17,8 +17,12 @@ recorded form, and nowhere else.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+from . import state
 from .config import MODEL_HATS
 from .llm import _tier_leaf_ref
+from .pricing import RATE_KEYS
 
 TOTAL = "total"
 CAP_KEYS: tuple[str, ...] = (*MODEL_HATS, TOTAL)
@@ -182,3 +186,138 @@ def unpriceable_refusal(caps: dict[str, dict], job, pricing) -> str | None:
     return head + ":\n  " + "\n  ".join(lines) + (
         "\n  (add the model to `pricing:` in the registry config.yaml, or set "
         "price_strategy, or drop the cap)")
+
+
+# ---------------------------------------------------------------------------
+# Enforcement (#321): which cap is spent, and what an unpriced iteration counts
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class SpentCap:
+    """One cap whose spend has reached it. `hat` is the cap's key (a hat
+    name or `total`), `level` is `overall` or `per_approach`."""
+
+    hat: str
+    level: str
+    cap: float
+    spend: float
+    source: str = "unknown"
+
+    @property
+    def reason(self) -> str:
+        """The `exhausted` reason this cap ends a run with."""
+        return exhausted_reason(self.hat, self.level)
+
+
+def exhausted_reason(hat: str, level: str) -> str:
+    """`spend:<hat>` for an overall cap (`spend:total` for the run total),
+    `spend:<hat>:approach` for a per-approach cap on the last approach."""
+    return f"spend:{hat}" + (":approach" if level == "per_approach" else "")
+
+
+def is_spend_reason(value: object) -> bool:
+    return isinstance(value, str) and value.startswith("spend:")
+
+
+def _cap_usd(entry: object) -> float | None:
+    usd = entry.get("usd") if isinstance(entry, dict) else entry
+    if isinstance(usd, bool) or not isinstance(usd, (int, float)) or usd <= 0:
+        return None
+    return float(usd)
+
+
+def has_cap(caps: object, hat: str) -> bool:
+    """True iff `hat` or `total` carries a cap at either level."""
+    if not isinstance(caps, dict):
+        return False
+    return any(isinstance(entries, dict) and (hat in entries or TOTAL in entries)
+               for entries in caps.values())
+
+
+def spent_cap(caps: object, spend: object, approach: object,
+              hat: str, *, level: str | None = None) -> SpentCap | None:
+    """The first cap `hat` is blocked by, or None. The hat's own caps and
+    `total`'s are checked at both levels, overall first (an overall cap ends
+    the run whatever the approach says); a cap is spent once the counter
+    reaches it. `level` restricts the check to one level."""
+    if not isinstance(caps, dict) or not caps:
+        return None
+    doc = spend if isinstance(spend, dict) else {}
+    overall = doc.get("overall") if isinstance(doc.get("overall"), dict) else {}
+    by_approach = (doc.get("byApproach")
+                   if isinstance(doc.get("byApproach"), dict) else {})
+    key = str(approach if isinstance(approach, int)
+              and not isinstance(approach, bool) and approach > 0 else 1)
+    bucket = by_approach.get(key) if isinstance(by_approach.get(key), dict) else {}
+    for lvl, counters in (("overall", overall), ("per_approach", bucket)):
+        if level is not None and lvl != level:
+            continue
+        entries = caps.get(lvl)
+        if not isinstance(entries, dict):
+            continue
+        for name in dict.fromkeys((hat, TOTAL)):
+            usd = _cap_usd(entries.get(name))
+            spent = counters.get(name) or 0
+            if usd is not None and spent >= usd:
+                entry = entries.get(name)
+                source = entry.get("source") if isinstance(entry, dict) else None
+                return SpentCap(name, lvl, usd, float(spent), source or "unknown")
+    return None
+
+
+def is_unpriced(usage: object) -> bool:
+    """True when `usage` billed tokens that nothing priced: a stamped
+    iteration with `listEquivalentUnpricedTokens`, a route that quoted no
+    price (or an implausible zero) and was not derived, or a subscription
+    iteration that never got its list-equivalent figure. A route the operator
+    declared free is priced at $0 by declaration."""
+    if not isinstance(usage, dict) or not state.billable_tokens(usage):
+        return False
+    if state._list_unpriced_tokens(usage) > 0:
+        return True
+    if usage.get("costFree") is True:
+        return False
+    if ((usage.get("costPriced") is False or state.is_zero_quote(usage))
+            and usage.get("costDerived") is not True):
+        return True
+    return (usage.get("costBasis") == state.COST_BASIS_SUBSCRIPTION
+            and not state._is_number(usage.get("listEquivalentUSD")))
+
+
+def rate_dict(rate: object) -> dict[str, float]:
+    return {key: rate.per_mtok(key) for key in RATE_KEYS}  # type: ignore[attr-defined]
+
+
+def estimate_usd(usage: dict, rate: object) -> float:
+    """What `usage`'s tokens cost at `rate` (USD per million tokens). When
+    the iteration reported only a total, every token is priced at the rate's
+    dearest counter -- an upper bound, never a $0."""
+    total = 0.0
+    seen = False
+    for key in RATE_KEYS:
+        tokens = usage.get(key)
+        if state._is_number(tokens) and tokens > 0:
+            seen = True
+            total += tokens * rate.per_mtok(key) / 1_000_000  # type: ignore[attr-defined]
+    if not seen:
+        tokens = state._token_total(usage) or 0
+        top = max(rate.per_mtok(key) for key in RATE_KEYS)  # type: ignore[attr-defined]
+        total = tokens * top / 1_000_000
+    return round(total, 6)
+
+
+def counted_spend(usage: object, model: str | None,
+                  pricing: object) -> tuple[float, dict | None]:
+    """`(amount, unpriced)`: what an iteration counts against a cap. A priced
+    iteration counts `state.iteration_spend`, with `unpriced` None. An
+    unpriced one counts the dearer of that and its tokens at the highest rate
+    `pricing` knows for `model`'s family -- never $0 -- and `unpriced` names
+    the rate used (`None` when the chain holds no rate at all)."""
+    base = state.iteration_spend(usage)
+    if not is_unpriced(usage):
+        return base, None
+    rate = pricing.family_rate(model) if pricing is not None else None
+    if rate is None:
+        return base, {"rate": None, "estimateUSD": base}
+    estimate = estimate_usd(usage, rate)  # type: ignore[arg-type]
+    return max(base, estimate), {"rate": rate_dict(rate), "estimateUSD": estimate}
