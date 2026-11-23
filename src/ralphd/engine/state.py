@@ -771,7 +771,8 @@ def unpause_refusal(run_id: str, status: dict) -> str | None:
 # `TERMINAL_STATES` below -- see `engine.transitions.EXHAUSTED_STATE`/
 # `ALL_STATES` for the same state declared in the transition table, and
 # `cli/web/app.js`'s `RUN_STATE_ORDER` for the third spelling. `resume`
-# leaves it only with a top-up of the named budget.
+# leaves it only with a top-up of the named budget (a `spend:` reason is not
+# lifted by any iterations/time/approaches top-up).
 EXHAUSTED_STATE = "exhausted"
 EXHAUSTED_BUDGETS = ("iterations", "time", "approaches")
 # v0.39 (#321): a spent spend cap holds the run `exhausted` too, with

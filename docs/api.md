@@ -456,7 +456,9 @@ requirement A is the operator's alone (`pausedBy: "operator"`); v0.36 adds
 `awaiting_input` for a judge's findings question (`inputQuestion`);
 v0.36 requirement G adds `exhausted` — the iteration, wall-clock or approach
 budget spent without an operator abort, `verdict: null`, resume-eligible and
-never a member of the terminal set; `exhaustedBudget` names which budget ran out)
+never a member of the terminal set; `exhaustedBudget` names which budget ran out;
+v0.39, #321, adds a spent spend cap as one more cause, named
+`spend:<hat>`, `spend:total` or `spend:<hat>:approach`)
 — there is **no** `degraded` state value, because that would break every consumer's
 terminal-state logic (`ralphctl watch` included). A run that is sitting out an
 infra outage says so with two dedicated fields instead:
