@@ -32,7 +32,7 @@ from ..harness.codex import header_env as codex_header_env
 from ..harness.codex_normalise import CODEX_RAW_ENVELOPE_TYPE, CODEX_STDERR_ENVELOPE_TYPE
 from ..harness.codex_normalise import is_traffic as codex_is_traffic
 from ..harness.normalise import RAW_ENVELOPE_TYPE, RAW_TRAFFIC_KINDS
-from . import state
+from . import spend_caps, state
 from .config import CONTROL_PLANE_ENV_VARS
 from .pricing import OPERATOR_TABLE, PricingSource
 from .privsep import agent_child_kwargs
@@ -170,6 +170,10 @@ class IterationResult:
     # "length"` (the provider cut the reply off at its output-token cap) and
     # carried no text content. The engine classifies it `output_truncated`.
     output_truncated: bool = False
+    # v0.39 (#321, C): True when the runner ended this iteration itself
+    # because its running cost reached a spend cap (`spend_caps.SpendWatch`).
+    # It took the `iteration_timeout_s` kill path, so `timed_out` is set too.
+    spend_interrupted: bool = False
 
     @property
     def last_line(self) -> str:
@@ -216,7 +220,9 @@ class AgentRunner(Protocol):
                   extra_env: dict | None = None,
                   startup_timeout_s: float | None = None,
                   extensions: list[str] | None = None,
-                  hat_tools: list | None = None) -> IterationResult: ...
+                  hat_tools: list | None = None,
+                  spend_watch: spend_caps.SpendWatch | None = None
+                  ) -> IterationResult: ...
 
 
 class _ChildProcessRunner:
@@ -237,6 +243,9 @@ class _ChildProcessRunner:
         # the provider quotes no price of its own (see _accumulate_cost).
         self.pricing = pricing
         self._proc: asyncio.subprocess.Process | None = None
+        # v0.39 (#321, C): the caps of the iteration in flight, None when the
+        # hat carries none (every iteration of a run with no caps).
+        self._spend_watch: spend_caps.SpendWatch | None = None
 
     @property
     def running(self) -> bool:
@@ -295,14 +304,22 @@ class _ChildProcessRunner:
     async def _run_child(self, cmd: list[str], env: dict, prompt: str,
                          transcript: Path, result: IterationResult,
                          timeout_s: float, startup_timeout_s: float | None,
-                         *, model: str | None = None) -> IterationResult:
+                         *, model: str | None = None,
+                         spend_watch: spend_caps.SpendWatch | None = None
+                         ) -> IterationResult:
         """Run `cmd` to completion under the shared ladder and fill `result`.
 
         `model` is the ref the engine requested; the default line hook
         prices against it (or, unpinned, against the model the agent
         reported).
+
+        `spend_watch` (v0.39, #321 C) holds the iteration to its hat's spend
+        caps: the moment the running cost after a folded message reaches
+        one, the pump stops reading (no later message is folded) and the
+        iteration ends through the `timed_out` kill path below.
         """
         _t0 = time.monotonic()
+        self._spend_watch = spend_watch
         self._proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
@@ -352,6 +369,8 @@ class _ChildProcessRunner:
                                                       model=model)
                         if saw_event and not first_traffic.is_set():
                             first_traffic.set()
+                        if result.spend_interrupted:
+                            break
                 # The stream ended (clean EOF, a timeout/interrupt further
                 # down, or the process just dying) -- flush whatever the
                 # last partial batch left unwritten so a reader stopped
@@ -506,6 +525,16 @@ class _ChildProcessRunner:
                     # exactly as the old wait_for did: the caller turns it
                     # into one failed iteration.
                     await pump_task
+                    if result.spend_interrupted:
+                        # v0.39 (#321, C): the pump stopped on a message that
+                        # reached a spend cap while the child is still alive.
+                        # The same kill as the timeout branch below (SIGINT
+                        # the group; `_proc.wait` and the `finally`'s SIGKILL
+                        # follow), the same verdict, and the completion claim
+                        # the child streamed is discarded with it.
+                        result.timed_out = True
+                        result.final_text = ""
+                        self.interrupt()
                 else:
                     result.timed_out = True
                     self.interrupt()
@@ -543,6 +572,7 @@ class _ChildProcessRunner:
                 await self._proc.wait()
             result.exit_code = self._proc.returncode
         finally:
+            self._spend_watch = None
             # whatever went wrong above, never leave an orphaned agent running
             if self._proc is not None and self._proc.returncode is None:
                 try:
@@ -596,6 +626,23 @@ class _ChildProcessRunner:
         `_account_cost`."""
         _scan_assistant_message(msg, result, pricing=pricing, model=model,
                                 account_cost=self._account_cost)
+        self._watch_spend(result, pricing, model)
+
+    def _watch_spend(self, result: IterationResult,
+                     pricing: PricingSource | None,
+                     model: str | None) -> None:
+        """v0.39 (#321, C): after a message's cost is folded, hold the running
+        cost against the hat's caps. The first message that reaches one marks
+        `result.spend_interrupted`; `_run_child` stops reading and kills the
+        iteration. A run whose hat carries no cap has no watch, so nothing
+        here runs."""
+        watch = self._spend_watch
+        if watch is None or result.spend_interrupted:
+            return
+        running = spend_caps.running_spend(result.usage, model or result.model,
+                                           pricing)
+        if watch.observe(running) is not None:
+            result.spend_interrupted = True
 
     def _account_cost(self, usage: dict, result: IterationResult,
                       pricing: PricingSource | None = None,
@@ -639,6 +686,7 @@ class PiRunner(_ChildProcessRunner):
         startup_timeout_s: float | None = None,
         extensions: list[str] | None = None,
         hat_tools: list | None = None,
+        spend_watch: spend_caps.SpendWatch | None = None,
     ) -> IterationResult:
         # `hat_tools` is the `AgentRunner` slot for a harness that wires
         # ralphd's hat tools itself; pi receives them as `extensions`
@@ -673,7 +721,8 @@ class PiRunner(_ChildProcessRunner):
         env = self._child_env(extra_env)
         return await self._run_child(cmd, env, prompt, transcript,
                                      IterationResult(), timeout_s,
-                                     startup_timeout_s, model=model)
+                                     startup_timeout_s, model=model,
+                                     spend_watch=spend_watch)
 
 
 # The wrapper module `ClaudeCodeRunner` spawns, and the in-band signature of
@@ -786,6 +835,7 @@ class ClaudeCodeRunner(_SkillLinker, _ChildProcessRunner):
         startup_timeout_s: float | None = None,
         extensions: list[str] | None = None,
         hat_tools: list | None = None,
+        spend_watch: spend_caps.SpendWatch | None = None,
     ) -> IterationResult:
         # `extensions` are pi's `-e` files; this harness wires hat tools
         # from `hat_tools` instead, so it ignores them.
@@ -832,7 +882,7 @@ class ClaudeCodeRunner(_SkillLinker, _ChildProcessRunner):
             self._raw_path = transcript.with_name(transcript.stem + ".claude.jsonl")
             return await self._run_child(cmd, env, prompt, transcript, result,
                                          timeout_s, startup_timeout_s,
-                                         model=model)
+                                         model=model, spend_watch=spend_watch)
         finally:
             shutil.rmtree(config_dir, ignore_errors=True)
 
@@ -1136,6 +1186,7 @@ class CodexRunner(_SkillLinker, _ChildProcessRunner):
         startup_timeout_s: float | None = None,
         extensions: list[str] | None = None,
         hat_tools: list | None = None,
+        spend_watch: spend_caps.SpendWatch | None = None,
     ) -> IterationResult:
         # `extensions` are pi's `-e` files; this harness wires hat tools
         # from `hat_tools` instead, so it ignores them.
@@ -1187,7 +1238,7 @@ class CodexRunner(_SkillLinker, _ChildProcessRunner):
             self._stderr_log.touch(mode=0o600)
             return await self._run_child(cmd, env, prompt, transcript, result,
                                          timeout_s, startup_timeout_s,
-                                         model=model)
+                                         model=model, spend_watch=spend_watch)
         finally:
             shutil.rmtree(codex_home, ignore_errors=True)
             shutil.rmtree(skills_dir, ignore_errors=True)

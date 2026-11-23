@@ -17,6 +17,7 @@ recorded form, and nowhere else.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from . import state
@@ -275,13 +276,15 @@ def is_unpriced(usage: object) -> bool:
         return False
     if state._list_unpriced_tokens(usage) > 0:
         return True
+    # A subscription iteration is always `costFree`, but only its SDK list
+    # price counts; until that figure arrives (a live iteration, or one killed
+    # before its result) its tokens are unpriced.
+    if usage.get("costBasis") == state.COST_BASIS_SUBSCRIPTION:
+        return not state._is_number(usage.get("listEquivalentUSD"))
     if usage.get("costFree") is True:
         return False
-    if ((usage.get("costPriced") is False or state.is_zero_quote(usage))
-            and usage.get("costDerived") is not True):
-        return True
-    return (usage.get("costBasis") == state.COST_BASIS_SUBSCRIPTION
-            and not state._is_number(usage.get("listEquivalentUSD")))
+    return bool((usage.get("costPriced") is False or state.is_zero_quote(usage))
+                and usage.get("costDerived") is not True)
 
 
 def rate_dict(rate: object) -> dict[str, float]:
@@ -321,3 +324,78 @@ def counted_spend(usage: object, model: str | None,
         return base, {"rate": None, "estimateUSD": base}
     estimate = estimate_usd(usage, rate)  # type: ignore[arg-type]
     return max(base, estimate), {"rate": rate_dict(rate), "estimateUSD": estimate}
+
+
+# ---------------------------------------------------------------------------
+# Mid-iteration interrupt (#321, C): the running cost of a live iteration
+# ---------------------------------------------------------------------------
+
+def running_spend(usage: object, model: str | None, pricing: object) -> float:
+    """What a live iteration has spent so far, from the usage a runner folded
+    after its latest message. A priced iteration is exactly
+    `state.iteration_spend` (pi and codex fold a quoted or derived price per
+    message). An unpriced one -- which is every claude-code iteration until
+    the final SDK result arrives with the list price -- is its tokens so far
+    at the rate the chain holds for `model` (the highest rate of its family
+    when the chain holds none for that very id), never $0. The boundary
+    count of an unpriced iteration uses the family's highest rate, so a cap
+    this figure crosses is a cap the boundary sees crossed as well."""
+    base = state.iteration_spend(usage)
+    if not is_unpriced(usage) or pricing is None:
+        return base
+    rate = pricing.rate_for(model) or pricing.family_rate(model)  # type: ignore[attr-defined]
+    if rate is None:
+        return base
+    return max(base, estimate_usd(usage, rate))  # type: ignore[arg-type]
+
+
+@dataclass
+class SpendWatch:
+    """The caps one live iteration is held against. A runner folds each
+    message's cost into the iteration's usage, then calls `observe` with the
+    running cost; when the hat's prior spend plus that cost reaches a cap the
+    watch records the crossing, emits `spend.interrupted` once and the runner
+    ends the iteration through its `iteration_timeout_s` kill path.
+
+    `caps` is `job.yaml`'s recorded `{level: {hat: {usd, source}}}`; `prior`
+    the counters before this iteration (`{"overall": {name: usd},
+    "per_approach": {name: usd}}`, the current approach's bucket for the
+    second); `emit(event, **fields)` is the run's event writer."""
+
+    caps: dict
+    hat: str
+    prior: dict
+    emit: Callable[..., object] | None = None
+    crossed: SpentCap | None = None
+    overshoot: float = 0.0
+
+    def observe(self, running: float) -> SpentCap | None:
+        """The first cap `prior + running` reaches, or None. Once a cap is
+        crossed the watch keeps that crossing and emits nothing more."""
+        if self.crossed is not None:
+            return self.crossed
+        for level in LEVELS:
+            entries = self.caps.get(level) if isinstance(self.caps, dict) else None
+            if not isinstance(entries, dict):
+                continue
+            counters = self.prior.get(level) if isinstance(self.prior, dict) else None
+            counters = counters if isinstance(counters, dict) else {}
+            for name in dict.fromkeys((self.hat, TOTAL)):
+                usd = _cap_usd(entries.get(name))
+                if usd is None:
+                    continue
+                spend = round(float(counters.get(name) or 0) + running, 6)
+                if spend >= usd:
+                    entry = entries.get(name)
+                    source = entry.get("source") if isinstance(entry, dict) else None
+                    self.crossed = SpentCap(name, level, usd, spend,
+                                            source or "unknown")
+                    self.overshoot = round(spend - usd, 6)
+                    if self.emit is not None:
+                        self.emit("spend.interrupted", hat=name, level=level,
+                                  cap=usd, spend=spend,
+                                  overshoot=self.overshoot,
+                                  source=self.crossed.source,
+                                  iterationHat=self.hat)
+                    return self.crossed
+        return None

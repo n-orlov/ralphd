@@ -3754,6 +3754,10 @@ class LoopSupervisor:
                     extension_kw["hat_tools"] = list(names)
             elif exts := self._hat_extensions(phase):
                 extension_kw["extensions"] = exts
+            # v0.39 (#321, C): a hat that carries a cap (its own or `total`'s)
+            # is held to it while it runs; any other call is unchanged.
+            if watch := self._spend_watch_for(phase):
+                extension_kw["spend_watch"] = watch
             runner = self._runner_for(bundle.harness)
             result = await runner.run(
                 prompt, itdir / "output.jsonl", model=model,
@@ -3918,6 +3922,9 @@ class LoopSupervisor:
             # Optional: only a truncated, text-free final reply records it,
             # so `ralphctl fault` re-derives `output_truncated` from meta.json.
             meta["outputTruncated"] = True
+        if getattr(result, "spend_interrupted", False) is True:
+            # Optional: only an iteration a spend cap ended records it.
+            meta["spendInterrupted"] = True
         if getattr(result, "http_status", None) is not None:
             meta["httpStatus"] = result.http_status
         if getattr(result, "error_type", None):
@@ -6339,6 +6346,23 @@ class LoopSupervisor:
                   or not can_replan else "replan")
         self._emit_spend_exhausted(spent, action, phase=phase)
         raise _SpendCapSpent(spent, action, phase)
+
+    def _spend_watch_for(self, phase: str):
+        """The `SpendWatch` for an iteration of `phase`'s hat: the caps it is
+        subject to, the counters before it (overall, and the current
+        approach's), and the run's event writer. None for a hat with no cap,
+        so a run with no caps passes nothing to the runner."""
+        hat = state.spend_hat(phase)
+        if not spend_caps_mod.has_cap(self.cfg.spend_caps, hat):
+            return None
+        doc = self.run.read_spend()
+        by_approach = doc.get("byApproach") if isinstance(doc.get("byApproach"), dict) else {}
+        bucket = by_approach.get(str(self._spend_approach()))
+        return spend_caps_mod.SpendWatch(
+            caps=self.cfg.spend_caps, hat=hat,
+            prior={"overall": doc.get("overall") or {},
+                   "per_approach": bucket if isinstance(bucket, dict) else {}},
+            emit=self.run.emit)
 
     def _emit_spend_exhausted(self, spent, action: str, *, phase: str) -> None:
         self.run.emit("spend.exhausted", hat=spent.hat, level=spent.level,
