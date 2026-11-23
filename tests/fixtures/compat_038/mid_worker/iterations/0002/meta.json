@@ -1,0 +1,11 @@
+{
+  "approach": 1,
+  "endedAt": "2026-11-20T09:00:00Z",
+  "phase": "worker",
+  "usage": {
+    "costUSD": 0.25,
+    "input": 10,
+    "output": 5,
+    "totalTokens": 15
+  }
+}

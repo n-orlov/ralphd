@@ -3711,6 +3711,30 @@ model and `no price in the pricing chain`, before any run directory exists. A
 `total` cap is refused when any hat of the lineup is unpriceable, naming each.
 A model declared in `pricing: free:` counts as priced.
 
+The engine counts every finished iteration's spend per hat and for `total`, for
+the run and for each approach, in `status.json`'s `spend` key: `costUSD` plus
+the host-derived `costDerivedUSD` plus the list-equivalent price of a
+subscription-billed iteration (`listEquivalentUSD`), so a subscription hat counts
+at what it would cost at list price. The counters persist across `resume`, and a
+0.38 run directory has them rebuilt from its iteration records when the engine
+opens it.
+
+Before every dispatch the engine holds the hat about to run to its own caps and
+`total`'s, at both levels. A spent cap refuses the dispatch: an overall cap, or a
+per-approach cap on the last approach, holds the run `exhausted` with the reason
+`spend:<hat>` (`spend:total`, or `spend:<hat>:approach`), and a per-approach cap
+on any other approach archives that approach and replans. A live iteration on a
+capped hat is also held to its caps while it runs: once its running cost reaches
+a cap the iteration is interrupted (the same kill path as `iteration_timeout`,
+its reply discarded, its files kept) and the dispatch check then finds the cap
+spent. A cap warns at 80 % of itself through `spend.warning`, and `spend.warning`
+and `spend.exhausted` are POSTed to the configured `notifier_url`. A run with no
+caps does none of this and writes no spend event.
+
+`ralphctl budget <run> --spend` / `--spend-approach` lifts or removes a cap, and
+`ralphctl resume <run>` of a spend-`exhausted` run is refused, naming each cap
+still spent, until every cap is above its spend (see `budget` above).
+
 #### Optional host-side pricing map (`pricing:`)
 
 Some gateways bill tokens and report no price at all, which ralphd records as

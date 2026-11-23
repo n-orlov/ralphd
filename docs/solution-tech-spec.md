@@ -1137,7 +1137,10 @@ line it writes.
   `ralphd.cli.versions.compare_versions`, the helper the `claude-code` gate
   also uses; a CLI below the minimum ends the
   iteration in-band as `codex_version_too_old` and a missing one as
-  `codex_cli_not_found`, both classified `refused`.
+  `codex_cli_not_found`, both classified `refused`. A profile that exposes no
+  OpenAI gateway ends it as `codex_gateway_not_configured`, also `refused`, and a
+  `codex` hat routed to a model that is not an OpenAI-family route is refused
+  before iteration 1 (`llm.check_hat_routes`).
 - Both harnesses' `cli_version` tells three probe outcomes apart: a version read
   (compared to the minimum; below it is `*_version_too_old`), no version in the
   output (output present on stdout or stderr with no version in it:
@@ -1255,8 +1258,9 @@ refunded through the infra bucket; a rate-limit wait is credited back to the
 deadline and recorded as `rateLimitWaitTotalS`, separately from
 `infraWaitTotalS`. Raw iterations, charged iterations, and auxiliary model
 calls (router and contract repair, which take no iteration slot) are therefore
-different quantities. A dollar cost report is observational; there is no general
-USD-spend termination cap in this configuration model.
+different quantities. A dollar cost report is observational unless the job
+configures `spend_caps` (v0.39, #321, see "Spend caps" below); a run with no caps
+has no USD-spend termination.
 
 A worker that only re-polls a long-running wait (an uncorroborated
 `no_verdict` progress claim with no tree delta) is backed off from the second
@@ -1269,6 +1273,8 @@ knobs in flight with the same `+N`/`N` grammar: `iterations`, `maxApproaches`,
 `iterationTimeoutS`, `jobDeadlineEpochS`, `curePassCeiling` and
 `rateLimitMaxWaitS` (`ralphctl budget <run> <+N|N>` with `--approaches`,
 `--timeout`, `--iteration-timeout`, `--cure-passes`, `--rate-limit-wait`).
+A further field, `spendCaps`, changes a spend cap (`--spend`, `--spend-approach`,
+below).
 Startup seeds the iteration budget and the rate-limit ceiling from the greater
 of the configured and persisted values, so an operator top-up survives a
 container restart. A `curePassCeiling` change is a top-up for the current
@@ -1451,6 +1457,40 @@ counters persist with the run, so `resume` keeps them, and a new approach starts
 new `byApproach` key while `overall` carries on. A 0.38 run dir has no `spend` key:
 engine start (`RunDir.seed_spend`) rebuilds it from `iterations/NNNN/meta.json`
 with `state.rebuild_spend`, which uses the same per-iteration function.
+
+### Spend caps
+
+`spend_caps` in `job.yaml` (`{overall: {hat: {usd, source}}, per_approach: {...}}`)
+bounds dollars per hat and for `total`, for the run and for one approach
+([`spend_caps.py`](../src/ralphd/engine/spend_caps.py)). The CLI resolves it per
+hat and per level, weakest to strongest: the registry `config.yaml`, the
+template's `job.yaml`, then `--spend-cap HAT=USD` / `--spend-cap-approach HAT=USD`
+(`budget` writes source `budget`). A cap on a hat whose model has no rate in the
+pricing chain is refused at `start` and at `budget`; the engine reads caps from
+`job.yaml` only, and a run with no caps has no `spend_caps` key, no `spend.*`
+event and no status line.
+
+Enforcement runs at two boundaries over the counters above. The dispatch check
+(`LoopSupervisor._enforce_spend_caps`) holds the hat about to run to its own caps
+and `total`'s at both levels. A spent overall cap, or a per-approach cap on the
+last approach, holds the run `exhausted` with `exhaustedBudget` `spend:<hat>`,
+`spend:total` or `spend:<hat>:approach`; a per-approach cap on any other approach
+archives the approach and replans. The interrupt covers an iteration already
+running: the runner (`pi`, `claude-code`, `codex`) holds a live iteration on a
+capped hat to its caps after each assistant message, and the first message whose
+running cost reaches a cap ends it through the iteration-timeout kill path, with
+its reply discarded and its files kept. An iteration that comes back unpriced on
+a capped hat counts at the highest rate the pricing chain knows for the model's
+family, never $0. At 80 % of a cap the engine warns once per cap.
+
+The events are `spend.warning`, `spend.exhausted`, `spend.interrupted` and
+`spend.unpriced`; the first two are also POSTed to `notifier_url`. `GET /status`
+carries `spendCaps` (one entry per capped hat) only when the job has caps, the
+same entries `ralphctl status` and `cost` print, and the hub run page draws one
+bar per cap. `ralphctl budget <run> --spend` / `--spend-approach` tops up, sets or
+removes a cap (`PATCH /config/budget`'s `spendCaps`), and `resume` of a
+spend-`exhausted` run is refused, naming each cap still spent, until every cap is
+above its spend.
 
 ## 10. Steering, amendments, and petitions
 
