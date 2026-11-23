@@ -137,8 +137,11 @@ _DEF_RE = __import__("re").compile(r"^    (?:async )?def (\w+)\(")
 
 _ALLOWED_DISPATCH_OWNERS = {
     "_run_iteration_once",  # the tiered dispatch call site
-    "_ask_router",          # the router's own, pre-existing, untiered call
-    "_ask_contract_fix",    # task 002's contract-repair re-ask
+    # v0.39 (#321): the router's own, untiered call and task 002's
+    # contract-repair re-ask both go through the one capped side-call path,
+    # so the cap check and the live cap watch sit in front of exactly one
+    # `runner.run(`.
+    "_run_side_call",
 }
 
 
