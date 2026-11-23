@@ -102,6 +102,7 @@ from .state import (
     format_last_tool_call,
     last_tool_call,
     prd_path,
+    reached_model,
     record_operator_termination,
     record_steering_settlement,
     task_failure_kind,
@@ -2813,6 +2814,13 @@ class LoopSupervisor:
             self._enforce_spend_caps(phase)
             result = await self._run_iteration_once(phase, extra, prompt_name, tier,
                                                     task_id=task_id)
+            if getattr(result, "spend_interrupted", False) is True:
+                # v0.39 (#321, C.2): the engine's own spend cut. It reached
+                # the model (`reached_model`), so it is never refunded, waited
+                # out or retried here: the caller applies the cap's outcome at
+                # its own boundary (`_run_reflection` records the cut).
+                self._reset_infra_episode()
+                return result
             fault = self._classify_result(result)
             if fault == FAULT_CLASS_RATE_LIMIT:
                 # v0.30 F.2: the subscription's window is exhausted. Refund
@@ -3549,7 +3557,12 @@ class LoopSupervisor:
             interrupted=result.interrupted,
             timed_out=result.timed_out,
             no_traffic_timeout=result.no_traffic_timeout,
-            produced_traffic=billable_tokens(result.usage) > 0,
+            # v0.39 (#321, C): a spend cut reached the model even when the
+            # runner reported its cost with no token counts.
+            produced_traffic=reached_model(
+                result.usage,
+                spend_interrupted=getattr(result, "spend_interrupted",
+                                          False) is True),
             operator_abort=self.operator_abort_requested,
             # Steering 004: the verdict is decided by the flag above; this one
             # only lets `explain_fault` word the reason honestly (an abort that

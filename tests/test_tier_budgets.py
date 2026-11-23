@@ -1125,9 +1125,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.39 task cure-01-03: +12 tests / +1 module (tests/test_spend_
     # reflection.py) -> fast 9633/594, smoke 7852/467; its retry: +3 tests
     # in the same module (live-interrupted reflection records) -> fast
-    # 9636/594, smoke 7855/467.
-    "fast": {"tests": 9636, "modules": 594},
-    "smoke": {"tests": 7855, "modules": 467},
+    # 9636/594, smoke 7855/467; its second retry: +8 tests, no new module
+    # (6 in tests/test_spend_reflection.py, 2 in tests/test_spend_interrupt.py:
+    # a spend cut reported in dollars with no tokens) -> fast 9644/594,
+    # smoke 7863/467.
+    "fast": {"tests": 9644, "modules": 594},
+    "smoke": {"tests": 7863, "modules": 467},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

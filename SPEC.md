@@ -2081,8 +2081,10 @@ message is folded), `SIGINT`s the agent's process group, waits the shutdown grac
 and `SIGKILL`s what is left, and the result carries the timeout verdict (`timedOut`) with a non-zero exit
 code and no reply text, so a completion claim (`verdict` line, whole-plan marker)
 the iteration streamed is never read. The files the agent wrote stay in the
-workspace, and the iteration is a recorded work failure like any timeout (its
-`meta.json` also carries `spendInterrupted: true`). The runner emits
+workspace, and the iteration is a recorded failure like any timeout (its
+`meta.json` also carries `spendInterrupted: true`), charged and never classified
+`infra`, even when the runner reported its cost with no token counts (§8.2's
+`produced_traffic`). The runner emits
 `spend.interrupted` (§5.4) with the capped `hat` (a hat name or `total`), the
 `level`, the `cap`, the `spend` (prior plus running cost at the crossing) and the
 `overshoot` (`spend - cap`). Rule B.2 then applies unchanged at the next
@@ -5099,8 +5101,14 @@ a spent budget is `review -> finishing` on the fault's own guard, ending
 `verdict_gate.retry` events.
 
 `produced_traffic` is derived in `LoopSupervisor._classify_result()` as
-`bool(result.final_text) or bool(result.usage)` — the agent said something, or
-tokens were accounted for.
+`state.reached_model(result.usage, spend_interrupted=...)`: billable tokens
+were accounted for, or a live spend cap cut the iteration (v0.39, #321 C). The
+cut only fires on money the model was paid, and pi can report that money with
+no token counts (`usage.cost.total` alone), so a spend cut is never the
+no-traffic shape step 7 scores as infra: it is never refunded or retried by
+the infra wrapper, and the cap's outcome applies at the boundary (§4.5). `ralphctl
+fault` and `ralphctl iteration` re-derive the same input from `meta.json`'s
+`usage` and `spendInterrupted`.
 
 Step 7 is the interesting default. **An unclassifiable failure that produced
 no traffic at all is treated as infra, because nothing ran.** The alternative

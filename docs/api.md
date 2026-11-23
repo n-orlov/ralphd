@@ -576,7 +576,8 @@ happen; both cases emit a `reflect_skipped` event and print their own
 A run with `spend_caps` (#321) records the same shape when a spend cap withheld
 or cut the reflection: `attempted: false` when a spent cap on `reflect` or
 `total` refused the dispatch, `attempted: true` when a live spend interrupt
-stopped the attempt, with `skipped` naming the cap (e.g. `the spend:total spend
+stopped the attempt (also when the runner reported that attempt's cost with no
+token counts: a spend cut is never treated as an infra fault and retried), with `skipped` naming the cap (e.g. `the spend:total spend
 cap was reached during the reflect iteration, ...`). Neither writes
 `FAILED.md`. A reflection attempt that failed on its own (an outage whose
 retry, or a malformed payload whose contract re-ask, a spent cap refused) keeps

@@ -225,8 +225,10 @@ class _InterruptingRunner(ScriptedRunner):
     worker iteration streams `$cost` per message and is cut off, with the
     `timed_out` verdict, once the watch says a cap is reached."""
 
-    def __init__(self, handlers, per_message: float, messages: int = 3):
+    def __init__(self, handlers, per_message: float, messages: int = 3,
+                 tokens: bool = True):
         super().__init__(handlers)
+        self.tokens = tokens
         self.per_message = per_message
         self.messages = messages
         self.watches: list = []
@@ -242,7 +244,9 @@ class _InterruptingRunner(ScriptedRunner):
         result = IterationResult(exit_code=0)
         result.duration_s = 5.0
         result.final_text = f"working\n{COMPLETE}"
-        result.usage = {"input": 1, "output": 1, "totalTokens": 2, "costUSD": 0.0}
+        n = 1 if self.tokens else 0     # pi can quote dollars with no tokens
+        result.usage = {"input": n, "output": n, "totalTokens": 2 * n,
+                        "costUSD": 0.0}
         for _ in range(self.messages):
             result.usage["costUSD"] = round(
                 result.usage["costUSD"] + self.per_message, 6)
@@ -266,10 +270,11 @@ def _plan(sup, prompt=""):
     return r
 
 
-def _drive(tmp_path, **cfg):
+def _drive(tmp_path, tokens=True, **cfg):
     root = tmp_path / "run"
     sup = _supervisor(root, {"planning": [_plan]}, **cfg)
-    sup.runner = _InterruptingRunner({"planning": [_plan]}, per_message=0.4)
+    sup.runner = _InterruptingRunner({"planning": [_plan]}, per_message=0.4,
+                                     tokens=tokens)
     sup.runner.sup = sup
     RunDir(root=root).update_status(state="starting")
     final = asyncio.run(asyncio.wait_for(sup._run_job_core(), 120))
@@ -312,3 +317,43 @@ def test_after_an_interrupt_a_per_approach_cap_replans_on_a_non_last_approach(tm
     assert status["exhaustedBudget"] == "spend:worker:approach"
     assert sup.runner.calls["worker"] == 2
     assert status["spend"]["overall"]["worker"] == pytest.approx(2.4)
+
+
+def test_a_cost_only_worker_interrupt_is_charged_and_never_retried_as_an_outage(
+        tmp_path):
+    # the cut reported $1.20 and no tokens: it still reached the model, so the
+    # infra wrapper neither refunds nor re-runs it, and the boundary applies
+    # the cap exactly as for a cut that carried tokens
+    sup, final, status, rows = _drive(
+        tmp_path, tokens=False, spend_caps=_caps(overall={"worker": 1.0}),
+        max_approaches=3)
+    assert final == "exhausted", status
+    assert status["exhaustedBudget"] == "spend:worker"
+    assert sup.runner.calls["worker"] == 1
+    assert [e for e in rows if e["type"] == "infra_retry"] == []
+    metas = [json.loads(p.read_text()) for p in sorted(
+        (tmp_path / "run" / "iterations").glob("*/meta.json"))]
+    (cut,) = [m for m in metas if m.get("spendInterrupted") is True]
+    assert cut["phase"] == "worker" and cut["faultClass"] != "infra"
+    assert status["iterationsUsed"] == len(metas)       # nothing refunded
+
+
+def test_a_real_pi_cut_on_dollars_alone_is_classified_as_reaching_the_model(
+        tmp_path):
+    # pi quotes `usage.cost.total` with no token counts; the real watch still
+    # crosses the reflect cap, and the classifier every retry wrapper reads
+    # scores that cut as having reached the model, never as an infra outage
+    stream = [{"type": "message_end", "message": {
+        "role": "assistant", "content": [{"type": "text", "text": f"m{i}"}],
+        "usage": {"cost": {"total": 0.5}}}} for i in range(4)]
+    runner = _runner("pi", tmp_path, _fake_wrapper(tmp_path, stream, linger=True))
+    events: list[dict] = []
+    result = _run(runner, tmp_path, "pi",
+                  _watch(events, _caps(overall={"reflect": 1.0}), hat="reflect"))
+    assert result.spend_interrupted is True
+    assert result.usage["totalTokens"] == 0
+    assert result.usage["costUSD"] == pytest.approx(1.0)
+    (interrupted,) = [e for e in events if e["type"] == "spend.interrupted"]
+    assert interrupted["hat"] == "reflect"
+    sup = _supervisor(tmp_path / "run", {})
+    assert sup._classify_result(result) not in ("infra", None)

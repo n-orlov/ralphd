@@ -439,6 +439,24 @@ def billable_tokens(usage: dict | None) -> int:
     return total
 
 
+def reached_model(usage: dict | None, *, spend_interrupted: bool = False) -> bool:
+    """Whether a finished iteration reached the model: tokens were billed, or
+    a live spend cap cut it (v0.39, #321 C). The cut only fires on money the
+    model was paid, and pi can report that money with no token counts
+    (`usage.cost.total` only), so a cut is never scored as the no-traffic
+    shape `classify_fault` treats as an infra fault."""
+    return billable_tokens(usage) > 0 or spend_interrupted is True
+
+
+def iteration_fault_traffic(detail: dict) -> bool:
+    """`reached_model` re-derived from an iteration's meta.json, so `ralphctl
+    fault` and `ralphctl iteration` read the verdict's traffic input exactly
+    as the engine did (`LoopSupervisor._classify_result`)."""
+    usage = detail.get("usage") if isinstance(detail.get("usage"), dict) else None
+    return reached_model(
+        usage, spend_interrupted=detail.get("spendInterrupted") is True)
+
+
 def is_zero_quote(usage: dict | None) -> bool:
     """True when `usage` carries an *implausible* zero cost (task 049, v0.6).
 
@@ -4496,7 +4514,7 @@ def iteration_detail(run_root: Path, number: int) -> dict | None:
             interrupted=bool(detail.get("interrupted")),
             timed_out=bool(detail.get("timedOut")),
             no_traffic_timeout=bool(detail.get("noTrafficTimeout")),
-            produced_traffic=billable_tokens(usage) > 0,
+            produced_traffic=iteration_fault_traffic(detail),
             **meta_provider_evidence(detail),
         )
         detail["reason"] = derived["reason"]
@@ -10027,7 +10045,7 @@ def fault_explanation(run_root: Path) -> dict:
             interrupted=bool(detail.get("interrupted")),
             timed_out=bool(detail.get("timedOut")),
             no_traffic_timeout=bool(detail.get("noTrafficTimeout")),
-            produced_traffic=billable_tokens(usage) > 0,
+            produced_traffic=iteration_fault_traffic(detail),
             **meta_provider_evidence(detail),
         )
         exp.update(hasFault=True,

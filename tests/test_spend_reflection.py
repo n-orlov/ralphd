@@ -383,3 +383,147 @@ def test_an_operator_abort_keeps_its_veto_over_a_spent_reflect_cap(tmp_path):
         raise AssertionError("the spent reflect cap was not refused")
     assert sup._pending_terminal is not None
     assert sup.run.read_status()["state"] != "exhausted"
+
+
+# -- a live interrupt that reports dollars and no tokens -------------------------
+#
+# pi can report a message's cost with no token counts (`usage.cost.total` only).
+# The live watch still crosses the cap on those dollars, so the cut is the
+# engine's own: it reached the model, it is never an infra fault the retry
+# wrapper refunds and re-raises past `_run_reflection`, and the reflection is
+# recorded `ok: null`, attempted, with no tombstone -- the same lifecycle as an
+# interrupt whose message carried tokens.
+
+def _pi_cost_only_usage(cost: float) -> dict:
+    """The usage pi's own parser folds from a message carrying only a cost."""
+    from ralphd.engine.runner import PiRunner
+
+    probe = IterationResult()
+    line = json.dumps({"type": "message_end", "message": {
+        "role": "assistant", "content": [{"type": "text", "text": "..."}],
+        "usage": {"cost": {"total": cost}}}}).encode()
+    assert PiRunner._scan_line(line, probe)
+    assert probe.usage["totalTokens"] == 0 and probe.usage["costUSD"] == cost
+    return dict(probe.usage)
+
+
+def _cost_only_interrupted(cost):
+    def step(sup, prompt=""):
+        r = _result("", 0.0, timed_out=True, spend_interrupted=True)
+        r.usage = _pi_cost_only_usage(cost)
+        return r
+    return step
+
+
+def _no_infra_handling(sup):
+    """The cut was not read as an outage: no retry, no refund."""
+    assert _events(sup, "infra_retry") == []
+    metas = [json.loads(p.read_text()) for p in sorted(
+        (Path(sup.run.root) / "iterations").glob("*/meta.json"))]
+    cut = [m for m in metas if m.get("spendInterrupted") is True]
+    assert cut and all(m["faultClass"] != "infra" for m in cut), cut
+
+
+def test_a_cost_only_interrupted_reflection_replans_then_exhausts_on_total(
+        tmp_path):
+    # the verifier's probe: approach 1 crosses its per-approach reflect cap
+    # (replan), approach 2 crosses the overall $2.00 total (exhausted)
+    calls = []
+
+    def reflect(sup, prompt=""):
+        calls.append(sup._approach)
+        return _cost_only_interrupted(1.0 if sup._approach == 1 else 1.0)(
+            sup, prompt)
+
+    sup, final, status = _run(
+        tmp_path, {"reflect": [reflect]},
+        spend_caps=_caps(overall={"total": 2.0},
+                         per_approach={"reflect": 1.0}), max_approaches=3)
+    assert calls == [1, 2]
+    assert final == "exhausted" and status["exhaustedBudget"] == "spend:total"
+    actions = [(e["hat"], e["level"], e["action"])
+               for e in _events(sup, "spend.exhausted")]
+    assert actions == [("reflect", "per_approach", "replan"),
+                       ("total", "overall", "exhausted")]
+    _interrupted_record_last(sup, status, "spend:total")
+    assert len(_events(sup, "reflect_skipped")) == 2
+    _no_infra_handling(sup)
+
+
+def _interrupted_record_last(sup, status, reason):
+    record = status["reflect"]
+    assert (record["ok"], record["attempted"], record["error"]) == (
+        None, True, None), record
+    assert f"the {reason} spend cap" in record["skipped"]
+    assert not (sup.run.artifacts_dir / "reflection" / "FAILED.md").exists()
+
+
+def test_a_cost_only_interrupted_reflection_holds_exhausted_on_its_overall_cap(
+        tmp_path):
+    sup, final, status = _run(
+        tmp_path, {"reflect": [_cost_only_interrupted(1.2)]},
+        spend_caps=_caps(overall={"reflect": 1.0}), max_approaches=3)
+    event = _held_exhausted(sup, final, status, "spend:reflect")
+    assert (event["hat"], event["level"], event["spend"]) == (
+        "reflect", "overall", 1.2)
+    assert sup.runner.calls["reflect"] == 1          # not retried as infra
+    assert status["spend"]["overall"]["reflect"] == 1.2
+    _interrupted_record(sup, status, "spend:reflect")
+    _no_infra_handling(sup)
+
+
+def test_a_cost_only_interrupted_reflection_on_the_last_approach_holds_exhausted(
+        tmp_path):
+    sup, final, status = _run(
+        tmp_path, {"reflect": [_cost_only_interrupted(1.2)]},
+        spend_caps=_caps(per_approach={"total": 1.0}), max_approaches=1)
+    _held_exhausted(sup, final, status, "spend:total:approach")
+    assert sup.runner.calls["reflect"] == 1
+    _interrupted_record(sup, status, "spend:total:approach")
+    _no_infra_handling(sup)
+
+
+def test_a_cost_only_interrupted_reflection_on_a_non_last_approach_replans(
+        tmp_path):
+    def reflect(sup, prompt=""):
+        if sup._approach == 1:
+            return _cost_only_interrupted(1.2)(sup, prompt)
+        return _reflected()(sup, prompt)
+
+    sup, final, status = _run(
+        tmp_path, {"reflect": [reflect]},
+        spend_caps=_caps(per_approach={"reflect": 1.0}), max_approaches=2)
+    [event] = _events(sup, "spend.exhausted")
+    assert (event["action"], event["refusedHat"]) == ("replan", "reflect")
+    assert sup.runner.calls["reflect"] == 2          # one per approach
+    assert (final, status["approach"]) == ("succeeded", 2)
+    [skipped] = _events(sup, "reflect_skipped")      # approach 1's cut
+    assert skipped["attempted"] is True
+    _no_infra_handling(sup)
+
+
+def test_a_cost_only_interrupt_under_every_cap_keeps_the_settled_outcome(
+        tmp_path):
+    sup, final, status = _run(
+        tmp_path, {"reflect": [_cost_only_interrupted(0.4)]},
+        spend_caps=_caps(overall={"reflect": 1.0}), max_approaches=3)
+    assert (final, status["state"]) == ("succeeded", "succeeded")
+    assert _events(sup, "spend.exhausted") == []
+    _interrupted_record(sup, status)
+    _no_infra_handling(sup)
+
+
+def test_a_cost_only_spend_cut_is_classified_as_reaching_the_model(tmp_path):
+    # the same rule at the classifier every hat's retry wrapper reads, and at
+    # the re-derivation `ralphctl fault` / `ralphctl iteration` run from meta
+    from ralphd.engine.state import iteration_fault_traffic
+
+    sup = _supervisor(tmp_path / "run", {})
+    cut = _cost_only_interrupted(1.0)(sup)
+    assert sup._classify_result(cut) == "work"
+    cut.spend_interrupted = False                 # the same shape, no cut
+    assert sup._classify_result(cut) == "infra"
+    usage = _pi_cost_only_usage(1.0)
+    assert iteration_fault_traffic({"usage": usage,
+                                    "spendInterrupted": True}) is True
+    assert iteration_fault_traffic({"usage": usage}) is False
