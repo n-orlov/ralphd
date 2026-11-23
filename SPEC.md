@@ -1960,7 +1960,22 @@ run is held against its own caps and `total`'s, overall first and then per
 approach, against the counters `status.json`'s `spend` key holds. A cap is spent
 once its counter has reached it, and a spent cap means the hat is not
 dispatched -- nothing is written for the refused iteration. A run with no caps
-returns at once and writes nothing. What follows depends on the cap:
+returns at once and writes nothing.
+
+"Every dispatch" is every model-bearing call a hat makes, with no hat exempt:
+the first attempt of an iteration, each internal retry of it (the infra-fault
+backoff retry, the rate-limit wait and re-run, the provider-refusal re-run:
+the check runs again before each runner starts, and again right after a paid
+failed attempt, so a retry the failed attempt's own cost made unaffordable is
+neither backed off for nor dispatched), and the uncounted side channels, the
+router's call and the contract re-ask (`_run_side_call`). A side call is held
+to the cap of the hat it belongs to (`router`, or the hat whose payload is
+being repaired) and of `total`, runs under the same live cap watch, and its
+cost is counted into that hat's and the total's spend counters (the
+`"router"` hat's bucket for a router call), at both levels. It is still no work iteration: no
+iteration slot is charged and `iterations_used` does not move. A side call a
+cap interrupts has its answer discarded, and the run takes the spent cap's
+outcome below. What follows depends on the cap:
 
 | cap spent | what the engine does | `exhaustedBudget` |
 |---|---|---|

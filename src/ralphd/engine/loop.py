@@ -2808,6 +2808,11 @@ class LoopSupervisor:
                 self._rate_limit_state[harness] = None
                 if outcome == "abort":
                     return self._preempt_aborted_result(harness)
+            # v0.39 (#321, B.2): every attempt is a dispatch. The attempt
+            # that just failed (an infra fault, a rate-limit wait, a
+            # refusal pause) may itself have spent the cap, so the check
+            # runs again before each runner start, not once per phase.
+            self._enforce_spend_caps(phase)
             result = await self._run_iteration_once(phase, extra, prompt_name, tier,
                                                     task_id=task_id)
             fault = self._classify_result(result)
@@ -2819,6 +2824,9 @@ class LoopSupervisor:
                 self._refund_iteration("infra")
                 self.run.update_status(
                     iterationsUsed=self.iterations_used_charged)
+                # v0.39 (#321): a paid attempt that spent a cap ends here, not
+                # after sitting out the reset it can never use.
+                self._enforce_spend_caps(phase)
                 outcome = await self._wait_out_rate_limit(phase, result.rate_limit)
                 if outcome == "abort":
                     return result
@@ -2831,6 +2839,7 @@ class LoopSupervisor:
                 self._refund_iteration("infra")
                 self.run.update_status(
                     iterationsUsed=self.iterations_used_charged)
+                self._enforce_spend_caps(phase)
                 outcome = await self._pause_for_provider_refusal(phase, result)
                 if outcome == "abort":
                     return result
@@ -2930,6 +2939,9 @@ class LoopSupervisor:
             if self._abort_reason is not None:
                 self.run.emit("log", level="error", message=self._abort_reason)
                 return result
+            # v0.39 (#321): no backoff is sat out for a retry a spent cap
+            # refuses.
+            self._enforce_spend_caps(phase)
             cap_note = f"/{retry_max}" if retry_max is not None else ""
             self.run.update_status(currentIteration={
                 "phase": phase,
@@ -9368,6 +9380,40 @@ class LoopSupervisor:
         meta["appliedTaskId"] = task_id
         atomic_write_json(meta_path, meta)
 
+    async def _run_side_call(self, spend_phase: str, model_hat: str,
+                             prompt: str, transcript, *,
+                             usage_phase: str) -> tuple[str, dict]:
+        """v0.39 (#321): the ONE model call an uncounted channel (the router,
+        the contract re-ask) makes. It is a dispatch like any other, so it is
+        held to the caps exactly like a hat's iteration: the check before the
+        runner starts (`_enforce_spend_caps`, which refuses it with
+        `_SpendCapSpent`), the live cap watch while it runs, and its cost
+        counted into the hat's and the total's spend counters afterwards.
+        None of that touches the iteration budget: no slot is charged and
+        `iterations_used` stays as it was. A call a cap interrupted has its
+        answer discarded, and the run then takes the spent cap's outcome."""
+        self._enforce_spend_caps(spend_phase)
+        model = self.cfg.model_for(model_hat)
+        harness = self.cfg.harness_for(model_hat)
+        runner = self._runner_for(harness)
+        kw = {}
+        if watch := self._spend_watch_for(spend_phase):
+            kw["spend_watch"] = watch
+        result = await runner.run(
+            prompt, transcript, model=model,
+            timeout_s=self.cfg.router_timeout_s, extra_env=current_env(), **kw)
+        if result.usage:
+            self._stamp_billing(result.usage, harness)
+            self._accumulate_usage(result.usage, phase=usage_phase, model=model)
+            self._record_iteration_spend(
+                self._spend_approach(), spend_phase, model, result.usage,
+                self.iterations_used)
+        if getattr(result, "spend_interrupted", False):
+            # The answer of a call a cap cut is not a claim anyone may use.
+            self._enforce_spend_caps(spend_phase)
+            return "", (result.usage or {})
+        return (result.final_text or ""), (result.usage or {})
+
     async def _ask_router(self, prompt: str) -> tuple[str, dict]:
         """The router's own model call (task 018, requirement E): one tiny,
         UNCOUNTED question -- no iteration slot, no `iterations_used`
@@ -9387,16 +9433,9 @@ class LoopSupervisor:
         router_dir.mkdir(parents=True, exist_ok=True)
         self._router_calls += 1
         transcript = router_dir / f"{self._router_calls:04d}.jsonl"
-        model = self.cfg.model_for("router")
-        harness = self.cfg.harness_for("router")
-        runner = self._runner_for(harness)
-        result = await runner.run(
-            prompt, transcript, model=model,
-            timeout_s=self.cfg.router_timeout_s, extra_env=current_env())
-        if result.usage:
-            self._stamp_billing(result.usage, harness)
-            self._accumulate_usage(result.usage, phase="router", model=model)
-        return (result.final_text or ""), (result.usage or {})
+        return await self._run_side_call(
+            "router", "router", prompt, transcript,
+            usage_phase="router")
 
     @staticmethod
     def _extract_validated_fenced_payload(hat: str, final_text: str | None) -> dict | None:
@@ -9524,16 +9563,8 @@ class LoopSupervisor:
             "work, and do not include anything other than the corrected "
             "JSON object itself."
         )
-        model = self.cfg.model_for(hat)
-        harness = self.cfg.harness_for(hat)
-        runner = self._runner_for(harness)
-        result = await runner.run(
-            prompt, transcript, model=model,
-            timeout_s=self.cfg.router_timeout_s, extra_env=current_env())
-        if result.usage:
-            self._stamp_billing(result.usage, harness)
-            self._accumulate_usage(result.usage, phase="contract", model=model)
-        return (result.final_text or ""), (result.usage or {})
+        return await self._run_side_call(
+            hat, hat, prompt, transcript, usage_phase="contract")
 
     async def _one_planning_attempt(self, extra: str):
         """Run ONE `planning` iteration (with `extra` folded into the
