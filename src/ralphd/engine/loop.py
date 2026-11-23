@@ -364,6 +364,7 @@ class LoopSupervisor:
         # counted through (`spend_caps.counted_spend`).
         self._pricing = pricing
         self._spend_exhausted: object = None
+        self._spend_warned: set[str] | None = None
         # One runner per harness. A test that assigns a double to
         # `self.runner` overrides every harness (`_runner_for`). The
         # claude-code runner links the skill sources `place_skills()` uses
@@ -6309,6 +6310,7 @@ class LoopSupervisor:
                               rate=unpriced["rate"], counted=counted,
                               number=number)
         self.run.record_spend(approach, phase, usage, number, amount=amount)
+        self._warn_after_iteration(approach, phase)
 
     def _spend_approach(self) -> int:
         """The approach whose per-approach counters a dispatch is checked
@@ -6362,13 +6364,69 @@ class LoopSupervisor:
             caps=self.cfg.spend_caps, hat=hat,
             prior={"overall": doc.get("overall") or {},
                    "per_approach": bucket if isinstance(bucket, dict) else {}},
-            emit=self.run.emit)
+            emit=self.run.emit,
+            warn=lambda cap, a=self._spend_approach(): self._spend_warn(cap, a))
+
+    @staticmethod
+    def _spend_cap_label(hat: str) -> str:
+        return "the run total" if hat == spend_caps_mod.TOTAL else f"the {hat} hat"
+
+    def _spend_warn(self, cap, approach) -> None:
+        """v0.39 (#321): `spend.warning` the first time a cap's spend reaches
+        80 % of it. Once per cap for an overall one, once per approach for a
+        per-approach one (`spend_caps.warning_key`); the marks persist in
+        status.json (`spendWarned`) so a resumed run does not warn again. The
+        engine then POSTs the same text to the configured notifier, never a
+        reason to stop: no `notifier_url` means no request."""
+        key = spend_caps_mod.warning_key(cap, approach)
+        if self._spend_warned is None:
+            raw = self.run.read_status().get("spendWarned")
+            self._spend_warned = set(raw) if isinstance(raw, list) else set()
+        if key in self._spend_warned:
+            return
+        self._spend_warned.add(key)
+        self.run.update_status(spendWarned=sorted(self._spend_warned))
+        self.run.emit("spend.warning", hat=cap.hat, level=cap.level,
+                      approach=(approach if isinstance(approach, int)
+                                and not isinstance(approach, bool) else 1),
+                      cap=cap.cap, spend=cap.spend,
+                      threshold=spend_caps_mod.WARN_FRACTION,
+                      source=cap.source)
+        scope = "per-approach" if cap.level == "per_approach" else "overall"
+        self._notify_spend(
+            f"spend warning: {self._spend_cap_label(cap.hat)} has spent "
+            f"${cap.spend:.2f} of its ${cap.cap:.2f} {scope} cap "
+            f"({spend_caps_mod.WARN_FRACTION:.0%} reached)")
+
+    def _notify_spend(self, text: str) -> None:
+        """POST a spend event's text through the configured notifier. A
+        failed send is recorded by `send_notification` and ignored here."""
+        try:
+            self._notify(text)
+        except Exception:                             # pragma: no cover
+            log.exception("spend notification failed for run %s",
+                          self.cfg.run_id)
+
+    def _warn_after_iteration(self, approach, phase: str) -> None:
+        """The boundary check for `_spend_warn`: after an iteration's spend
+        is counted, every cap its hat is held against that has reached 80 %."""
+        if not self.cfg.spend_caps:
+            return
+        for cap in spend_caps_mod.warnings_reached(
+                self.cfg.spend_caps, self.run.read_spend(), approach,
+                state.spend_hat(phase)):
+            self._spend_warn(cap, approach)
 
     def _emit_spend_exhausted(self, spent, action: str, *, phase: str) -> None:
         self.run.emit("spend.exhausted", hat=spent.hat, level=spent.level,
                       cap=spent.cap, spend=spent.spend, action=action,
                       refusedHat=state.spend_hat(phase),
                       source=spent.source)
+        scope = "per-approach" if spent.level == "per_approach" else "overall"
+        self._notify_spend(
+            f"spend cap spent: {self._spend_cap_label(spent.hat)} has spent "
+            f"${spent.spend:.2f} of its ${spent.cap:.2f} {scope} cap "
+            f"({action})")
         log.info("spend cap spent: %s %s $%.2f of $%.2f -> %s",
                  spent.level, spent.hat, spent.spend, spent.cap, action)
 

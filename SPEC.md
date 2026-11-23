@@ -1980,8 +1980,26 @@ a top-up lifts every cap above its spend, a plain `resume` is accepted and the
 capped hat is dispatched again (§10.4). Every refused dispatch emits one `spend.exhausted` event (§5.4)
 carrying the capped `hat` (a hat name or `total`), the `level` (`overall` or
 `per_approach`), the `cap`, the `spend` and the `action`: `replan` for the
-per-approach case on a non-last approach, `exhausted` for the other three. A
-refused `reflect` dispatch (the run has already ended) is recorded as
+per-approach case on a non-last approach, `exhausted` for the other three.
+Before a cap is spent it warns: the first time a cap's spend reaches 80 % of it
+(checked after every counted iteration, and on every folded message of a live
+iteration on a capped hat) the engine emits `spend.warning` (§5.4) with the
+capped `hat`, the `level`, the `approach`, the `cap`, the `spend` and the
+`threshold` (`0.8`). It fires once per cap: once for an overall cap, and once
+per approach for a per-approach cap, whose counters restart with each approach.
+The marks are kept in `status.json` (`spendWarned`, written only after a
+warning), so a resumed run does not warn again; a cap raised by `budget
+--spend` is a new cap and warns again at its own 80 %. Two further events, both
+of the capped hat's own cap, are `spend.interrupted` (a live iteration crossed a
+cap) and `spend.unpriced` (an unpriced iteration was counted at the
+family rate), both described below. The engine itself POSTs `spend.warning` and
+`spend.exhausted` to the configured `notifier_url`, through the same
+`send_notification` the `notify` hat tool uses (a `{"text": ...}` JSON body,
+one `notification.sent` or `notification.failed` event per send, §5.4); the text
+names the capped hat (or the run total), the spend, the cap and, for an
+exhaustion, the `action`. With no `notifier_url` no request is made and the run
+carries on; a failed send is recorded and never stops the run. A run with no
+caps emits and sends none of it. A refused `reflect` dispatch (the run has already ended) is recorded as
 `reflect_skipped` and does not change the run's outcome.
 
 Spend against caps is shown on four surfaces, all shaped by one function
@@ -2885,6 +2903,7 @@ The single answer to "what is this run doing". One document, patched field by fi
 | `onComplete` | string | `exit` \| `idle` |
 | `usage` | object | token and cost totals, plus `byPhase`, `byApproach` and `byTier` buckets |
 | `spend` | object \| absent | v0.39 (#321): the spend counters, `{overall: {<hat>: usd, total: usd}, byApproach: {"<n>": {<hat>: usd, total: usd}}}`, in dollars. See §8.6 "What counts as spend". Absent on a run with no finished iteration; a run dir from 0.38 gets it rebuilt at engine start |
+| `spendWarned` | array of strings \| absent | v0.39 (#321): the spend caps already warned about (`spend.warning`, §4.5), one string per cap and approach (`<level>[:<approach>]:<hat>:<cap>`), so a resumed run does not warn twice. Absent until a cap first reaches 80 % |
 | `createdAt` | string | UTC ISO-8601, first status write |
 | `startedAt` | string | when the loop entered `running` in the CURRENT episode; each episode rewrites it |
 | `firstStartedAt` | string | optional; when the run's first episode entered `running`. Written once and never rewritten by a later episode. An engine that resumes a run lacking it writes the run's earliest recorded start (the earliest of the first `events.jsonl` line as the engine found it, every `previousEndings[].startedAt` and `startedAt`, read before the history is trimmed to its cap), or no `firstStartedAt` at all when none is on record, never its own or another later episode's start; absent on a run recorded before the field existed and not yet resumed |
@@ -3699,7 +3718,8 @@ The three `phase_gate.*` events (PRD v0.37 requirement F.1, #313) each carry `pl
 | `reflect_done` | `ok`, `error` | the reflect phase's verdict |
 | `reflect_tombstone_cleared` | `path` | a successful reflect attempt removed a stale `reflection/FAILED.md` left by an earlier one (§12.2) |
 | `reflect_skipped` | `attempted`, `signal`, `reason` | a signal was taking the engine down, so the reflect phase rendered no verdict (§8.4) |
-| `spend.exhausted` | `hat`, `level`, `cap`, `spend`, `action`, `refusedHat`, `source` | v0.39 (#321): a hat was about to be dispatched past a spent spend cap and was not. `hat` is the capped key (a hat or `total`), `level` is `overall` or `per_approach`, `action` is `replan` (a per-approach cap on a non-last approach) or `exhausted` (§4.5). Emitted only on a run with `spend_caps` |
+| `spend.warning` | `hat`, `level`, `approach`, `cap`, `spend`, `threshold`, `source` | v0.39 (#321): a cap's spend first reached 80 % of it (`threshold` is `0.8`), once per overall cap and once per approach for a per-approach cap (§4.5). `hat` is the capped key (a hat or `total`), `level` is `overall` or `per_approach`, `approach` the approach it was reached in. The engine POSTs the same fact to the configured notifier (a `notification.sent`/`notification.failed` event follows). Emitted only on a run with `spend_caps` |
+| `spend.exhausted` | `hat`, `level`, `cap`, `spend`, `action`, `refusedHat`, `source` | v0.39 (#321): a hat was about to be dispatched past a spent spend cap and was not. `hat` is the capped key (a hat or `total`), `level` is `overall` or `per_approach`, `action` is `replan` (a per-approach cap on a non-last approach) or `exhausted` (§4.5). Emitted only on a run with `spend_caps`; the engine also POSTs it to the configured notifier |
 | `spend.unpriced` | `hat`, `model`, `rate`, `counted`, `number` | v0.39 (#321): an iteration on a capped hat came back unpriced and was counted at the highest rate the pricing chain knows for the model's family (`rate`, USD per million tokens per counter), `counted` dollars (§4.5) |
 | `spend.interrupted` | `hat`, `level`, `cap`, `spend`, `overshoot`, `source`, `iterationHat` | v0.39 (#321): a live iteration's running cost plus its hat's prior spend reached a spend cap and the runner ended the iteration through the `iteration_timeout_s` kill path (§4.5). `hat` is the capped key (a hat or `total`), `level` is `overall` or `per_approach`, `spend` is the figure at the crossing, `overshoot` is `spend - cap`, `iterationHat` the hat that was running. Emitted only on a run with `spend_caps`; the next dispatch check then applies B.2 |
 | `budget_changed` | `field`, `previous`, `iterations`\|`maxApproaches`\|`iterationTimeoutS`\|`jobDeadlineEpochS`\|`curePassCeiling`\|`rateLimitMaxWaitS`\|`spendCaps`, `delta`, `iterationsUsed` (`iterations` field only), `source` | a live-engine budget knob was changed in flight via `PATCH /config/budget` -- task 003/#94 (a) widens `field` past `iterations` alone, task 010 (v0.27 requirement C.3) adds `curePassCeiling`, `rateLimitMaxWaitS` is the rate-limit wait ceiling (§8.4), and `spendCaps` (v0.39, #321; carries `previous` and `spendCaps`, the caps before and after, and no `delta`) is a `budget --spend`/`--spend-approach` change |

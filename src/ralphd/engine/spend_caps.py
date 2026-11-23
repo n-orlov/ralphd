@@ -335,6 +335,53 @@ def spent_cap(caps: object, spend: object, approach: object,
     return None
 
 
+WARN_FRACTION = 0.8
+
+
+def warning_key(cap: SpentCap, approach: object) -> str:
+    """What marks `cap` as already warned about: its level, the approach (a
+    per-approach cap warns once in each), its key and its amount, so a cap
+    raised past the warning point warns again at its new 80 %."""
+    where = cap.level
+    if cap.level == "per_approach":
+        where += f":{approach if isinstance(approach, int) else 1}"
+    return f"{where}:{cap.hat}:{cap.cap:g}"
+
+
+def warning_due(spend: float, usd: float) -> bool:
+    """True once `spend` has reached 80 % of `usd`."""
+    return spend >= usd * WARN_FRACTION
+
+
+def warnings_reached(caps: object, spend: object, approach: object,
+                     hat: str) -> list[SpentCap]:
+    """Every cap `hat` is held against (its own and `total`'s, at both
+    levels) whose counter has reached 80 % of it, as `SpentCap`s carrying
+    the counter. Dedup is the caller's (`warning_key`)."""
+    found: list[SpentCap] = []
+    if not isinstance(caps, dict) or not caps:
+        return found
+    doc = spend if isinstance(spend, dict) else {}
+    overall = doc.get("overall") if isinstance(doc.get("overall"), dict) else {}
+    by_approach = (doc.get("byApproach")
+                   if isinstance(doc.get("byApproach"), dict) else {})
+    key = str(approach if isinstance(approach, int)
+              and not isinstance(approach, bool) and approach > 0 else 1)
+    bucket = by_approach.get(key) if isinstance(by_approach.get(key), dict) else {}
+    for lvl, counters in (("overall", overall), ("per_approach", bucket)):
+        entries = caps.get(lvl)
+        if not isinstance(entries, dict):
+            continue
+        for name in dict.fromkeys((hat, TOTAL)):
+            usd = _cap_usd(entries.get(name))
+            spent = float(counters.get(name) or 0)
+            if usd is not None and warning_due(spent, usd):
+                entry = entries.get(name)
+                source = entry.get("source") if isinstance(entry, dict) else None
+                found.append(SpentCap(name, lvl, usd, spent, source or "unknown"))
+    return found
+
+
 def spent_caps(caps: object, spend: object, approach: object) -> list[SpentCap]:
     """Every cap, at either level, whose counter has reached it -- what a
     `resume` of a spend-exhausted run names while it stays refused. The
@@ -454,6 +501,9 @@ class SpendWatch:
     hat: str
     prior: dict
     emit: Callable[..., object] | None = None
+    # `warn(cap)` is told of every cap the running spend has brought to 80 %
+    # (the callee dedups); None for a watch that does not warn.
+    warn: Callable[[SpentCap], object] | None = None
     crossed: SpentCap | None = None
     overshoot: float = 0.0
 
@@ -473,9 +523,12 @@ class SpendWatch:
                 if usd is None:
                     continue
                 spend = round(float(counters.get(name) or 0) + running, 6)
+                entry = entries.get(name)
+                source = entry.get("source") if isinstance(entry, dict) else None
+                if self.warn is not None and warning_due(spend, usd):
+                    self.warn(SpentCap(name, level, usd, spend,
+                                       source or "unknown"))
                 if spend >= usd:
-                    entry = entries.get(name)
-                    source = entry.get("source") if isinstance(entry, dict) else None
                     self.crossed = SpentCap(name, level, usd, spend,
                                             source or "unknown")
                     self.overshoot = round(spend - usd, 6)
