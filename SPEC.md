@@ -123,7 +123,7 @@ SonarQube — arrive as operator-prepared env files that the agent sources on de
 | **R1** | **The environment must not be able to destroy a job.** A fault in the LLM endpoint, the network, or the gateway costs a job wall-clock time and nothing else: it is classified (`faults.classify_fault`), retried in place with escalating backoff against a wall-clock **outage budget**, refunded so it never counts against `iterations`, and it never advances an approach, the no-progress stagnation guard, or a task's `validationAttempts`. | Otherwise a four-minute DNS wobble spends ~40 iterations and 4 of 8 approaches, and the job dies with a timeout message that names nothing. Every phase must be covered (`INFRA_RETRY_PHASES` is all five), because an outage does not care which prompt is running. |
 | **R2** | **Operator-initiated termination is never undone.** An `abort`/`stop` is recorded durably (`operator-termination.json` in the run dir) and is authoritative over every automatic mechanism: `classify_fault(operator_abort=...)` can never call it `"infra"`, the backoff wrapper never re-runs the iteration the operator just stopped, and `doctor --fix` never auto-resumes such a run. | Otherwise a `SIGINT` — which `pi` reports as the bare in-band error `aborted`, textually identical to a provider aborting a stream — reads as a transient fault, and the run the operator deliberately killed sits in backoff or comes back as a fresh container. |
 | **R3** | **The run directory on the host is the source of truth and outlives the container.** `~/.ralphd/runs/<run-id>/` is *always* a bind-mount (at `/run/ralphd`); `status.json`/`tasks.json` are written temp-then-rename; every host-side surface — `status`, `logs`, `runs`, the hub, `repair` — falls back to reading that directory when the API is unreachable, and says so (`"live": false`) rather than erroring. | Otherwise the container's death takes the run's observability with it: 29,720 lines of on-disk transcript with an empty log tail in the UI, `tasks: (none)` next to a 25 KB `tasks.json`, and every post-mortem done by hand in `output.jsonl`. |
-| **R4** | **Every terminal state produces a post-mortem or an explicit record of why it could not.** The optional `reflect` iteration runs exactly once, strictly after the terminal state, through the same retry wrapper; a failure is recorded as `status.json`'s `reflect: {ok: false, error: …}` plus `artifacts/reflection/FAILED.md` and surfaced by `ralphctl status` and the hub. A signal taking the engine down instead records `reflect: {ok: null, attempted, skipped}` — no attempt, no tombstone (§8.4). | Otherwise the analysis of the run silently produces nothing — the one outcome indistinguishable, from outside, from never having asked for it. |
+| **R4** | **Every terminal state produces a post-mortem or an explicit record of why it could not.** The optional `reflect` iteration runs exactly once, strictly after the terminal state, through the same retry wrapper; a failure is recorded as `status.json`'s `reflect: {ok: false, error: …}` plus `artifacts/reflection/FAILED.md` and surfaced by `ralphctl status` and the hub. A signal taking the engine down, a spend cap on `reflect` or `total` (§4.5) that refuses the reflection before it dispatches (`attempted: false`), or a live spend interrupt that stops it mid-attempt (`attempted: true`), instead records `reflect: {ok: null, attempted, skipped}` — no failure verdict, no tombstone (§8.4). A reflection attempt that failed on its own (a paid failure whose retry, or a malformed payload whose contract re-ask, a spent cap refused) is still an ordinary failure, `ok: false` plus `FAILED.md`. Whichever it is, a spent cap then also decides the run's ending. | Otherwise the analysis of the run silently produces nothing — the one outcome indistinguishable, from outside, from never having asked for it. |
 | **R5** | **"Done" is a claim; only verification is a verdict.** The worker's whole-plan `"plan_complete"` verdict (retiring the `<promise>COMPLETE</promise>` marker, v0.14 requirement O) gates entry to review and nothing else; the job succeeds only on the reviewer's own `{"verdict": "verified"}` contract report, and only when no steering is left unconsumed. A budget exhausted before review ever renders a judgement now **holds** — the run enters the non-terminal `exhausted` state with `verdict: null` (v0.24 requirements A–D, #169; named `exhausted` since v0.36) rather than being granted an extra off-budget review or ending terminal `failed`/`unverified` with the work done and nobody having looked at it — and a plan whose only unresolved tasks are `failed` ones is routed to review by the engine rather than left to stagnate (§5.3). | Otherwise a confident agent ends the job, and the two shapes that actually cost operators time recur: a "successful" run nobody re-checked, and a `failed/unverified` run whose work was in fact complete but whose last budgeted iteration went to finishing it instead of reviewing it. |
 | **R6** | **Secrets never reach disk or a transcript.** Credentials arrive as `<name>.env` files, are placed at `~/.creds/*.env` (mode `0600`) by the engine itself, and are never auto-exported into the agent's environment; only file *names* ever reach the run dir, the persisted job config, or a log line. On top of the prompt rule, redaction is **mechanical**: known secret values are scrubbed from `output.jsonl` at write time, from `events.jsonl` at emit time, and again as `GET /logs` serves. The redaction set is memory-only and no route returns it. | Otherwise one `cat` of a cred file, or one `docker inspect` of the engine container, writes a live token into host-visible history permanently — which prompt guidance alone demonstrably does not prevent. Persisting the redaction map to enable a second pass would put every secret on disk next to the transcript it protects, so that is forbidden too. |
 | **R7** | **Unknown cost reads as unknown, never as `$0.0000`.** An iteration with tokens but no provider-quoted price is marked `costPriced: false`; a run total mixing priced and unpriced iterations reads *partial*; an optional host-side pricing map may supply a *derived* cost, which lives in its own `costDerivedUSD` field with its own marker and is never merged into provider-reported `costUSD`. | Otherwise a 102M-token run reads as free, a cheap per-hat models table optimises against zeros, and no surface can distinguish "free" from "unmeasured". |
@@ -189,7 +189,7 @@ rather than rejected, but no part of the current design may assume it arrives.
   suite substitute a stub `docker` on `PATH` with no in-product test hooks.
 - **Agent runtime: `pi`** (`@earendil-works/pi-coding-agent`), spawned once per
   iteration as a subprocess emitting NDJSON events on stdout. Both it and Node are
-  **pinned** in the image (`PI_VERSION=0.84.1`, Node 22 via NodeSource; the `codex` harness's CLI `@openai/codex` is pinned the same way, `CODEX_VERSION=0.156.1`, installed by the same npm step, and the derived-image recipe copies that pin) because npm
+  **pinned** in the image (`PI_VERSION=0.84.1`, Node 22 via NodeSource; the `codex` harness's CLI `@openai/codex` is pinned the same way, `CODEX_VERSION=0.171.0`, installed by the same npm step, and the derived-image recipe copies that pin) because npm
   silently resolves an ancient `pi` when the node engine requirement is unmet — pin
   both and the failure is loud instead of subtle. Single NDJSON lines routinely
   exceed asyncio's 64 KiB default, so the reader is opened with
@@ -609,6 +609,7 @@ out of scope (#319 item 2).
 | `src/ralphd/engine/api.py` | The FastAPI app: every route in §3.1, bearer-token enforcement, the SSE event stream, `GET /logs` tail and live-follow on top of `log_merge`, `PATCH /config/budget`, and the config CRUD that writes into the overlay and re-places creds/skills immediately. |
 | `src/ralphd/engine/faults.py` | `classify_fault()` — a pure function mapping a finished iteration to `"infra"`, `"work"`, `"signal"`, `"rate_limit"`, `"refused"` or `None` (§8.2), with `INFRA_SIGNATURES` and `REFUSED_SIGNATURES` as the two reviewable signature tables (one row per pattern, labelled by family) and the `aborted`/operator carve-out. No engine state. |
 | `src/ralphd/engine/pricing.py` | `PricingMap`: the optional host-side per-million-token rate table with gateway alias globs and declared-free patterns, used *only* when the provider quoted no usable price, producing a cost marked derived and never merged into `costUSD`. `PricingChain` layers the operator map over a built-in table so exactly one of them prices any message, and `resolve_pricing()` builds whichever of the two `price_strategy` asks for (§8.6). |
+| `src/ralphd/engine/spend_caps.py` | Spend caps (#321, §6.2 `spend_caps`): the valid names (`MODEL_HATS` plus `total`) and levels (`overall`, `per_approach`), validation of a block or a `HAT=USD` flag, `resolve()` (registry < template < flag, per hat and per level, each entry stamped with its source), `normalize_recorded()` (the engine's read of `job.yaml`) and the unpriceable check `ralphctl start` runs before any run directory exists. |
 | `src/ralphd/engine/pricing_aws.py` | The shipped AWS Bedrock rate table: canonical per-model USD/Mtok rates, a generated alias map for the gateway spellings, and a machine-readable `AS_OF` date with a `staleness()` verdict. Exposed as a `PricingMap` through `pricing_map()`, so there is one matcher rather than a second resolver, and refreshed by `tools/refresh_bedrock_rates.py`. |
 | `src/ralphd/engine/redact.py` | The mechanical secret scrubber: build the value set from env vars and placed cred files, rebuild it after any creds/llm mutation, keep it in memory only, and expose `scrub_text` to the three write/serve points. `scrub_text` and the `codex` wrapper's mask share `mask_values`, which masks a value however JSON escaping spells it, at any nesting depth (§13.1). Enforces the ≥8-character floor. |
 | `src/ralphd/harness/__init__.py` | The package for agent harnesses other than pi; docstring only. |
@@ -689,7 +690,7 @@ guarantee is tested by `tests/test_plan_phases_no_phase_guard.py` and
 **Stop states.** A run that is not working is in exactly one of four states,
 each with one owner: `paused` (the operator paused it; `ralphctl pause`, the
 hub or `POST /pause`; left by `unpause`), `awaiting_input` (the engine is asking
-the operator a question), `exhausted` (a budget is spent, §4.5) and `running`
+the operator a question), `exhausted` (a budget or a spend cap is spent, §4.5) and `running`
 with `health: degraded` (an infra outage, §8). `awaiting_input` is the one place
 the engine asks about findings. A judge -- `review` or the peer verdict gate --
 that rejects with an unwaived blocking finding parks the run there when a
@@ -789,8 +790,9 @@ surfaced as `GET /config`'s `budgets.routerTimeoutS`); a hang or an
 unrecoverable answer falls back to the state's own declared choice
 (`transitions.fallback_guard`/`ROUTER_FALLBACK`) rather than ever taking an
 edge the table does not list. `LoopSupervisor._ask_router()` is deliberately
-uncounted — no iteration slot, no `iterations_used` increment, no
-`meta.json` — but its cost is not hidden: each call gets its own transcript
+uncounted as work — no iteration slot, no `iterations_used` increment, no
+`meta.json` — but its cost is not hidden (and, since v0.39, it is counted into
+the `router` hat's and `total`'s spend counters and held to their caps, §4.5): each call gets its own transcript
 under `artifacts/router/NNNN.jsonl` (a plain counter, not an iteration
 directory) and its usage folds into `usage.byPhase["router"]` (§4.2) exactly
 like the five hat phases, so a run's model mix and cost are auditable even for
@@ -908,7 +910,8 @@ sibling check: it states the validation errors verbatim and asks ONLY for the
 corrected final payload, never the hat's own task prompt again, so a re-ask
 can fix a payload's shape but can never hand the hat a second bite at doing
 more workspace work. Built directly on `_ask_router`'s own precedent, it is
-uncounted the same way, by the same construction: no iteration slot, no
+uncounted as work the same way, by the same construction (its cost still
+counts against the repaired hat's and `total`'s spend caps, §4.5): no iteration slot, no
 `iterations_used` increment, no `meta.json` (`loop.py` never calls
 `_run_iteration_once` or touches `self.iterations_used` from inside it).
 Each call gets its own transcript under `artifacts/contract/NNNN.jsonl` (a
@@ -1487,6 +1490,7 @@ the run; the run goes on by itself, or ends with a named cause.
 |---|---|---|
 | **No progress**: three consecutive worker iterations make no progress, on any approach, whether or not the approach gained commits (`approachProgressed` on the `log` event records it) | Archives the approach (`approaches/NN/`) and replans on approach + 1 over the same workspace tree: `worker -> replan` on the `stagnation_exhausted` edge, then `planning` | the next approach's `planning` |
 | **No progress with no approach left** | The same archive, then `replan` finds `approach == max_approaches` | `exhausted`, `exhaustedBudget: approaches`, `verdict: null`; `ralphctl resume --approaches +N` continues at the replan |
+| **A spend cap is spent** (§4.5): a hat is about to be dispatched whose own cap or `total`'s has been reached | The hat is not dispatched. An overall cap, or a per-approach cap on the last approach, holds the run; a per-approach cap on any other approach archives it and replans on approach + 1, like a no-progress approach | `exhausted` with `exhaustedBudget: spend:<hat>`, `spend:total` or `spend:<hat>:approach`, `verdict: null`; or the next approach's `planning` |
 | **Exhausted forced split child**: a `superseded` parent's own split child spends its `progressBudget` | The doomed second split is not dispatched; the same archive-and-replan as a no-progress approach | as the two rows above |
 | **Same structural wall twice**: this approach stalled on the blocker signature the previous approach recorded (`blockerSignatures`), and another approach would still follow | Ends `failed` instead of spending an approach on the same wall; with no approach left the run holds `exhausted` instead | `failed` (a successor approach was left) or `exhausted` |
 | **Dependency cycle** among actionable tasks, or an actionable task's `dependsOn` naming an id that is not in the plan (first graph fault on this approach) | An uncharged replan of the SAME approach, the way `empty_plan` is: `worker -> replan` on `unschedulable_task_graph`, `replan -> planning` on `graph_fault_excluded_from_charge`; the planning prompt names the offending edges and the tasks blocked behind them. `graphFaultApproaches` on status.json records the approach and a `graph_fault` event is emitted | `planning` on the same approach number, `health: degraded` |
@@ -1922,7 +1926,8 @@ the current usage or above, and the change is recorded as a `budget_changed` eve
 Spending the iteration budget, the job deadline or the approach budget moves the
 run to the non-terminal `exhausted` state (§5.2) with `verdict: null`, a
 `reason` that opens `exhausted: <budget> n/m`, and `exhaustedBudget` set to
-`iterations`, `time` or `approaches` respectively. The plain out-of-budget shape
+`iterations`, `time` or `approaches` respectively (a spent spend cap holds the
+same way with a `spend:` reason, below). The plain out-of-budget shape
 (`_finish_tail_unverified`'s `self._budget_exhausted_tail`, set by every
 `if not self.budget_left(): return ("tail",)` guard that is not already a
 review-specific hold) calls `_finish_exhausted()` with `iterations` when the
@@ -1947,7 +1952,166 @@ held at (`_resume_point` over the run directory, a fresh window), for
 `ralphctl status`, `ralphctl runs` and the hub show the state as
 `exhausted (<budget>)`; the hub offers no top-up control, that stays on the CLI.
 A run directory written by 0.35 that held at the deadline loads as `exhausted`
-(§5.2). The structural tails that are not a
+(§5.2).
+
+**A spent spend cap holds the run `exhausted` too, with a reason that names the
+cap (v0.39, #321).** A job's `spend_caps` (`job.yaml`, §8.6) are checked
+before EVERY dispatch, at the one call every hat goes through
+(`LoopSupervisor.run_iteration`, via `_enforce_spend_caps`): the hat about to
+run is held against its own caps and `total`'s, overall first and then per
+approach, against the counters `status.json`'s `spend` key holds. A cap is spent
+once its counter has reached it, and a spent cap means the hat is not
+dispatched -- nothing is written for the refused iteration. A run with no caps
+returns at once and writes nothing.
+
+"Every dispatch" is every model-bearing call a hat makes, with no hat exempt:
+the first attempt of an iteration, each internal retry of it (the infra-fault
+backoff retry, the rate-limit wait and re-run, the provider-refusal re-run:
+the check runs again before each runner starts, and again right after a paid
+failed attempt, so a retry the failed attempt's own cost made unaffordable is
+neither backed off for nor dispatched; that check comes ahead of every infra
+stop the same attempt may also reach -- the explicit retry limit, the outage
+budget, the broken-environment carve-out -- and ahead of handing a paid
+instant failure back to the phase's own retry, so a cap that attempt spent
+ends the run `exhausted` with its spend reason, or archives the approach and
+replans, never as an infra abort), and the uncounted side channels, the
+router's call and the contract re-ask (`_run_side_call`). A side call is held
+to the cap of the hat it belongs to (`router`, or the hat whose payload is
+being repaired) and of `total`, runs under the same live cap watch, and its
+cost is counted into that hat's and the total's spend counters (the
+`"router"` hat's bucket for a router call), at both levels. It is still no work iteration: no
+iteration slot is charged and `iterations_used` does not move. A side call a
+cap interrupts has its answer discarded, and the run takes the spent cap's
+outcome below. What follows depends on the cap:
+
+| cap spent | what the engine does | `exhaustedBudget` |
+|---|---|---|
+| **overall**, on a hat | the run holds `exhausted` exactly as the iteration budget holds it (`_finish_exhausted`) | `spend:<hat>` |
+| **overall**, on `total` | the same | `spend:total` |
+| **per approach**, not the last approach | the approach is archived (`approaches/NN/`) and the run replans as approach + 1 through the same `stagnation_exhausted` edge into `replan` a stalled approach takes (`replan -> planning` follows), from whichever step was about to dispatch: `planning`, `worker`, `review` and the peer verdict gate declare that edge themselves, and `steer`, the peer plan review and `verify` carry it as an engine-only edge (`transitions.ENGINE_EDGES`, never offered to a hat or the router). The next approach's per-approach counters start at zero while the overall counters carry on | none, the run goes on |
+| **per approach**, last approach (`approach == max_approaches`) | the run holds `exhausted` | `spend:<hat>:approach` (`spend:total:approach` for `total`) |
+
+The hold's `reason` opens `exhausted: spend:<hat>` and names the level, the hat,
+the spend and the cap; `ralphctl status` shows `exhausted (spend:<hat>)`. A
+`resume` without lifting the spent cap is refused (exit `2`): `resume` compares
+the `spend_caps` in the run's `job.yaml` with the counters in `status.json` and,
+while any cap (either level; the per-approach caps against the current
+approach's counters) is still spent, names each such cap with its spend and the
+`ralphctl budget <run> --spend` / `--spend-approach` command that lifts it. Once
+a top-up lifts every cap above its spend, a plain `resume` is accepted and the
+capped hat is dispatched again (§10.4). Every refused dispatch emits one `spend.exhausted` event (§5.4)
+carrying the capped `hat` (a hat name or `total`), the `level` (`overall` or
+`per_approach`), the `cap`, the `spend` and the `action`: `replan` for the
+per-approach case on a non-last approach, `exhausted` for the other three.
+Before a cap is spent it warns: the first time a cap's spend reaches 80 % of it
+(checked after every counted iteration, and on every folded message of a live
+iteration on a capped hat) the engine emits `spend.warning` (§5.4) with the
+capped `hat`, the `level`, the `approach`, the `cap`, the `spend` and the
+`threshold` (`0.8`). It fires once per cap: once for an overall cap, and once
+per approach for a per-approach cap, whose counters restart with each approach.
+The marks are kept in `status.json` (`spendWarned`, written only after a
+warning), so a resumed run does not warn again; a cap raised by `budget
+--spend` is a new cap and warns again at its own 80 %. Two further events, both
+of the capped hat's own cap, are `spend.interrupted` (a live iteration crossed a
+cap) and `spend.unpriced` (an unpriced iteration was counted at the
+family rate), both described below. The engine itself POSTs `spend.warning` and
+`spend.exhausted` to the configured `notifier_url`, through the same
+`send_notification` the `notify` hat tool uses (a `{"text": ...}` JSON body,
+one `notification.sent` or `notification.failed` event per send, §5.4); the text
+names the capped hat (or the run total), the spend, the cap and, for an
+exhaustion, the `action`. With no `notifier_url` no request is made and the run
+carries on; a failed send is recorded and never stops the run. A run with no
+caps emits and sends none of it. Reflection is a dispatch like any other and takes the same outcome
+rules (below), even though the job has already settled its own outcome before it
+runs: a spent cap on `reflect` or `total` refuses the reflection (recorded as
+`reflect_skipped` with `attempted: false` and the spend cap as its reason, and no
+`FAILED.md`), a live spend interrupt that stops it mid-attempt is recorded the
+same way with `attempted: true` (the interrupted attempt is the engine's own
+kill, not a reflection failure, so no `FAILED.md` and no contract re-ask), and a
+reflection attempt that failed on its own before a spent cap refused its retry
+or re-ask keeps its ordinary failure record (`ok: false`, `FAILED.md`). In every
+case the cap's action then replaces the settled outcome -- the run
+holds `exhausted` with `spend:<hat>`, `spend:total` or `spend:<hat>:approach` (an
+overall cap, or a per-approach cap on the last approach), or archives the
+approach and replans (a per-approach cap on any other approach, after which the
+job loop runs again and the new approach is reflected on within its own
+counters). A refused reflection is never read as a success that merely skipped
+its post-mortem. An operator abort keeps its veto over a spent reflect cap.
+
+Spend against caps is shown on four surfaces, all shaped by one function
+(`engine/spend_caps.py`), so the figures agree. `ralphctl status` prints a
+`spend caps:` block with one line per capped hat (and `total`), e.g.
+`review  $38.10 / $150 overall · $12.40 / $50 this approach` (spend / cap; a
+level with no cap is left out). `status --json` and `GET /status` carry the
+same figures as `spendCaps`, one `{hat, notional, overall, perApproach, line}`
+entry per capped hat, each level `{cap, spend, source}` or `null`. A hat whose
+route bills nothing per token counts its list-equivalent price, so its line
+ends `(notional, list-equivalent)` and its entry has `notional: true`; `total`
+is notional when any hat is. `ralphctl cost` prints a `spend caps:` group with
+each cap beside its spend, overall and then per approach (`spendCaps` entries
+`{hat, notional, overall, approaches}` in `--json`). A run with no caps prints
+none of it and carries no `spendCaps` key.
+
+An iteration that comes back **unpriced** on a capped hat -- tokens billed that
+nothing priced (`state` marks it: `costPriced: false`, an implausible zero quote,
+`listEquivalentUnpricedTokens`, or a subscription iteration with no
+list-equivalent figure) -- is never counted as $0. It counts at the dearer of its
+own recorded spend and its tokens at the highest rate the pricing chain knows
+for the model's family (`PricingChain.family_rate`: the family is the vendor
+token of the aliased model id, a rate's height is its output then input price, and a
+family the chain does not know falls back to the highest rate it holds), and the
+engine emits `spend.unpriced` with the `hat`, the `model` and the `rate` used. A
+`total` cap counts every hat this way. A route the operator declared `free:` is
+priced at $0 by declaration.
+
+**A live iteration that crosses a cap is interrupted (iteration lifecycle).** The
+check before a dispatch (above) cannot see money an iteration spends while it
+runs, so each runner also holds a live iteration to its hat's caps. The engine
+hands the runner a `SpendWatch` -- the caps the hat is subject to (its own and
+`total`'s, at both levels), the counters before the iteration (overall, and the
+current approach's) and the run's event writer -- only for a hat that carries a
+cap; any other iteration, and every iteration of a run with no caps, runs
+exactly as before. After each assistant message the runner folds into the
+iteration's usage, it adds the **running cost** to the hat's prior spend and
+compares the sum with every cap, overall before per-approach, the hat's own
+before `total`'s; a cap is crossed once the sum reaches it, the same rule as the
+dispatch check. The first message that does so ends the iteration through the
+`iteration_timeout_s` kill path: the runner stops reading its stream (no later
+message is folded), `SIGINT`s the agent's process group, waits the shutdown grace
+and `SIGKILL`s what is left, and the result carries the timeout verdict (`timedOut`) with a non-zero exit
+code and no reply text, so a completion claim (`verdict` line, whole-plan marker)
+the iteration streamed is never read. The files the agent wrote stay in the
+workspace, and the iteration is a recorded failure like any timeout (its
+`meta.json` also carries `spendInterrupted: true`), charged and never classified
+`infra`, even when the runner reported its cost with no token counts (§8.2's
+`produced_traffic`). The runner emits
+`spend.interrupted` (§5.4) with the capped `hat` (a hat name or `total`), the
+`level`, the `cap`, the `spend` (prior plus running cost at the crossing) and the
+`overshoot` (`spend - cap`). Rule B.2 then applies unchanged at the next
+boundary: the iteration's cost is counted, the dispatch check finds the cap
+spent, and the run ends `exhausted` (an overall cap, or a per-approach cap on the
+last approach) or archives the approach and replans (a per-approach cap on any
+other approach). For the post-terminal `reflect` iteration the boundary is the
+one right after it (no dispatch follows): an interrupted reflection, or one that
+overshot a cap on `reflect` or `total`, applies those rules in place of the
+outcome the job had settled, never promoting that outcome (`succeeded`,
+`failed`) as if nothing had happened; the same holds when a spent cap refuses
+one of the reflection's own internal retries or contract re-asks. An interrupted
+reflection records `reflect: {ok: null, attempted: true, skipped}` naming the
+cap, never `ok: false` or `FAILED.md`; if the counted cost turns out to leave
+every cap unspent at that boundary, the record stays the same (naming "a spend
+cap") and the settled outcome stands. How the running cost is measured differs per runner, because
+each one's cost arrives differently:
+
+| runner | running cost after a message |
+|---|---|
+| `pi` (`PiRunner`) | the cost the iteration has folded so far: the price the gateway quoted on each `message_end` (`costUSD`), or the host-side derivation from that message's tokens when it quoted none (`costDerivedUSD`) |
+| `codex` (`CodexRunner`) | the same fold: a model with a rate in the operator's `pricing:` map adds its derived price to `costUSD`, a model only a built-in table prices adds to `costDerivedUSD`; a `free:` route adds $0 |
+| `claude-code` (`ClaudeCodeRunner`) | the tokens folded so far, priced through the pricing chain: the SDK's list price (`listEquivalentUSD`) arrives only once, in the final result, so mid-iteration the figure is the iteration's tokens at the chain's rate for the model (the highest rate of its family when the chain has none for that id). An iteration the interrupt kills never gets the SDK figure, so the boundary counts it as an unpriced iteration (above), at the family's highest rate, which is never below the running figure that crossed the cap |
+
+A run whose hat has no cap, a stream that never reaches its cap, and a model the
+chain cannot price at all (a running cost of $0 until the boundary) change
+nothing about the iteration. The structural tails that are not a
 budget (a repeated blocker signature, the
 contract-violation-once-budget-is-also-gone branch) never set the flag and
 still fail. A judge verdict that arrives after the budget ran out -- the
@@ -2775,16 +2939,18 @@ The single answer to "what is this run doing". One document, patched field by fi
 | `verdict` | string \| null | `verified` \| `verified-with-residuals` \| `unverified` \| `unreviewed`; `null` until terminal, and also the value while `state` is the non-terminal `exhausted` hold (a budget exhaustion does not end the approach terminal, see §4.5) -- `verified-with-residuals` (task 012, requirement D.3) is review's own VERIFIED edge written instead of plain `verified` when the settled findings channel carries at least one `severity: "residual"` finding (`LoopSupervisor._review_success_verdict_label`), so a clean approach still reads `verified`; `unverified` is the ordinary negative (review ran and rejected with no approach/budget left, or the run was aborted). A deadline that lands mid-review (self-loop exhaustion) used to write `unreviewed` here too; v0.24 task 009 (requirement B.2, #169) carved that case out to carry `null` instead (`reason` still reads `"deadline during review"`), because the run is resumable and a resumed review may still render a real verdict -- `unreviewed` is written by exactly THREE cases, all in `_finish_tail_unverified` and all reached only when the iteration/wall-clock budget is ALSO exhausted at that point: (a) review ran to completion and its own contract ladder never got a readable verdict claim out of the hat (`LoopSupervisor._review_contract_unrepaired`, GH #209 defect 2), so `reason` reads `"review never produced a parseable contract payload; no verdict was ever scored"` (or names the spent outage budget), since a run with budget left instead retries review -- its `judge_retry_max` judge retries first, then under the infra outage budget (v0.36 F.3) -- and ends `unreviewed` the same way once that budget is spent; (b) #300: review rendered `verified`, but the peer verdict gate produced no verdict at all across its first attempt and every `judge_retry_max` retry (`output_truncated` or `empty_reply`, `LoopSupervisor._park_judge_no_verdict`, §8.4), so `reason` names the gate (`"verdict_gate: no verdict: output truncated, and no budget or wall clock remained to ask again; review's verdict is unchanged and no rejection was recorded"`, or `no verdict: empty reply`), since a run with budget left instead retries the gate under the infra outage budget (v0.36 F.3), and ends `unreviewed` the same way once that budget is spent. and (c) #300: the review hat itself produced no verdict (`stopReason: length` with no text, or an exhausted contract ladder of empty replies, on its first attempt and every `judge_retry_max` retry, `LoopSupervisor._park_judge_no_verdict`, §8.4), so `reason` names review (`"review: no verdict: output truncated, and no budget or wall clock remained to ask again; no rejection was recorded and the recorded review verdict is unchanged"`), since a run with budget left instead retries review under the same outage budget, ending `unreviewed` once it is spent. In cases (b) and (c) the recorded review verdict is left as it is and `gateRejectionEnding` reads `"no_verdict_output_truncated"`: this `unreviewed` is a judging hat's silence, never a rejection. Either way `reason` is not a real rejection reason, and neither writer overrides an actual operator abort (which keeps `unverified`) |
 | `pendingTerminalState` | string | present only while `state` is `finishing`: the terminal state this run is going to become once the reflect window closes (§12.2) |
 | `reason` | string | why a non-succeeded run ended, including the `exhausted` hold's own note (§4.5); **episode-scoped** like `endedAt` |
-| `exhaustedBudget` | string | present only while `state` is `exhausted`: `iterations`, `time` or `approaches`, the budget that ran out; `ralphctl resume` needs a top-up of exactly that budget (§4.5); removed when the run resumes |
+| `exhaustedBudget` | string | present only while `state` is `exhausted`: `iterations`, `time` or `approaches`, the budget that ran out, for which `ralphctl resume` needs a top-up of exactly that budget; or (v0.39, #321) `spend:<hat>`, `spend:total` or `spend:<hat>:approach`, the spend cap that was spent (an overall cap on a hat, the overall `total` cap, a per-approach cap on the last approach), for which `ralphctl resume` is refused, naming each cap still spent with its spend, until `ralphctl budget <run> --spend` or `--spend-approach` lifts it (§4.5, §10.4); no `--iterations`/`--timeout`/`--approaches` top-up lifts it; removed when the run resumes |
 | `ending` | string | present only on a run that ended `failed` for a named structural cause rather than a verdict (v0.36 requirement F). `"unschedulable_task_graph"`: a second `dependsOn` cycle or unresolvable edge on the same approach, after the uncharged replan the first one took (§4.2). The rate-limit-ceiling ending: the rate-limit waiting ceiling was reached (§4.2, §8.4); `ralphctl resume --rate-limit-wait +N` resumes it. The refusal ending: the provider refused an iteration (§4.2, §8.2); fix the LLM profile or credentials (`PUT /config/llm`), then `ralphctl resume`. The identifier table in the compatibility text below spells both values. Cleared when a new episode starts (`ralphctl resume`). Absent otherwise |
 | `graphFaultApproaches` | array | `[<approach>, ...]` -- the approaches that already took the uncharged graph-fault replan (v0.36 requirement F.2, §4.2), written by `_self_heal_graph_fault` so a fresh process sees it: a second graph fault on an approach listed here ends the run `failed` with `ending: "unschedulable_task_graph"`. Absent for a run that never had a graph fault |
 | `termination` | object \| null | present only for the CURRENT episode, and only once it was told to stop: `{class, action, at, signal, reason, evidence}`, where `class` is `operator` (someone asked through `POST /abort`) or `self-inflicted` (a signal reached the engine and nobody claimed it — §4.6). `evidence` is the last tool call before the signal (`{iteration, tool, args, transcript}`) or `null`. Task 005 (#173): a resume that opens a fresh episode folds the SUPERSEDED episode's `termination` into the matching `previousEndings` entry (below) and **removes the top-level key outright** (not `null`: a presence test is how consumers ask "was this run told to stop?"), so a run stopped by an operator and then resumed into a clean ending carries no `termination` key at all, and a `--json` consumer/the hub/any future classifier reading a terminal run's `termination` is reading the CURRENT episode's own record, never a stale one two episodes old |
-| `reflect` | object | `{ok, error, endedAt}` — the post-terminal reflect phase's own verdict; `error` is `null` when it produced a report, and a failure also leaves `artifacts/reflection/FAILED.md`. `ok: null` with `{attempted, skipped}` instead means a signal was already taking the engine down, so the phase produced no verdict and no tombstone was written (§8.4) |
+| `reflect` | object | `{ok, error, endedAt}` — the post-terminal reflect phase's own verdict; `error` is `null` when it produced a report, and a failure also leaves `artifacts/reflection/FAILED.md`. `ok: null` with `{attempted, skipped}` instead means the engine itself withheld or cut the attempt -- a signal was already taking the engine down, a spent cap on `reflect`/`total` refused the dispatch (`attempted: false`), or a live spend interrupt stopped it (`attempted: true`, §4.5) -- so the phase produced no verdict and no tombstone was written (§8.4) |
 | `unconsumedSteering` | array | steering files still pending at the terminal write |
 | `steerSettled` | object \| null | the most recent `steer` hat iteration's own `settled` claim: `{settled, at, notes}`; `null` until the first `steer` iteration runs. `settled` is a harness-observable fact SEPARATE from `done` (task 013, requirement I, #98) -- it means only "the hat processed this iteration's pending steering message(s) and applied its changes to the plan", never a claim about whether the tasks it inserted or changed will pass. That verdict is read off those tasks' own `status` plus their `origin: "steer"` marker (`tasks[].origin`, §5.3) -- the exit gate (R11 below) waits on THAT, never on this field |
 | `deadlineBeatVerdict` | object \| absent | present only on a `failed`/`unverified` terminal write where every task was done, `COMPLETE` was already honoured, and review never rendered a verdict because the deadline took the last attempt (v0.10 requirement B, #72): `{deadline, completeHonouredAt}`, naming the wall-clock deadline and the `ts` of the honoured `COMPLETE` event -- see §4.2 |
 | `onComplete` | string | `exit` \| `idle` |
 | `usage` | object | token and cost totals, plus `byPhase`, `byApproach` and `byTier` buckets |
+| `spend` | object \| absent | v0.39 (#321): the spend counters, `{overall: {<hat>: usd, total: usd}, byApproach: {"<n>": {<hat>: usd, total: usd}}}`, in dollars. See §8.6 "What counts as spend". Absent on a run with no finished iteration; a run dir from 0.38 gets it rebuilt at engine start |
+| `spendWarned` | array of strings \| absent | v0.39 (#321): the spend caps already warned about (`spend.warning`, §4.5), one string per cap and approach (`<level>[:<approach>]:<hat>:<cap>`), so a resumed run does not warn twice. Absent until a cap first reaches 80 % |
 | `createdAt` | string | UTC ISO-8601, first status write |
 | `startedAt` | string | when the loop entered `running` in the CURRENT episode; each episode rewrites it |
 | `firstStartedAt` | string | optional; when the run's first episode entered `running`. Written once and never rewritten by a later episode. An engine that resumes a run lacking it writes the run's earliest recorded start (the earliest of the first `events.jsonl` line as the engine found it, every `previousEndings[].startedAt` and `startedAt`, read before the history is trimmed to its cap), or no `firstStartedAt` at all when none is on record, never its own or another later episode's start; absent on a run recorded before the field existed and not yet resumed |
@@ -3598,8 +3764,12 @@ The three `phase_gate.*` events (PRD v0.37 requirement F.1, #313) each carry `pl
 | `reflect_infra_delay` | `phase`, `delayS`, `error`, `budgetS` | reflect waits before its first attempt because the job just died on an infra fault |
 | `reflect_done` | `ok`, `error` | the reflect phase's verdict |
 | `reflect_tombstone_cleared` | `path` | a successful reflect attempt removed a stale `reflection/FAILED.md` left by an earlier one (§12.2) |
-| `reflect_skipped` | `attempted`, `signal`, `reason` | a signal was taking the engine down, so the reflect phase rendered no verdict (§8.4) |
-| `budget_changed` | `field`, `previous`, `iterations`\|`maxApproaches`\|`iterationTimeoutS`\|`jobDeadlineEpochS`\|`curePassCeiling`\|`rateLimitMaxWaitS`, `delta`, `iterationsUsed` (`iterations` field only), `source` | a live-engine budget knob was changed in flight via `PATCH /config/budget` -- task 003/#94 (a) widens `field` past `iterations` alone, task 010 (v0.27 requirement C.3) adds `curePassCeiling`, and `rateLimitMaxWaitS` is the rate-limit wait ceiling (§8.4) |
+| `reflect_skipped` | `attempted`, `signal`, `reason` | a signal was taking the engine down, or a spend cap on `reflect` or `total` refused the reflection (`attempted: false`) or interrupted it mid-attempt (`attempted: true`; `signal` is null in both; §4.5), so the reflect phase rendered no verdict (§8.4) |
+| `spend.warning` | `hat`, `level`, `approach`, `cap`, `spend`, `threshold`, `source` | v0.39 (#321): a cap's spend first reached 80 % of it (`threshold` is `0.8`), once per overall cap and once per approach for a per-approach cap (§4.5). `hat` is the capped key (a hat or `total`), `level` is `overall` or `per_approach`, `approach` the approach it was reached in. The engine POSTs the same fact to the configured notifier (a `notification.sent`/`notification.failed` event follows). Emitted only on a run with `spend_caps` |
+| `spend.exhausted` | `hat`, `level`, `cap`, `spend`, `action`, `refusedHat`, `source` | v0.39 (#321): a hat was about to be dispatched past a spent spend cap and was not. `hat` is the capped key (a hat or `total`), `level` is `overall` or `per_approach`, `action` is `replan` (a per-approach cap on a non-last approach, from any step), or `exhausted`, whichever hat was refused, the post-terminal `reflect` included (§4.5). Emitted only on a run with `spend_caps`; the engine also POSTs it to the configured notifier |
+| `spend.unpriced` | `hat`, `model`, `rate`, `counted`, `number` | v0.39 (#321): an iteration on a capped hat came back unpriced and was counted at the highest rate the pricing chain knows for the model's family (`rate`, USD per million tokens per counter), `counted` dollars (§4.5) |
+| `spend.interrupted` | `hat`, `level`, `cap`, `spend`, `overshoot`, `source`, `iterationHat` | v0.39 (#321): a live iteration's running cost plus its hat's prior spend reached a spend cap and the runner ended the iteration through the `iteration_timeout_s` kill path (§4.5). `hat` is the capped key (a hat or `total`), `level` is `overall` or `per_approach`, `spend` is the figure at the crossing, `overshoot` is `spend - cap`, `iterationHat` the hat that was running. Emitted only on a run with `spend_caps`; the next dispatch check then applies B.2 |
+| `budget_changed` | `field`, `previous`, `iterations`\|`maxApproaches`\|`iterationTimeoutS`\|`jobDeadlineEpochS`\|`curePassCeiling`\|`rateLimitMaxWaitS`\|`spendCaps`, `delta`, `iterationsUsed` (`iterations` field only), `source` | a live-engine budget knob was changed in flight via `PATCH /config/budget` -- task 003/#94 (a) widens `field` past `iterations` alone, task 010 (v0.27 requirement C.3) adds `curePassCeiling`, `rateLimitMaxWaitS` is the rate-limit wait ceiling (§8.4), and `spendCaps` (v0.39, #321; carries `previous` and `spendCaps`, the caps before and after, and no `delta`) is a `budget --spend`/`--spend-approach` change |
 | `log` | `level`, `message` | anything the loop wants an operator to see: a no-progress approach, batching violations, instant-failure streaks, abort diagnostics |
 | `operator_escalation` | `approach`, `reason` (the escalating park's own key -- review's, the gate's or a plan phase gate's `phase_gate_operator_input_needed`, which also carries `planPhase`, §5.2's identifier table; all carry `replanAvailable`), `escalation`, and -- v0.23 requirement A.7 (#224, task 017; cure task cure-01-04, F04, widens the scope below) -- six more fields on EVERY review ladder park (an `awaiting_input` park, whichever trigger held it; a pause handed no `cure_preview` builds these off `LoopSupervisor._effective_cure_preview`'s own fresh `state.cure_pass_preview` walk over the current tasks and its blocking findings) -- never on any other park in this list: `taskIdsValidatedToPending` (`state.cure_pass_preview`'s own `reopenedTaskIds`, `[]` when nothing would be reopened), `insertCount` (that same preview's `insertCount`, still counted even when nothing would be reopened), `costSpentThisApproach`/`tokensSpentThisApproach` (`usage.byApproach[str(approach)]`'s own `state.format_cost` text and `totalTokens`, both possibly `null` for an approach with no usage yet), `approachOfMax` (`"approach <n> of <N>"`), and `hubLink` -- `JobConfig.hub_base_url` (optional, `RALPHD_HUB_BASE_URL` or a job.yaml `hub_base_url:` key, unconfigured by default, same shape as `notifier_url`) joined with `"/#/run/<runId>"` when configured, else the hub's own default loopback host with no port (`"http://127.0.0.1/#/run/<runId>"` -- the engine has no channel to learn the port `ralphctl ui --port` chose), never the bare relative fragment F04 named as not actionable from a phone notification. Task 007 (v0.26, #269) adds a SEVENTH field to that same widened set, `nextStepIfUnanswered` -- `"cure_pass"` \| `"archive_and_replan"` \| `"finishing"` (cure task cure-01-05, PRD v0.27 requirement C.4, DoD 3, adds the third value), `LoopSupervisor._review_cure_pass_available(approach)`'s own fresh, read-only verdict at the moment of pausing (never inferred from `taskIdsValidatedToPending`/`insertCount` above -- a reviewer-requested gate can be curable while reopening nothing), refined by `replan_available`/`approach < cfg.max_approaches` when no cure pass is available -- `"archive_and_replan"` when a fresh approach is still budgeted, `"finishing"` when this pause fires on the run's own LAST approach, since the archive/replan-or-finish tail (`_step_review`/`_step_verdict_gate`) then ends the run instead of starting a new one -- so the hub's own `parkedQuestion.consequence` (below) can name which of the three an unanswered pause is about to take without re-deriving it. Task 011 (v0.27 requirement C.4, #275), extended by cure task cure-01-05 and widened once more by task 003 (this wave): the six-item preview itself now names the edge `nextStepIfUnanswered` names, not the raw findings' own reopen prediction, whenever those two disagree -- exactly when `LoopSupervisor._review_cure_pass_available` says no, whatever the reason: the approach's own cure-round allowance already spent (`LoopSupervisor._cure_pass_ceiling_spent`; a same-set or superset rejection is not a reason on its own, since with rounds left it spends a round and cures, v0.36 requirement C.2), OR the findings were never curable at all (a mixed set, an all-incurable set, a criteria-tamper finding) -- reads `taskIdsValidatedToPending: []`/`insertCount: 0` here, never the real reopen/insert numbers a cure pass over the identical findings would have produced (task 003: before this task, a mixed/all-incurable set's own preview still read its "honest partial" `state.cure_pass_preview` reopen/insert count computed off the findings themselves -- one slot per finding whether or not that finding was itself curable -- even though no cure pass ever ran over it either; `_review_cure_pass_available` alone, not a narrower "was this structurally curable" gate first, is what this task's zeroing now keys off). The `escalation` text names the live lever that would change the outcome (`ralphctl budget <run> --cure-passes +N|N`, v0.27 requirement C.3, task 010) ONLY when the spent allowance is that actual cause -- never for a mixed/all-incurable set, which raising the allowance cannot fix. The delivered notification digest (`LoopSupervisor._operator_escalation_digest_text`) carries that note on exactly the same condition as the `escalation` text, and the note contrasts the cure edge with the edge an unanswered pause takes -- archive-and-replan while an approach is left, finishing the run on the last one. A park whose trigger is `cure_rounds_spent` names it too, on both surfaces, when the approach's cure-round allowance is what refuses its all-curable rejection a cure pass. The gate's park now carries this SAME six-item payload too (before task 011 it carried none): the gate's own C.1 park fires ONLY when the current approach's shared cure-round allowance is spent (task 002, this wave: for every blocking-set shape, not only the all-curable one), so its preview is always the zeroed `taskIdsValidatedToPending: []`/`insertCount: 0`; its text and its delivered notification digest both name `--cure-passes` only for an all-curable rejection (raising the ceiling cannot cure a mixed/all-incurable one, so that note is never appended to either surface for it) -- but (cure-01-05) `nextStepIfUnanswered` still reads `"finishing"`, never `"archive_and_replan"`, on this pause's own last approach, and (task 002) for ANY mixed/all-incurable rejection whatever approaches remain. The rendered `escalation` text for every one of these pauses also names each blocking finding's own `cured_when` verbatim, beside its `clause`/`evidence` (cure task cure-01-04, F04) | the engine paused or parked itself (§4.6): a rejection ladder park (§4.2), or one of the non-findings holds below; `reason` tells them apart. A no-progress approach, dependency-graph faults and a broken review channel raise no escalation (v0.36 requirements F, §4.2). v0.36 requirement B: review's park key names review's rejection-ladder park (§4.2, state `awaiting_input`) -- a rejection whose unwaived blocking findings include a `curable: false` one, that the reviewer escalated with `raise_operator_gate`, or that arrives with the approach's cure rounds spent holds, ON by default (`JobConfig.operator_input_needed_pause`), with `replanAvailable` recording whether an unanswered park would replan or end the approach budget. v0.27 requirement C.1 (task 008) adds the gate's park key: the peer verdict gate's park by the same ladder, for every blocking-set shape -- all-curable, mixed and all-incurable alike -- when a blocking finding is `curable: false` or the approach's `cure_pass_ceiling` allowance is spent. The 0.35 discretionary gate, repeated-signature park and per-ruling re-park are gone: nothing else raises this event for a rejection. Task 001 (PRD requirement A, #269): for review's park, this event's own `escalation` field always keeps the FULL text above, unedited; the notification actually POSTED for either park reason is a separate, bounded DIGEST (§4.6) that never carries a finding's evidence. Task 002 (#269 follow-on): each finding's own `resolve with:` `ralphctl amend` invocation -- present on the FULL text of every pause reason in this list, never only the two the digest above covers -- now names the finding by id (`F<n>`, matching the `Finding <n> (...)` header immediately above it) plus its own `clause`, instead of repeating that finding's `evidence` a second time inside the `--waive` argument; the evidence still appears exactly once, on the finding's own `evidence:` line, never inside the resolve command too |
 | `input.parked` | `kind`, `trigger`, `judge`, `findings`, `cureRoundsUsed`, `cureRoundsAllowed`, `approach`, `maxApproaches`, `expiresAt`, `onTimeout`, and `planPhase` on a phase gate's park (the `inputQuestion` fields, §5.2 -- `parkedAt` is the event's own `ts`) | v0.36 requirement C.1/H.2: the run entered `awaiting_input` on a findings question (§4.1), or (v0.38 A.5, B.2/B.3) on a `petition_hold` or `verified_unchanged` question. Emitted once per park, at the park site, after `status.json` already reads `state: "awaiting_input"`. A findings park emits it after the `operator_escalation` event that carries the full escalation text. A `petition_hold` or `verified_unchanged` park emits NO `operator_escalation` event: its order is the `status.json` write, `run.paused` (`reason` is the park kind), `input.parked`, a `log` event, then one notification attempt (§12.3a); its payload is the whole `inputQuestion` except `parkedAt` -- the findings fields with `findings: []`, `judge` `null` or `review`/`verdict_gate`, `expiresAt: null`, `onTimeout: never`, plus `heldTasks`, `text` and (`verified_unchanged`) `reviewStateKey`, and never `planPhase` or `timeoutAtPark` |
@@ -3680,6 +3850,7 @@ still runs.
 | `exitCode` | int \| null | agent process exit code; negative for a signal, `null` if it never spawned |
 | `interrupted` | bool | ended by `SIGINT` (operator, timeout or watchdog) |
 | `timedOut` | bool | the full per-iteration timeout fired |
+| `spendInterrupted` | bool | v0.39 (#321): the runner ended the iteration because its running cost reached a spend cap (`timedOut` is `true` too: the `iteration_timeout_s` kill path, §4.5). Present only then |
 | `noTrafficTimeout` | bool | the startup watchdog fired: zero observed agent traffic |
 | `sawComplete` / `sawVerified` | bool | the marker was the final non-blank line of the final assistant text (§4.3) |
 | `error` | string \| null | the agent's own error text, or the engine's |
@@ -3710,7 +3881,7 @@ prints them in, scrubbed with the same secret map. The pi events go to
 `output.jsonl` only and the raw events to `output.codex.jsonl` only; nothing
 reads the latter. Before it starts a turn the `codex` wrapper runs
 `<cli> --version` (the CLI is `$RALPHD_CODEX_CLI_PATH`, else `codex` on `PATH`)
-and compares the version to `config.CODEX_MIN_VERSION` (`0.156.1`) with
+and compares the version to `config.CODEX_MIN_VERSION` (`0.156.1`; `config.CLAUDE_CODE_MIN_VERSION` is `2.1.312`, each checked against its own CLI's reported version) with
 `ralphd.cli.versions.compare_versions`, the helper the `claude-code` gate also
 uses. A CLI below it ends the iteration in-band with `codex_version_too_old`
 (output present with no version in it too), and no binary with
@@ -3962,6 +4133,7 @@ Every field:
 | `thinking_overrides` | map hat→setting | `{}` | per-hat thinking/reasoning table (task 007, §4.7), same key vocabulary as `model_overrides` but never merged into it -- a model ref and its thinking setting are two independent axes. Each entry is either a plain `pi --thinking` string (the same vocabulary `thinking` speaks) or a provider-shaped object (`{thinking: ...}`/`{effort: ...}`); read together with `model_overrides` by `JobConfig.bundle_for`/`tiers.resolve_bundle` into a hat's `(model, thinking)` bundle. `job.yaml`-only |
 | `model_tiers` | map hat→tier→leaf | `{}` | the hat x tier host map's own job.yaml surface (task 002, §4.7): one leaf per `(hat, tier)` rung a job.yaml wants to name explicitly, `hat`/`tier` drawn from `MODEL_HATS`/`tiers.TIERS` (`trivial\|normal\|hard`) and `leaf` shaped like a `model_overrides` entry widened with an optional `model` key (`{model: ..., thinking: ...}`/`{model: ..., effort: ...}`, or a plain ref string). A rung this table leaves unset falls through to `bundle_for`'s already-resolved bundle for that hat, so a job.yaml naming only `model`/`models` still collapses every rung to the same bundle -- see §4.7. Settable in `job.yaml` directly, or from `start` with the repeatable `--model-for-tier HAT:TIER=REF` flag (task 004, §10.2), which merges rung by rung into this table over the `--template`'s and the registry's own `model_tiers:` key |
 | `harnesses` | map hat→harness | `{}` | the agent harness each hat runs on, one of `pi\|claude-code\|codex` (§4.7); `hat` is drawn from `MODEL_HATS`. An absent hat runs on `pi`, and an unrecognised hat name follows `planning`. A hat's tiers all share its harness. `start` writes the resolved map with every hat in `MODEL_HATS`, merging per hat, weakest to strongest: the LLM profile's `harness:` (§7.1) < the registry `config.yaml`'s `harnesses:` < the `--template`'s `harnesses:` < the repeatable `--harness-for HAT=NAME` flag (§10.2); an unknown hat or harness name in any layer exits `2`. `resume` replays the written map unchanged, and a job.yaml with no `harnesses:` key resolves every hat to `pi` |
+| `spend_caps` | map level→hat→entry | `{}` | optional spend caps in USD (#321): two maps, `overall` (the run so far) and `per_approach` (one approach), each from a hat name to `{usd, source}`. A hat name is one of `MODEL_HATS` (`planning`, `worker`, `verify`, `review`, `plan_review`, `reflect`, `router`, `steer`, `verdict_gate`) or the pseudo-hat `total` (every hat together); any other key, level or a zero, negative or non-numeric amount is refused with the list of valid names. `source` is the layer that set the entry: `registry`, `template`, `flag` or `budget` (`ralphctl budget <run> --spend HAT=+USD|USD|none` and `--spend-approach` top up, set or remove an entry and write `budget`, so the change survives a `resume`; removing the last entry removes the key; the unpriceable refusal below applies to them too). `start` resolves per hat and per level, weakest to strongest: the registry `config.yaml`'s `spend_caps:` < the `--template`'s `spend_caps:` < the repeatable `--spend-cap HAT=USD` (overall) and `--spend-cap-approach HAT=USD` (per approach) flags (§10.2), so a flag for one hat replaces only that one entry; the registry and template layers write a bare number (`review: 20`). `start` writes the resolved map, and the engine reads caps from this key and nowhere else. A run with no caps writes no `spend_caps:` key and behaves as before. `start` exits `2` when a cap names a hat whose resolved model (its plain model and every tier leaf) has no rate in the operator `pricing:` map or the `price_strategy` table, a model declared in `free:` counting as priced: the message names the hat, its model and `no price in the pricing chain`. A `total` cap is refused when any hat of the lineup is unpriceable, naming each. The refusal comes before any run directory exists |
 | `api_token` | string \| null | `null` | bearer token the API requires; `RALPHD_API_TOKEN` (how `start --api-token` delivers it) overrides |
 | `infra_startup_timeout_s` | float | `150.0` | how long a phase may run with **zero** parseable pi events before the engine kills it as an infra fault instead of waiting out `iteration_timeout_s` |
 | `infra_retry_backoff_s` | list[float] | `[2, 5, 15, 30, 60, 120, 300]` | sleep before each retry of the same phase after an infra-classified failure; the last value repeats. Fast at the start on purpose — a 30-second gateway blip should cost seconds, not minutes |
@@ -4170,7 +4342,12 @@ own `os.environ` loses `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
 `ANTHROPIC_BASE_URL`, `AWS_BEARER_TOKEN_BEDROCK`, every `ANTHROPIC_BEDROCK_*`
 and `ANTHROPIC_VERTEX_*` variable and every `CLAUDE_CODE_*` except
 `CLAUDE_CODE_OAUTH_TOKEN` (which covers `CLAUDE_CODE_USE_BEDROCK` and
-`CLAUDE_CODE_USE_VERTEX`), after every merge: the container env, the profile's
+`CLAUDE_CODE_USE_VERTEX`), plus the routing the 2.1.330 CLI added: every
+`ANTHROPIC_FOUNDRY_*`, `ANTHROPIC_AWS_*` and `ANTHROPIC_GOOGLE_CLOUD_*`
+variable, `ANTHROPIC_IDENTITY_TOKEN`, `ANTHROPIC_IDENTITY_TOKEN_FILE`,
+`ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_SERVICE_ACCOUNT_ID`,
+`ANTHROPIC_PROFILE`, `ANTHROPIC_CONFIG_DIR` and `ANTHROPIC_UNIX_SOCKET`
+(the `codex` wrapper strips the same set), after every merge: the container env, the profile's
 `env:`, forwarded env and a mid-run `PUT /config/llm`. A `claude-code` hat
 therefore always talks to `api.anthropic.com` with `CLAUDE_CODE_OAUTH_TOKEN`,
 whatever a gateway profile sets. A `pi` hat keeps all of those variables, so a
@@ -4924,8 +5101,14 @@ a spent budget is `review -> finishing` on the fault's own guard, ending
 `verdict_gate.retry` events.
 
 `produced_traffic` is derived in `LoopSupervisor._classify_result()` as
-`bool(result.final_text) or bool(result.usage)` — the agent said something, or
-tokens were accounted for.
+`state.reached_model(result.usage, spend_interrupted=...)`: billable tokens
+were accounted for, or a live spend cap cut the iteration (v0.39, #321 C). The
+cut only fires on money the model was paid, and pi can report that money with
+no token counts (`usage.cost.total` alone), so a spend cut is never the
+no-traffic shape step 7 scores as infra: it is never refunded or retried by
+the infra wrapper, and the cap's outcome applies at the boundary (§4.5). `ralphctl
+fault` and `ralphctl iteration` re-derive the same input from `meta.json`'s
+`usage` and `spendInterrupted`.
 
 Step 7 is the interesting default. **An unclassifiable failure that produced
 no traffic at all is treated as infra, because nothing ran.** The alternative
@@ -5339,7 +5522,10 @@ signal that stopped this engine does not make that earlier failure untrue, and
 only a report on disk contradicts it. `attempted: false` is the signal-before-the-phase case, `attempted: true`
 the signal-mid-attempt one; `ok: null` is what keeps `ralphctl status` and the
 hub, which both gate on `ok === false`, from reporting a failure that did not
-happen (they print `reflection: not attempted (…)` instead). An *API* abort is
+happen (they print `reflection: not attempted (…)` instead). The same record,
+with the spend cap as its reason, covers a reflection a spent cap refused
+(`attempted: false`) or a live spend interrupt stopped (`attempted: true`)
+(§4.5). An *API* abort is
 not a signal: the engine is still alive and still owes a post-mortem, so it
 keeps its one attempt.
 
@@ -5450,6 +5636,27 @@ rows, and a note that by phase, by approach and by tier are alternative
 breakdowns of the same total. When `byPayer` covers fewer tokens than the
 total (a run resumed across the upgrade) the headline is withheld and a notice
 says how much is covered. A run without `byPayer` renders exactly as before.
+
+**What counts as spend (#321, v0.39).** The engine keeps the run's spend in
+`status.json`'s `spend` key, per hat and `total`, for each approach
+(`byApproach["<n>"]`) and for the run so far (`overall`). A hat is the iteration's
+phase with any tier suffix dropped, so `worker.trivial`, `worker.normal` and
+`worker.hard` all count as `worker`. At the end of every iteration
+(`RunDir.record_spend`, called beside `_accumulate_usage`) the engine adds that
+iteration's `state.iteration_spend(usage)` to its hat's counter and to `total`, at
+both levels: the quoted `costUSD`, plus the host-derived `costDerivedUSD`, plus
+`listEquivalentUSD`. A subscription-billed iteration therefore counts at its
+list-equivalent price, never at its `$0` `costUSD`. The payer stamp moves money
+into `listEquivalentUSD` rather than copying it, so nothing counts twice. Router
+and contract-repair calls are not iterations, but their cost IS counted, the same
+way, when the call finishes (`_run_side_call`): a router call into the `router`
+hat's counter, a contract re-ask into the hat whose payload it repairs, and both
+into `total`, at both levels; neither charges an iteration slot. A new approach
+adds a new `byApproach` key, so its counters start at zero while `overall` carries
+on. The counters live in status.json, so `resume` reads them back unchanged. A run
+dir with iteration records and no `spend` key (0.38) has the counters rebuilt at
+engine start from `iterations/NNNN/meta.json`, with the same function, so they equal
+the sum of those records' costs. A run with no finished iteration writes no key.
 
 `cost_status()` in `src/ralphd/engine/state.py` collapses a usage dict to
 `None` (fully priced, or nothing billed), `"derived"`, `"partial"` or
@@ -6019,7 +6226,7 @@ subcommand is mandatory.
 | `amend <id> <task> <text>` | record an operator ruling review must honour (waiver/replacement of a task's criteria), or `--list` what's recorded |
 | `retry <id>` | wake a degraded run out of its infra backoff wait immediately |
 | `undefer <id> <task>` | release a deferred task now instead of waiting out its `deferredUntil` |
-| `budget <id> <+N\|N>` | change a running job's iteration budget in flight |
+| `budget <id> <+N\|N>` | change a running job's iteration budget in flight; `--spend HAT=+USD\|USD\|none` / `--spend-approach` change its spend caps (#321) |
 | `abort <id>` | terminate the job, recording state `aborted` |
 | `stop <id>` | shut down and remove an idle finished container |
 | `rm <id>` | delete a run's registry dir (`--force` stops a leftover container first) |
@@ -6086,6 +6293,8 @@ returns immediately.
 | `--model-for HAT=REF` | none | per-hat model override (repeatable), e.g. `--model-for worker=amazon-bedrock/eu.anthropic.claude-sonnet-5`; merges into the job's `models:` table over the `--template`'s and the registry's own `models:`/`model_overrides:` key -- see docs/cli.md |
 | `--harness-for HAT=NAME` | none | per-hat agent harness (`pi`, `claude-code` or `codex`), repeatable, e.g. `--harness-for worker=claude-code`; merges per hat into the job's `harnesses:` table (§6.2) over the `--template`'s, the registry's and the LLM profile's `harness:`; an unknown hat or harness exits `2` -- see docs/cli.md |
 | `--model-for-tier HAT:TIER=REF` | none | per-hat-per-tier model override (task 004, #68), repeatable, e.g. `--model-for-tier worker:hard=amazon-bedrock/eu.anthropic.claude-opus-5`; merges rung by rung (hat AND tier) into the job's `model_tiers:` table (§4.1) over the `--template`'s and the registry's own `model_tiers:` key -- see docs/cli.md |
+| `--spend-cap HAT=USD` | none | overall spend cap in USD for a hat or `total`, repeatable, e.g. `--spend-cap review=20` (#321); merges per hat into the job's `spend_caps.overall` over the `--template`'s and the registry's, recorded with source `flag`; an unknown name, a non-positive amount or an unpriceable hat exits `2` (§6.2) -- see docs/cli.md |
+| `--spend-cap-approach HAT=USD` | none | the same for the per-approach cap, repeatable, e.g. `--spend-cap-approach worker=5`; merges into `spend_caps.per_approach` -- see docs/cli.md |
 | `--fast-model` (retired) | n/a | accepted-but-hidden (`argparse.SUPPRESS`); `cmd_start` refuses it with exit `2` naming the replacement (`models:`/`model_overrides:`, §4.1) rather than silently doing nothing |
 | `--model-strategy` (retired) | n/a | same shape as `--fast-model` above -- accepted-but-hidden, refused with exit `2` naming the replacement |
 | `--thinking LEVEL` | unset | `pi` thinking level |
@@ -6465,6 +6674,20 @@ the count from zero. `--input-timeout N|+N`
 sets the input timeout in minutes (`0` = never, §4.5); it is applied live
 (moving the expiry of a run already `awaiting_input`) and written to the run's
 job.yaml (`input_timeout_min`) by the CLI, so it persists across a resume.
+`--spend HAT=+USD|USD|none` and `--spend-approach HAT=+USD|USD|none` (v0.39, #321;
+repeatable, combinable with every lever above) top up (`+USD`), set (`USD`) or
+remove (`0` or `none`) the overall and the per-approach spend cap of a hat or
+`total`: `PATCH /config/budget` carries `spendCaps` (`{"overall": ["review=+5"],
+"per_approach": [...]}`), the engine rebinds its caps at the next boundary (a
+running iteration keeps the caps it was dispatched with) and the CLI writes the
+result to the run's job.yaml `spend_caps` with source `budget`, so a `resume`
+keeps it; a run with no live container is changed in job.yaml alone. A top-up of
+a cap the run does not have, a malformed spec or a non-positive amount exits `2`
+with nothing changed, and a cap set or topped up on a hat with no price in the
+pricing chain is refused as `start` refuses it (exit `2`, §6.2). A run
+`exhausted` by spend is resumed by a plain `resume` once the top-up lifts every
+spent cap above its spend; until then `resume` exits `2` naming each cap still
+spent with its spend (§4.5).
 
 `abort` terminates the job, honouring the run's on-complete mode. `stop` shuts
 down an idle *finished* container — `/shutdown`, then `docker rm -f`, then
@@ -7083,6 +7306,20 @@ panel's own name/text fields are cleared on a successful answer.
   **cost dialog**: the same per-phase/per-approach/per-tier breakdown
   `ralphctl cost` prints, with quoted, derived and unavailable money each
   labelled as such (§8.6).
+- **Spend bars** (v0.39, #321) — on a run with spend caps, one bar under the
+  summary card per cap: a capped hat's overall cap and, when it has one, its
+  per-approach cap each get their own `.spend-bar` (`data-hat`, `data-level`
+  `overall` or `per_approach`), a filled track over a `$spend / $cap` line, so
+  a hat with both levels shows two. The bars are fed from `status.spendCaps`,
+  the very entries `GET /status` serves (read from the live answer when there is
+  one, otherwise derived from `job.yaml` and `status.json`'s `spend` with the
+  same `spend_caps.run_entries`), worded server-side by `spend_caps.bar_entries`
+  into `status.spendBars`: `{hat, level, label, cap, spend, percent, notional,
+  text}`, `percent` being spend over cap clamped to 0..100 (the bar turns
+  amber from 80% and red when spent). A notional hat's bars say
+  `(notional, list-equivalent)`, because its figure is a list price and not a
+  bill. A run with no caps carries neither `spendCaps` nor `spendBars` and draws
+  no bar.
 - **Task table** — one row per task, each clickable and keyboard-reachable
   (`role="button"`, `tabindex=0`, Enter and Space), opening that task's detail
   in a modal `<dialog>`: `status`, `priority`, `dependsOn` when set,
@@ -7846,7 +8083,7 @@ reflect iteration wrote no artifacts/reflection/report.md`. The missing promise
 line is the one thing that is *not* a failure: the report on disk is the
 deliverable, not the sentinel.
 
-A failed reflection never changes `state`, `verdict` or `reason`; the job is over.
+A failed reflection never changes `state`, `verdict` or `reason`; the job is over. The one thing that does is a spent spend cap (§4.5): reflection is a capped hat like the others, so a refused or interrupted reflection under `spend_caps` holds the run `exhausted` or replans it, instead of promoting the settled outcome. A refused or interrupted reflection is recorded `ok: null` with no `FAILED.md` (§8.4); only an attempt that failed on its own is `ok: false`.
 That is exactly why it needs its own surface, and it has one: `ralphctl status`
 prints a wrapped `reflection: failed (<error>)` line — and nothing at all for a
 successful or absent reflection — and the hub's run-detail card renders the same

@@ -3,7 +3,7 @@ FROM python:3.12-slim-bookworm
 # system deps + node 22 (pi >=0.75 requires node >=22.19; with an older node,
 # npm silently resolves an ancient pi version — pin both to fail loudly instead)
 ARG PI_VERSION=0.84.1
-ARG CODEX_VERSION=0.156.1
+ARG CODEX_VERSION=0.171.0
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git curl ca-certificates jq ripgrep procps \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
@@ -43,7 +43,7 @@ RUN useradd -m -u 1000 -s /bin/bash agent \
 COPY --chown=agent:agent . /opt/ralphd
 RUN pip install --no-cache-dir /opt/ralphd
 
-ARG CLAUDE_AGENT_SDK_VERSION=0.2.163
+ARG CLAUDE_AGENT_SDK_VERSION=0.2.187
 RUN pip install --no-cache-dir "claude-agent-sdk==${CLAUDE_AGENT_SDK_VERSION}"
 
 # Requirement I (#48): NO `USER agent` here, on purpose. The engine starts as

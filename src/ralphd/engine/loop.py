@@ -43,6 +43,7 @@ from . import ladder
 from . import petitions
 from . import plan_ingestion
 from . import privsep
+from . import spend_caps as spend_caps_mod
 from . import redact
 from . import router
 from . import run_record
@@ -101,6 +102,7 @@ from .state import (
     format_last_tool_call,
     last_tool_call,
     prd_path,
+    reached_model,
     record_operator_termination,
     record_steering_settlement,
     task_failure_kind,
@@ -111,6 +113,22 @@ from .state import (
 )
 
 log = logging.getLogger("ralphd.loop")
+
+
+class _SpendCapSpent(BaseException):
+    """v0.39 (#321): raised by `LoopSupervisor.run_iteration` BEFORE it
+    dispatches a hat whose own cap (or `total`'s) is spent. `action` is
+    `exhausted` (the run holds, reason `spend:...`) or `replan` (a per-approach
+    cap on a non-last approach). A `BaseException`, like a cancellation: the
+    step handlers' `except Exception` blocks must not read a refused dispatch
+    as a faulted iteration; `_run_job_core` is the one place that catches it.
+    Nothing is written for the refused iteration -- no number, no meta."""
+
+    def __init__(self, cap, action: str, phase: str):
+        super().__init__(f"spend cap spent: {cap.reason}")
+        self.cap = cap
+        self.action = action
+        self.phase = phase
 
 
 # Phases whose prompt (worker.md / planning.md) explicitly instructs the
@@ -343,6 +361,11 @@ class LoopSupervisor:
         # `none` it returns exactly the operator map (or None) as before.
         pricing = resolve_pricing(cfg.pricing, cfg.price_strategy)
         self.runner = PiRunner(workspace, pricing=pricing)
+        # v0.39 (#321): the chain an unpriced iteration on a capped hat is
+        # counted through (`spend_caps.counted_spend`).
+        self._pricing = pricing
+        self._spend_exhausted: object = None
+        self._spend_warned: set[str] | None = None
         # One runner per harness. A test that assigns a double to
         # `self.runner` overrides every harness (`_runner_for`). The
         # claude-code runner links the skill sources `place_skills()` uses
@@ -676,6 +699,9 @@ class LoopSupervisor:
         # which end regardless of `budget_left()` and so keep requirement
         # C.2's "still fails, unchanged" by construction.
         self._budget_exhausted_tail: bool = False
+        # v0.39 (#321): the `SpentCap` a run held `exhausted` over; the tail
+        # reads it back (`_finish_tail_unverified`).
+        self._spend_exhausted_tail: bool = False
         # v0.36 requirement G: True iff `_step_replan` found no approach
         # left; the tail then holds `exhausted` (`exhaustedBudget:
         # approaches`) instead of ending the run `failed`.
@@ -2693,6 +2719,7 @@ class LoopSupervisor:
         `_run_iteration_once` records `None` for both, exactly like an
         omitted `tier` degrades to the default). Pure pass-through here too.
         """
+        self._enforce_spend_caps(phase)
         if phase not in self.INFRA_RETRY_PHASES:
             return await self._run_iteration_once(phase, extra, prompt_name, tier,
                                                   task_id=task_id)
@@ -2780,8 +2807,20 @@ class LoopSupervisor:
                 self._rate_limit_state[harness] = None
                 if outcome == "abort":
                     return self._preempt_aborted_result(harness)
+            # v0.39 (#321, B.2): every attempt is a dispatch. The attempt
+            # that just failed (an infra fault, a rate-limit wait, a
+            # refusal pause) may itself have spent the cap, so the check
+            # runs again before each runner start, not once per phase.
+            self._enforce_spend_caps(phase)
             result = await self._run_iteration_once(phase, extra, prompt_name, tier,
                                                     task_id=task_id)
+            if getattr(result, "spend_interrupted", False) is True:
+                # v0.39 (#321, C.2): the engine's own spend cut. It reached
+                # the model (`reached_model`), so it is never refunded, waited
+                # out or retried here: the caller applies the cap's outcome at
+                # its own boundary (`_run_reflection` records the cut).
+                self._reset_infra_episode()
+                return result
             fault = self._classify_result(result)
             if fault == FAULT_CLASS_RATE_LIMIT:
                 # v0.30 F.2: the subscription's window is exhausted. Refund
@@ -2791,6 +2830,9 @@ class LoopSupervisor:
                 self._refund_iteration("infra")
                 self.run.update_status(
                     iterationsUsed=self.iterations_used_charged)
+                # v0.39 (#321): a paid attempt that spent a cap ends here, not
+                # after sitting out the reset it can never use.
+                self._enforce_spend_caps(phase)
                 outcome = await self._wait_out_rate_limit(phase, result.rate_limit)
                 if outcome == "abort":
                     return result
@@ -2803,6 +2845,7 @@ class LoopSupervisor:
                 self._refund_iteration("infra")
                 self.run.update_status(
                     iterationsUsed=self.iterations_used_charged)
+                self._enforce_spend_caps(phase)
                 outcome = await self._pause_for_provider_refusal(phase, result)
                 if outcome == "abort":
                     return result
@@ -2826,7 +2869,10 @@ class LoopSupervisor:
                 # without consuming a validation attempt. Task 010 only
                 # moves the *zero-work* instant shape (nothing observable
                 # at all: the refused-connection / broken-credential shape)
-                # into this wrapper.
+                # into this wrapper. v0.39 (#321, B.2): that attempt was
+                # paid, so a cap it spent ends the step here instead of
+                # being handed to the phase's own retry.
+                self._enforce_spend_caps(phase)
                 return result
             # Score this attempt against the broken-environment carve-out (a
             # streak of identical instant zero-work failures). True == the
@@ -2880,6 +2926,17 @@ class LoopSupervisor:
             # unchargedness this requirement asks for.
             self.run.update_status(
                 iterationsUsed=self.iterations_used_charged)
+            # v0.39 (#321, B.2): the attempt that just failed may have been
+            # paid, and a cap it spent decides the outcome ahead of every
+            # infra terminal exit below (the retry limit, the outage budget,
+            # the broken-environment carve-out) and ahead of any backoff: the
+            # run ends `exhausted` or replans, never an infra abort.
+            try:
+                self._enforce_spend_caps(phase)
+            except _SpendCapSpent:
+                if broken_env:
+                    self._abort_reason = None
+                raise
             if broken_env:
                 # _check_instant_failure() has already set _abort_reason to
                 # the broken-environment diagnosis and logged it: the
@@ -3500,7 +3557,12 @@ class LoopSupervisor:
             interrupted=result.interrupted,
             timed_out=result.timed_out,
             no_traffic_timeout=result.no_traffic_timeout,
-            produced_traffic=billable_tokens(result.usage) > 0,
+            # v0.39 (#321, C): a spend cut reached the model even when the
+            # runner reported its cost with no token counts.
+            produced_traffic=reached_model(
+                result.usage,
+                spend_interrupted=getattr(result, "spend_interrupted",
+                                          False) is True),
             operator_abort=self.operator_abort_requested,
             # Steering 004: the verdict is decided by the flag above; this one
             # only lets `explain_fault` word the reason honestly (an abort that
@@ -3727,6 +3789,10 @@ class LoopSupervisor:
                     extension_kw["hat_tools"] = list(names)
             elif exts := self._hat_extensions(phase):
                 extension_kw["extensions"] = exts
+            # v0.39 (#321, C): a hat that carries a cap (its own or `total`'s)
+            # is held to it while it runs; any other call is unchanged.
+            if watch := self._spend_watch_for(phase):
+                extension_kw["spend_watch"] = watch
             runner = self._runner_for(bundle.harness)
             result = await runner.run(
                 prompt, itdir / "output.jsonl", model=model,
@@ -3891,6 +3957,9 @@ class LoopSupervisor:
             # Optional: only a truncated, text-free final reply records it,
             # so `ralphctl fault` re-derives `output_truncated` from meta.json.
             meta["outputTruncated"] = True
+        if getattr(result, "spend_interrupted", False) is True:
+            # Optional: only an iteration a spend cap ended records it.
+            meta["spendInterrupted"] = True
         if getattr(result, "http_status", None) is not None:
             meta["httpStatus"] = result.http_status
         if getattr(result, "error_type", None):
@@ -3920,6 +3989,9 @@ class LoopSupervisor:
         # spelling is already in meta.json as modelResolved/modelRaw.
         self._accumulate_usage(result.usage, phase=phase, approach=meta.get("approach"),
                                tier=effective_tier, model=model)
+        # v0.39 (#321): the iteration's spend, per hat and total.
+        self._record_iteration_spend(meta.get("approach"), phase, model,
+                                     result.usage, n)
         self.run.emit("iteration.end", number=n, phase=phase,
                       exitCode=result.exit_code, interrupted=result.interrupted,
                       sawComplete=result.saw_complete, sawVerified=result.saw_verified,
@@ -4863,9 +4935,21 @@ class LoopSupervisor:
         if status.get("state") == "finishing":
             state = self._promote_recorded_finishing_state(status)
         else:
-            state = await self._run_job_core()
-            if self.cfg.reflect and state != EXHAUSTED_STATE:
-                await self._run_reflection()
+            while True:
+                state = await self._run_job_core()
+                if not (self.cfg.reflect and state != EXHAUSTED_STATE):
+                    break
+                spent = await self._run_reflection()
+                if spent is None:
+                    break
+                # v0.39 (#321, B.2/C.2): the reflection hit a spent cap (it
+                # was refused, or it crossed one while it ran). The same
+                # rules as every other capped hat decide the run's ending
+                # instead of the outcome the job had settled.
+                settled = self._apply_reflect_spend(spent)
+                if settled is not None:
+                    state = settled
+                    break
             self._promote_finishing_state()
         self._reap_siblings_at_terminal(state)
         return state
@@ -4963,6 +5047,14 @@ class LoopSupervisor:
         """
         final_state = ("aborted" if self._abort_reason
                        and not self._failed_ending else "failed")
+        if self._spend_exhausted_tail and not self._abort_reason:
+            # v0.39 (#321): a spent overall cap, or a per-approach cap on the
+            # last approach, holds the run `exhausted`.
+            spent = self._spend_exhausted
+            return self._finish_exhausted(
+                spent.reason,
+                reason=(f"{spent.level.replace('_', '-')} cap on {spent.hat}: "
+                        f"${spent.spend:.2f} spent of ${spent.cap:.2f}"))
         if self._failed_ending:
             # v0.36 F.4/F.5: the rate-limit ceiling and a provider refusal
             # end the run `failed` with an `ending` the operator reads and
@@ -5073,6 +5165,9 @@ class LoopSupervisor:
         if budget == "approaches":
             return (f"exhausted: approaches {self._approach}/"
                     f"{self.cfg.max_approaches}")
+        if state.is_exhausted_budget(budget) and budget.startswith(
+                state.SPEND_BUDGET_PREFIX):
+            return f"exhausted: {budget}"
         if budget == "iterations":
             charged = (self.iterations_used - self._infra_refunded
                        - self._steer_refunded - self._adjudication_refunded)
@@ -5096,7 +5191,7 @@ class LoopSupervisor:
         carries no verdict, because a verdict is what the operator resumed
         in order to get) and is not a caller-supplied argument.
         """
-        if budget not in state.EXHAUSTED_BUDGETS:
+        if not state.is_exhausted_budget(budget):
             raise ValueError(f"unknown exhausted budget {budget!r}")
         head = self._exhausted_reason(budget)
         note = f"{head} -- {reason}" if reason else head
@@ -5297,7 +5392,7 @@ class LoopSupervisor:
     # artifacts/reports/task-008-finishing-tail-budget.md.
     REFLECT_TAIL_TIMEOUT_S = 600.0
 
-    async def _run_reflection(self) -> None:
+    async def _run_reflection(self) -> "_SpendCapSpent | None":
         """One extra 'reflect' iteration after the job has already reached a
         terminal state (PRD req 24). Runs unconditionally (not gated by
         budget_left(), which is normally already exhausted by the time a job
@@ -5330,19 +5425,41 @@ class LoopSupervisor:
         tombstone blaming the reflection for the operator's `docker stop`. On
         that path the phase is recorded as *not attempted* instead
         (_record_reflect_not_attempted()).
+
+        v0.39 (#321, B.2/C.2): returns the `_SpendCapSpent` a spent cap on
+        `reflect` (or `total`) produced -- refused before the dispatch,
+        refused on an internal retry or contract re-ask, or found spent at
+        the boundary after the iteration (a live spend interrupt, or an
+        ordinary overshoot) -- else None. Reflection is a dispatch like
+        every other, so `run_job` applies the cap's outcome rules to it
+        (`_apply_reflect_spend`); a refusal is never read as a reflection
+        that merely did not happen.
         """
         if self._signal_unwind is not None:
             self._record_reflect_not_attempted(attempted=False)
-            return
+            return None
+        try:
+            self._enforce_spend_caps("reflect")
+        except _SpendCapSpent as refused:
+            self._record_reflect_not_attempted(attempted=False, spent=refused)
+            return refused
+        spent: _SpendCapSpent | None = None
+        boundary_checked = False
         self.run.emit("phase", phase="reflect")
         window = self._begin_reflect_retry_window()
         result: IterationResult | None = None
         try:
-            await self._reflect_pre_attempt_wait()
-            # Task 016 (requirement I): reflect has no task in hand -- its
-            # ladder's designated tier is `tiers.DEFAULT_TIER`, unaffected
-            # by any task's tier in the plan.
-            result = await self.run_iteration("reflect", tier=tiers.DEFAULT_TIER)
+            try:
+                await self._reflect_pre_attempt_wait()
+                # Task 016 (requirement I): reflect has no task in hand -- its
+                # ladder's designated tier is `tiers.DEFAULT_TIER`, unaffected
+                # by any task's tier in the plan.
+                result = await self.run_iteration(
+                    "reflect", tier=tiers.DEFAULT_TIER)
+            except _SpendCapSpent as refused:
+                # A paid failed attempt spent the cap, and its internal retry
+                # was refused (`_run_iteration_with_infra_retry`).
+                spent = refused
         finally:
             self._end_reflect_retry_window(window)
             self.run.update_status(phase=None)
@@ -5350,6 +5467,20 @@ class LoopSupervisor:
                 # The signal arrived mid-attempt: whatever the iteration
                 # returned describes the teardown, not the reflection.
                 self._record_reflect_not_attempted(attempted=True)
+            elif result is not None and getattr(
+                    result, "spend_interrupted", False) is True:
+                # v0.39 (#321, C.2): a live spend cap cut the reflection. Like
+                # a signal mid-attempt, the result describes the engine's own
+                # kill, not the reflection: no failure verdict, no tombstone,
+                # no contract ladder over a discarded claim. The boundary
+                # check runs here (once) so the record names the cap.
+                boundary_checked = True
+                try:
+                    self._enforce_spend_caps("reflect")
+                except _SpendCapSpent as refused:
+                    spent = refused
+                self._record_reflect_not_attempted(
+                    attempted=True, spent=spent, spend_interrupted=True)
             else:
                 # Task 006 (PRD requirement C.1, #211): `_iteration_cut_
                 # short_by_engine` gates the ladder call here exactly as it
@@ -5384,8 +5515,71 @@ class LoopSupervisor:
                     # ever reads it as a failure -- see `_reflect_contract_
                     # ladder`'s own docstring for the REFLECT_TAIL_TIMEOUT_S
                     # bound and the v0.12 requirement G guarantee it preserves.
-                    result = await self._reflect_contract_ladder(result)
+                    try:
+                        result = await self._reflect_contract_ladder(result)
+                    except _SpendCapSpent as refused:
+                        # A contract re-ask was refused by a spent cap.
+                        spent = refused
                 self._record_reflect_outcome(result)
+        if (spent is None and self._signal_unwind is None
+                and not boundary_checked):
+            # The boundary after the reflection: its cost is counted, so a
+            # cap it crossed (a live interrupt or an overshoot) is refused
+            # now exactly as the next dispatch of any other hat would be.
+            try:
+                self._enforce_spend_caps("reflect")
+            except _SpendCapSpent as refused:
+                spent = refused
+        return spent
+
+    def _apply_reflect_spend(self, spent: "_SpendCapSpent") -> str | None:
+        """v0.39 (#321, B.2): the outcome a spent cap gives the run once the
+        reflection has been refused or interrupted. The rules are the ones
+        every capped hat gets: an overall cap, or a per-approach cap on the
+        last approach, holds the run `exhausted` with the spend reason
+        (`spend:<hat>`, `spend:<hat>:approach`) in place of the outcome the
+        job had settled; a per-approach cap on any other approach archives
+        it and replans. Returns the run's final state, or None when the run
+        replans (`run_job` re-enters the job loop). An operator abort keeps
+        its veto, as it does everywhere else: the abort stays the ending."""
+        if self._abort_reason:
+            return self._settled_state_kept()
+        if spent.action == "exhausted":
+            self._pending_terminal = None
+            self._spend_exhausted = spent.cap
+            self.run.update_status(endedAt=REMOVE_STATUS_KEY,
+                                   pendingTerminalState=None)
+            return self._finish_exhausted(
+                spent.cap.reason, reason=self._spend_exhausted_note(spent.cap))
+        # Replan: the settled outcome is withdrawn, the approach archived and
+        # the job loop re-entered at `replan` through `stagnation_exhausted`.
+        self._pending_terminal = None
+        self._archive_approach(self._spend_approach())
+        self._reset_tail_flags()
+        self._replan_guard = "stagnation_exhausted"
+        self.run.update_status(pendingTerminalState=None)
+        return None
+
+    def _settled_state_kept(self) -> str:
+        state_, _verdict, _fields = self._pending_terminal or ("aborted", None, {})
+        return state_
+
+    @staticmethod
+    def _spend_exhausted_note(cap) -> str:
+        return (f"{cap.level.replace('_', '-')} cap on {cap.hat}: "
+                f"${cap.spend:.2f} spent of ${cap.cap:.2f}")
+
+    def _reset_tail_flags(self) -> None:
+        """Forget how the job loop ended, before it is re-entered (a spent
+        reflection cap replanned the run)."""
+        self._failed_ending = None
+        self._terminal_reason_note = None
+        self._deadline_beat_verdict_extra = {}
+        self._review_provisional_rejected_extra = {}
+        self._review_deadline_unreviewed = False
+        self._budget_exhausted_tail = False
+        self._spend_exhausted_tail = False
+        self._approaches_exhausted_tail = False
 
     def _record_reflect_engine_cutoff(self, result: IterationResult) -> None:
         """Task 006 (PRD requirement C.1/C.2, #211): names, on `events.
@@ -5440,7 +5634,10 @@ class LoopSupervisor:
         return (f"signal {sig} ended the engine before the reflect phase could "
                 "start, so no reflect iteration was attempted")
 
-    def _record_reflect_not_attempted(self, attempted: bool) -> None:
+    def _record_reflect_not_attempted(self, attempted: bool,
+                                      spent: "_SpendCapSpent | None" = None,
+                                      spend_interrupted: bool = False
+                                      ) -> None:
         """Records "there is no reflection verdict, and that is the engine's
         own doing" (task 016, #47): `reflect: {ok: null, attempted, skipped}`
         in status.json plus a `reflect_skipped` event, and deliberately NO
@@ -5451,8 +5648,24 @@ class LoopSupervisor:
         status` and the hub both act on `ok is False`, so neither reports a
         failure that did not happen (they gain a distinct "not attempted"
         line instead, main.py's _format_reflect_lines).
+
+        v0.39 (#321, C.2): `spend_interrupted` is the reflection a live
+        spend cap stopped mid-attempt (`attempted: true`); `spent` names the
+        cap the boundary check found spent, when it found one.
         """
-        reason = self._reflect_skipped_reason(attempted)
+        if spend_interrupted:
+            cap = (f"the {spent.cap.reason} spend cap" if spent is not None
+                   else "a spend cap")
+            reason = (f"{cap} was reached during the reflect iteration, so "
+                      "this engine stopped it before it finished; the "
+                      "interrupted attempt is not read as a reflection "
+                      "failure")
+        elif spent is not None:
+            reason = (f"the {spent.cap.reason} spend cap was spent before the "
+                      "reflect phase could start, so no reflect iteration was "
+                      "dispatched")
+        else:
+            reason = self._reflect_skipped_reason(attempted)
         self.run.update_status(reflect={"ok": None, "attempted": attempted,
                                         "error": None, "skipped": reason,
                                         "endedAt": utcnow()},
@@ -6197,70 +6410,17 @@ class LoopSupervisor:
         self._approach = start_approach
         try:
             while True:
+                try:
+                    outcome = await self._run_step(step, skip_planning)
+                except _SpendCapSpent as spent:
+                    # v0.39 (#321): a hat was about to be dispatched past a
+                    # spent cap (`run_iteration` refused it before anything
+                    # was written for the iteration). The outcome is the
+                    # run's tail or the `stagnation_exhausted` edge, and the
+                    # executor moves the FSM like for any other outcome.
+                    outcome = self._on_spend_cap_spent(spent)
                 if step == "planning":
-                    outcome = await self._step_planning(skip_planning)
                     skip_planning = False
-                elif step == "replan":
-                    outcome = self._step_replan()
-                elif step == "worker":
-                    outcome = await self._step_worker()
-                elif step == "review":
-                    outcome = await self._step_review()
-                elif step == "cure":
-                    # Task 004 (PRD requirement C.1, finding 4): a
-                    # dedicated handler, not the generic
-                    # `_step_generic_hat` fallback below -- `cure` has no
-                    # hat of its own (`transitions.STATE_HAT["cure"]` is
-                    # `None`, exactly like `replan`/`finishing`) and takes
-                    # its one declared edge unconditionally.
-                    outcome = await self._step_cure()
-                elif step == "paused":
-                    # Task 004 (PRD requirement D.1, finding 4): likewise
-                    # dedicated, not generic -- `paused` has no hat either
-                    # and its own edge is gated on the existing pause
-                    # machinery (`self._pause`), not on any hat reply.
-                    outcome = await self._step_paused()
-                elif step == "plan_review":
-                    # Task 018 (requirement K, #101): a dedicated handler,
-                    # NOT the generic `_step_generic_hat` fallback below --
-                    # this hat picks its own outgoing edge deterministically
-                    # from its own `verdict` field whenever that verdict IS
-                    # decidable, exactly like `_step_worker`/`_step_review`
-                    # already do for theirs. Task 019 (requirement M) is
-                    # what makes this the FIRST state to reach
-                    # `router.decide()` in PRODUCTION: `_step_plan_review`
-                    # itself calls the shared router call site
-                    # (`_route_with_router`) for the one case its own
-                    # verdict cannot decide -- an unusable peer reply with
-                    # revisions still available -- rather than inventing a
-                    # verdict the peer never gave.
-                    outcome = await self._step_plan_review()
-                elif step == "verdict_gate":
-                    # Task 020 (requirement L, #101): a dedicated handler,
-                    # NOT the generic `_step_generic_hat` fallback below --
-                    # that fallback reaches `engine.router` for ANY state
-                    # with more than one legal edge (unconditionally), but
-                    # this hat's own `verdict` field always decides its
-                    # edge deterministically (verified/rejected, both
-                    # always decidable from the payload alone) exactly
-                    # like `_step_review`/`_step_plan_review` decide theirs
-                    # -- there is no undecidable case here that would need
-                    # the router at all.
-                    outcome = await self._step_verdict_gate()
-                else:
-                    # Task 015 (requirement B): any OTHER state the table
-                    # names is driven by the one generic fallback below --
-                    # this is what lets a genuinely new hat run without a
-                    # further edit here. `transitions.successors` returning
-                    # empty for a state nobody declared is still an engine
-                    # bug (the executor already refuses any target outside
-                    # the declared table, so a step handler proposing one
-                    # cannot reach this line), hence the assertion rather
-                    # than a silent no-op.
-                    edges = transitions.successors(step, self.cfg.vigilant)
-                    if not edges:  # pragma: no cover - defensive only
-                        raise AssertionError(f"no step handler for state {step!r}")
-                    outcome = await self._step_generic_hat(step, edges)
                 kind = outcome[0]
                 if kind == "done":
                     return outcome[1]
@@ -6287,6 +6447,228 @@ class LoopSupervisor:
                         reason=f"engine error: {exc}",
                         **self._unconsumed_steering_patch())
             return "failed"
+
+    def _record_iteration_spend(self, approach, phase: str, model, usage,
+                                number: int) -> None:
+        """Count one finished iteration's spend. An iteration on a capped hat
+        (its own cap or `total`'s) that came back unpriced counts at the
+        highest rate the pricing chain knows for the model's family -- never
+        $0 -- and emits `spend.unpriced`. Anything else counts exactly what
+        `state.iteration_spend` says, as before."""
+        hat = state.spend_hat(phase)
+        amount = None
+        if spend_caps_mod.has_cap(self.cfg.spend_caps, hat):
+            counted, unpriced = spend_caps_mod.counted_spend(
+                usage, model, self._pricing)
+            if unpriced is not None:
+                amount = counted
+                self.run.emit("spend.unpriced", hat=hat, model=model,
+                              rate=unpriced["rate"], counted=counted,
+                              number=number)
+        self.run.record_spend(approach, phase, usage, number, amount=amount)
+        self._warn_after_iteration(approach, phase)
+
+    def _spend_approach(self) -> int:
+        """The approach whose per-approach counters a dispatch is checked
+        against: the one status.json names (what `record_spend` files an
+        iteration under), else the supervisor's own."""
+        raw = self.run.read_status().get("approach")
+        if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0:
+            return raw
+        return self._approach or 1
+
+    def _enforce_spend_caps(self, phase: str) -> None:
+        """v0.39 (#321): the check before EVERY dispatch. The hat about to
+        run is held against its own caps and `total`'s at both levels
+        (`spend_caps.spent_cap`); a spent cap refuses the dispatch with
+        `_SpendCapSpent` and emits `spend.exhausted`. An overall cap, or a
+        per-approach cap on the last approach, ends the run; a per-approach
+        cap on any other approach archives it and replans. A run with no caps
+        returns at once and writes nothing."""
+        if not self.cfg.spend_caps:
+            return
+        hat = state.spend_hat(phase)
+        approach = self._spend_approach()
+        spent = spend_caps_mod.spent_cap(
+            self.cfg.spend_caps, self.run.read_spend(), approach, hat)
+        if spent is None:
+            return
+        last = approach >= self.cfg.max_approaches
+        if spent.level == "overall" or last:
+            action = "exhausted"
+        else:
+            # B.2: a per-approach cap on an approach that is not the last
+            # archives it and replans, from whichever step was about to
+            # dispatch. Every hat-bearing step has a `replan` edge -- its own,
+            # or the engine-only one in `transitions.ENGINE_EDGES` -- so the
+            # executor accepts the move; there is no step from which the run
+            # holds `exhausted` instead.
+            action = "replan"
+        self._emit_spend_exhausted(spent, action, phase=phase)
+        raise _SpendCapSpent(spent, action, phase)
+
+    def _spend_watch_for(self, phase: str):
+        """The `SpendWatch` for an iteration of `phase`'s hat: the caps it is
+        subject to, the counters before it (overall, and the current
+        approach's), and the run's event writer. None for a hat with no cap,
+        so a run with no caps passes nothing to the runner."""
+        hat = state.spend_hat(phase)
+        if not spend_caps_mod.has_cap(self.cfg.spend_caps, hat):
+            return None
+        doc = self.run.read_spend()
+        by_approach = doc.get("byApproach") if isinstance(doc.get("byApproach"), dict) else {}
+        bucket = by_approach.get(str(self._spend_approach()))
+        return spend_caps_mod.SpendWatch(
+            caps=self.cfg.spend_caps, hat=hat,
+            prior={"overall": doc.get("overall") or {},
+                   "per_approach": bucket if isinstance(bucket, dict) else {}},
+            emit=self.run.emit,
+            warn=lambda cap, a=self._spend_approach(): self._spend_warn(cap, a))
+
+    @staticmethod
+    def _spend_cap_label(hat: str) -> str:
+        return "the run total" if hat == spend_caps_mod.TOTAL else f"the {hat} hat"
+
+    def _spend_warn(self, cap, approach) -> None:
+        """v0.39 (#321): `spend.warning` the first time a cap's spend reaches
+        80 % of it. Once per cap for an overall one, once per approach for a
+        per-approach one (`spend_caps.warning_key`); the marks persist in
+        status.json (`spendWarned`) so a resumed run does not warn again. The
+        engine then POSTs the same text to the configured notifier, never a
+        reason to stop: no `notifier_url` means no request."""
+        key = spend_caps_mod.warning_key(cap, approach)
+        if self._spend_warned is None:
+            raw = self.run.read_status().get("spendWarned")
+            self._spend_warned = set(raw) if isinstance(raw, list) else set()
+        if key in self._spend_warned:
+            return
+        self._spend_warned.add(key)
+        self.run.update_status(spendWarned=sorted(self._spend_warned))
+        self.run.emit("spend.warning", hat=cap.hat, level=cap.level,
+                      approach=(approach if isinstance(approach, int)
+                                and not isinstance(approach, bool) else 1),
+                      cap=cap.cap, spend=cap.spend,
+                      threshold=spend_caps_mod.WARN_FRACTION,
+                      source=cap.source)
+        scope = "per-approach" if cap.level == "per_approach" else "overall"
+        self._notify_spend(
+            f"spend warning: {self._spend_cap_label(cap.hat)} has spent "
+            f"${cap.spend:.2f} of its ${cap.cap:.2f} {scope} cap "
+            f"({spend_caps_mod.WARN_FRACTION:.0%} reached)")
+
+    def _notify_spend(self, text: str) -> None:
+        """POST a spend event's text through the configured notifier. A
+        failed send is recorded by `send_notification` and ignored here."""
+        try:
+            self._notify(text)
+        except Exception:                             # pragma: no cover
+            log.exception("spend notification failed for run %s",
+                          self.cfg.run_id)
+
+    def _warn_after_iteration(self, approach, phase: str) -> None:
+        """The boundary check for `_spend_warn`: after an iteration's spend
+        is counted, every cap its hat is held against that has reached 80 %."""
+        if not self.cfg.spend_caps:
+            return
+        for cap in spend_caps_mod.warnings_reached(
+                self.cfg.spend_caps, self.run.read_spend(), approach,
+                state.spend_hat(phase)):
+            self._spend_warn(cap, approach)
+
+    def _emit_spend_exhausted(self, spent, action: str, *, phase: str) -> None:
+        self.run.emit("spend.exhausted", hat=spent.hat, level=spent.level,
+                      cap=spent.cap, spend=spent.spend, action=action,
+                      refusedHat=state.spend_hat(phase),
+                      source=spent.source)
+        scope = "per-approach" if spent.level == "per_approach" else "overall"
+        self._notify_spend(
+            f"spend cap spent: {self._spend_cap_label(spent.hat)} has spent "
+            f"${spent.spend:.2f} of its ${spent.cap:.2f} {scope} cap "
+            f"({action})")
+        log.info("spend cap spent: %s %s $%.2f of $%.2f -> %s",
+                 spent.level, spent.hat, spent.spend, spent.cap, action)
+
+    def _on_spend_cap_spent(self, spent: _SpendCapSpent) -> tuple:
+        """The step outcome after `run_iteration` refused a dispatch: the
+        `("tail",)` exit (the run holds `exhausted`, read back by
+        `_finish_tail_unverified`) or -- the approach archived -- the
+        `stagnation_exhausted` edge into `replan`, the path a stalled
+        approach takes."""
+        if spent.action == "exhausted":
+            self._spend_exhausted = spent.cap
+            self._spend_exhausted_tail = True
+            return ("tail",)
+        self._archive_approach(self._spend_approach())
+        return ("advance", "replan", "stagnation_exhausted")
+
+    async def _run_step(self, step: str, skip_planning: bool) -> tuple:
+        """One step of `_run_job_core`'s dispatch loop: the handler the FSM
+        position `step` names, and its outcome. Extracted so the loop can
+        catch a spend-cap refusal (`_SpendCapSpent`) around any of them."""
+        if step == "planning":
+            outcome = await self._step_planning(skip_planning)
+        elif step == "replan":
+            outcome = self._step_replan()
+        elif step == "worker":
+            outcome = await self._step_worker()
+        elif step == "review":
+            outcome = await self._step_review()
+        elif step == "cure":
+            # Task 004 (PRD requirement C.1, finding 4): a
+            # dedicated handler, not the generic
+            # `_step_generic_hat` fallback below -- `cure` has no
+            # hat of its own (`transitions.STATE_HAT["cure"]` is
+            # `None`, exactly like `replan`/`finishing`) and takes
+            # its one declared edge unconditionally.
+            outcome = await self._step_cure()
+        elif step == "paused":
+            # Task 004 (PRD requirement D.1, finding 4): likewise
+            # dedicated, not generic -- `paused` has no hat either
+            # and its own edge is gated on the existing pause
+            # machinery (`self._pause`), not on any hat reply.
+            outcome = await self._step_paused()
+        elif step == "plan_review":
+            # Task 018 (requirement K, #101): a dedicated handler,
+            # NOT the generic `_step_generic_hat` fallback below --
+            # this hat picks its own outgoing edge deterministically
+            # from its own `verdict` field whenever that verdict IS
+            # decidable, exactly like `_step_worker`/`_step_review`
+            # already do for theirs. Task 019 (requirement M) is
+            # what makes this the FIRST state to reach
+            # `router.decide()` in PRODUCTION: `_step_plan_review`
+            # itself calls the shared router call site
+            # (`_route_with_router`) for the one case its own
+            # verdict cannot decide -- an unusable peer reply with
+            # revisions still available -- rather than inventing a
+            # verdict the peer never gave.
+            outcome = await self._step_plan_review()
+        elif step == "verdict_gate":
+            # Task 020 (requirement L, #101): a dedicated handler,
+            # NOT the generic `_step_generic_hat` fallback below --
+            # that fallback reaches `engine.router` for ANY state
+            # with more than one legal edge (unconditionally), but
+            # this hat's own `verdict` field always decides its
+            # edge deterministically (verified/rejected, both
+            # always decidable from the payload alone) exactly
+            # like `_step_review`/`_step_plan_review` decide theirs
+            # -- there is no undecidable case here that would need
+            # the router at all.
+            outcome = await self._step_verdict_gate()
+        else:
+            # Task 015 (requirement B): any OTHER state the table
+            # names is driven by the one generic fallback below --
+            # this is what lets a genuinely new hat run without a
+            # further edit here. `transitions.successors` returning
+            # empty for a state nobody declared is still an engine
+            # bug (the executor already refuses any target outside
+            # the declared table, so a step handler proposing one
+            # cannot reach this line), hence the assertion rather
+            # than a silent no-op.
+            edges = transitions.successors(step, self.cfg.vigilant)
+            if not edges:  # pragma: no cover - defensive only
+                raise AssertionError(f"no step handler for state {step!r}")
+            outcome = await self._step_generic_hat(step, edges)
+        return outcome
 
     def _advance(self, state: str, target: str, guard: str) -> str:
         """The one place `_run_job_core`'s dispatch loop moves its FSM
@@ -9144,6 +9526,40 @@ class LoopSupervisor:
         meta["appliedTaskId"] = task_id
         atomic_write_json(meta_path, meta)
 
+    async def _run_side_call(self, spend_phase: str, model_hat: str,
+                             prompt: str, transcript, *,
+                             usage_phase: str) -> tuple[str, dict]:
+        """v0.39 (#321): the ONE model call an uncounted channel (the router,
+        the contract re-ask) makes. It is a dispatch like any other, so it is
+        held to the caps exactly like a hat's iteration: the check before the
+        runner starts (`_enforce_spend_caps`, which refuses it with
+        `_SpendCapSpent`), the live cap watch while it runs, and its cost
+        counted into the hat's and the total's spend counters afterwards.
+        None of that touches the iteration budget: no slot is charged and
+        `iterations_used` stays as it was. A call a cap interrupted has its
+        answer discarded, and the run then takes the spent cap's outcome."""
+        self._enforce_spend_caps(spend_phase)
+        model = self.cfg.model_for(model_hat)
+        harness = self.cfg.harness_for(model_hat)
+        runner = self._runner_for(harness)
+        kw = {}
+        if watch := self._spend_watch_for(spend_phase):
+            kw["spend_watch"] = watch
+        result = await runner.run(
+            prompt, transcript, model=model,
+            timeout_s=self.cfg.router_timeout_s, extra_env=current_env(), **kw)
+        if result.usage:
+            self._stamp_billing(result.usage, harness)
+            self._accumulate_usage(result.usage, phase=usage_phase, model=model)
+            self._record_iteration_spend(
+                self._spend_approach(), spend_phase, model, result.usage,
+                self.iterations_used)
+        if getattr(result, "spend_interrupted", False):
+            # The answer of a call a cap cut is not a claim anyone may use.
+            self._enforce_spend_caps(spend_phase)
+            return "", (result.usage or {})
+        return (result.final_text or ""), (result.usage or {})
+
     async def _ask_router(self, prompt: str) -> tuple[str, dict]:
         """The router's own model call (task 018, requirement E): one tiny,
         UNCOUNTED question -- no iteration slot, no `iterations_used`
@@ -9163,16 +9579,9 @@ class LoopSupervisor:
         router_dir.mkdir(parents=True, exist_ok=True)
         self._router_calls += 1
         transcript = router_dir / f"{self._router_calls:04d}.jsonl"
-        model = self.cfg.model_for("router")
-        harness = self.cfg.harness_for("router")
-        runner = self._runner_for(harness)
-        result = await runner.run(
-            prompt, transcript, model=model,
-            timeout_s=self.cfg.router_timeout_s, extra_env=current_env())
-        if result.usage:
-            self._stamp_billing(result.usage, harness)
-            self._accumulate_usage(result.usage, phase="router", model=model)
-        return (result.final_text or ""), (result.usage or {})
+        return await self._run_side_call(
+            "router", "router", prompt, transcript,
+            usage_phase="router")
 
     @staticmethod
     def _extract_validated_fenced_payload(hat: str, final_text: str | None) -> dict | None:
@@ -9300,16 +9709,8 @@ class LoopSupervisor:
             "work, and do not include anything other than the corrected "
             "JSON object itself."
         )
-        model = self.cfg.model_for(hat)
-        harness = self.cfg.harness_for(hat)
-        runner = self._runner_for(harness)
-        result = await runner.run(
-            prompt, transcript, model=model,
-            timeout_s=self.cfg.router_timeout_s, extra_env=current_env())
-        if result.usage:
-            self._stamp_billing(result.usage, harness)
-            self._accumulate_usage(result.usage, phase="contract", model=model)
-        return (result.final_text or ""), (result.usage or {})
+        return await self._run_side_call(
+            hat, hat, prompt, transcript, usage_phase="contract")
 
     async def _one_planning_attempt(self, extra: str):
         """Run ONE `planning` iteration (with `extra` folded into the
@@ -16199,6 +16600,15 @@ class LoopSupervisor:
         if taken[:2] == ("advance", "paused"):
             return await self._step_paused()
         return taken
+
+    def set_spend_caps(self, caps: dict) -> None:
+        """v0.39 (#321): replace the spend caps of a LIVE run
+        (`ralphctl budget <run> --spend ...`). `_enforce_spend_caps` and
+        `_spend_watch_for` read `cfg.spend_caps` at every dispatch, so the
+        change applies at the next boundary; an iteration already running
+        keeps the caps it was dispatched with. The caller (api.py) owns
+        validation and the audit event."""
+        self.cfg.spend_caps = caps
 
     def set_input_timeout_min(self, value: float) -> None:
         """v0.36 E.1: change the input timeout of a LIVE run

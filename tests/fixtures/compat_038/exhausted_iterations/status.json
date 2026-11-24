@@ -1,0 +1,33 @@
+{
+  "approach": 1,
+  "approachStartHeads": {
+    "1": null
+  },
+  "createdAt": "2026-11-20T08:00:00Z",
+  "engineVersion": "0.38.0",
+  "exhaustedBudget": "iterations",
+  "firstStartedAt": "2026-11-20T08:00:05Z",
+  "health": "ok",
+  "infraWait": null,
+  "infraWaitTotalS": 0.0,
+  "inputQuestion": null,
+  "iteration": 2,
+  "iterationsBudget": 2,
+  "iterationsUsed": 2,
+  "maxApproaches": 2,
+  "onComplete": "exit",
+  "pauseDetail": null,
+  "pauseReason": null,
+  "pausedTotalS": 0.0,
+  "phase": "worker",
+  "planPhase": null,
+  "rateLimitWait": null,
+  "reviewStateKeys": {},
+  "runId": "legacy-038",
+  "schemaVersion": 3,
+  "startedAt": "2026-11-20T08:00:05Z",
+  "state": "exhausted",
+  "unconsumedSteering": [],
+  "updatedAt": "2026-11-20T09:10:00Z",
+  "verdict": null
+}

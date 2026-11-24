@@ -1093,8 +1093,44 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # stderr after unparseable stdout, stdout winning over stderr, both
     # streams below, a bare number on stderr not a version; x2 harnesses), in
     # both tiers -> fast 9371, smoke 7590.
-    "fast": {"tests": 9371, "modules": 579},
-    "smoke": {"tests": 7590, "modules": 452},
+    # v0.39 task 001: +51 tests / +1 module (tests/test_cli_version_pins.py:
+    # the SDK and codex pin guards, the bundled-CLI minimum and the 2.1.330
+    # routing scrub for both harnesses), in both tiers -> fast 9422/580,
+    # smoke 7641/453.
+    # v0.39 task 004: +9 tests / +1 module (tests/test_spend_counters.py), in
+    # both tiers -> fast 9431/581, smoke 7650/454.
+    # v0.39 task 003: +27 tests / +1 module (tests/test_cli_spend_caps.py), in
+    # both tiers -> fast 9458/582, smoke 7677/455.
+    # v0.39 task 005: +13 tests / +1 module (tests/test_spend_enforcement.py),
+    # in both tiers -> fast 9471/583, smoke 7690/456.
+    # v0.39 task 006: +17 tests / +1 module (tests/test_spend_interrupt.py),
+    # in both tiers -> fast 9488/584, smoke 7707/457.
+    # v0.39 task 007: +40 tests / +1 module (tests/test_budget_spend.py), in
+    # both tiers -> fast 9528/585, smoke 7747/458.
+    # v0.39 task 008: +12 tests / +1 module (tests/test_spend_display.py), in
+    # both tiers -> fast 9540/586, smoke 7759/459.
+    # v0.39 task 009: +11 tests / +1 module (tests/test_spend_warning.py), in
+    # both tiers -> fast 9551/587, smoke 7770/460.
+    # v0.39 task 010: +5 tests / +1 module (tests/test_hub_spend_bars.py), in
+    # both tiers -> fast 9556/588, smoke 7775/461.
+    # v0.39 task 011: +15 tests / +3 modules (tests/test_compat_038_run_dirs.py,
+    # tests/test_no_spend_caps_run_unchanged.py, tests/test_release_version.py),
+    # in both tiers -> fast 9571/591, smoke 7790/464.
+    # v0.39 task cure-01-01: +15 tests / +1 module (tests/test_spend_every_
+    # dispatch.py) -> fast 9586/592, smoke 7805/465; its second retry: +4
+    # tests in tests/test_spend_enforcement.py (B.2 replans from every
+    # hat-bearing step) -> fast 9590/592, smoke 7809/465.
+    # v0.39 task cure-01-02: +31 tests / +1 module (tests/test_spend_replan_
+    # matrix.py) -> fast 9621/593, smoke 7840/466.
+    # v0.39 task cure-01-03: +12 tests / +1 module (tests/test_spend_
+    # reflection.py) -> fast 9633/594, smoke 7852/467; its retry: +3 tests
+    # in the same module (live-interrupted reflection records) -> fast
+    # 9636/594, smoke 7855/467; its second retry: +8 tests, no new module
+    # (6 in tests/test_spend_reflection.py, 2 in tests/test_spend_interrupt.py:
+    # a spend cut reported in dollars with no tokens) -> fast 9644/594,
+    # smoke 7863/467.
+    "fast": {"tests": 9644, "modules": 594},
+    "smoke": {"tests": 7863, "modules": 467},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

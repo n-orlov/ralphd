@@ -305,9 +305,10 @@ REPO = Path(__file__).resolve().parents[1]
 
 @pytest.mark.parametrize("path, needles", [
     ("SPEC.md",
-     ["no attempt, no tombstone (\u00a78.4)",
-      "`ok: null` with `{attempted, skipped}` instead means a signal was "
-      "already taking the engine down",
+     ["no failure verdict, no tombstone (\u00a78.4)",
+      "`ok: null` with `{attempted, skipped}` instead means the engine "
+      "itself withheld or cut the attempt -- a signal was already taking "
+      "the engine down",
       "| `reflect_skipped` | `attempted`, `signal`, `reason` |",
       "_record_reflect_not_attempted()",
       "deliberately writes **no** `FAILED.md`",

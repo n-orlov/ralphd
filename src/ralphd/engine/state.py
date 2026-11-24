@@ -439,6 +439,24 @@ def billable_tokens(usage: dict | None) -> int:
     return total
 
 
+def reached_model(usage: dict | None, *, spend_interrupted: bool = False) -> bool:
+    """Whether a finished iteration reached the model: tokens were billed, or
+    a live spend cap cut it (v0.39, #321 C). The cut only fires on money the
+    model was paid, and pi can report that money with no token counts
+    (`usage.cost.total` only), so a cut is never scored as the no-traffic
+    shape `classify_fault` treats as an infra fault."""
+    return billable_tokens(usage) > 0 or spend_interrupted is True
+
+
+def iteration_fault_traffic(detail: dict) -> bool:
+    """`reached_model` re-derived from an iteration's meta.json, so `ralphctl
+    fault` and `ralphctl iteration` read the verdict's traffic input exactly
+    as the engine did (`LoopSupervisor._classify_result`)."""
+    usage = detail.get("usage") if isinstance(detail.get("usage"), dict) else None
+    return reached_model(
+        usage, spend_interrupted=detail.get("spendInterrupted") is True)
+
+
 def is_zero_quote(usage: dict | None) -> bool:
     """True when `usage` carries an *implausible* zero cost (task 049, v0.6).
 
@@ -771,9 +789,23 @@ def unpause_refusal(run_id: str, status: dict) -> str | None:
 # `TERMINAL_STATES` below -- see `engine.transitions.EXHAUSTED_STATE`/
 # `ALL_STATES` for the same state declared in the transition table, and
 # `cli/web/app.js`'s `RUN_STATE_ORDER` for the third spelling. `resume`
-# leaves it only with a top-up of the named budget.
+# leaves it only with a top-up of the named budget (a `spend:` reason is not
+# lifted by any iterations/time/approaches top-up).
 EXHAUSTED_STATE = "exhausted"
 EXHAUSTED_BUDGETS = ("iterations", "time", "approaches")
+# v0.39 (#321): a spent spend cap holds the run `exhausted` too, with
+# `exhaustedBudget` spelled `spend:<hat>` (an overall cap; `spend:total` for
+# the run total) or `spend:<hat>:approach` (a per-approach cap on the last
+# approach). `is_exhausted_budget` is the one predicate that accepts both.
+SPEND_BUDGET_PREFIX = "spend:"
+
+
+def is_exhausted_budget(value: Any) -> bool:
+    """True for a budget name an `exhausted` run may carry: one of
+    `EXHAUSTED_BUDGETS` or a `spend:...` reason."""
+    return value in EXHAUSTED_BUDGETS or (
+        isinstance(value, str) and value.startswith(SPEND_BUDGET_PREFIX)
+        and len(value) > len(SPEND_BUDGET_PREFIX))
 # The 0.35 spelling of the same hold. Nothing in the engine enters it any
 # more; a run directory written by 0.35 and still recorded with it loads as
 # `exhausted` (`exhausted_budget_of` / `normalise_legacy_state` below).
@@ -833,7 +865,7 @@ def exhausted_budget_of(status: dict) -> str | None:
     state_value = status.get("state")
     if state_value == EXHAUSTED_STATE:
         budget = status.get("exhaustedBudget")
-        return budget if budget in EXHAUSTED_BUDGETS else None
+        return budget if is_exhausted_budget(budget) else None
     if state_value == LEGACY_TIMED_OUT_STATE:
         reason = str(status.get("reason") or "").lower()
         return "iterations" if "iteration" in reason and "wall" not in reason \
@@ -4482,7 +4514,7 @@ def iteration_detail(run_root: Path, number: int) -> dict | None:
             interrupted=bool(detail.get("interrupted")),
             timed_out=bool(detail.get("timedOut")),
             no_traffic_timeout=bool(detail.get("noTrafficTimeout")),
-            produced_traffic=billable_tokens(usage) > 0,
+            produced_traffic=iteration_fault_traffic(detail),
             **meta_provider_evidence(detail),
         )
         detail["reason"] = derived["reason"]
@@ -10013,7 +10045,7 @@ def fault_explanation(run_root: Path) -> dict:
             interrupted=bool(detail.get("interrupted")),
             timed_out=bool(detail.get("timedOut")),
             no_traffic_timeout=bool(detail.get("noTrafficTimeout")),
-            produced_traffic=billable_tokens(usage) > 0,
+            produced_traffic=iteration_fault_traffic(detail),
             **meta_provider_evidence(detail),
         )
         exp.update(hasFault=True,
@@ -10986,7 +11018,7 @@ def payer_view(usage: dict | None) -> dict | None:
             "notices": notices, "columns": list(PAYER_COLUMNS), "rows": rows}
 
 
-def cost_breakdown(run_root: Path) -> dict:
+def cost_breakdown(run_root: Path, spend_caps: list | None = None) -> dict:
     """Everything status.json knows about what this run spent, per phase and
     per approach (task 027, #18.5).
 
@@ -11038,6 +11070,10 @@ def cost_breakdown(run_root: Path) -> dict:
     pv = payer_view(usage)
     if pv is not None:
         out["payerView"] = pv
+    # #321: the run's spend against each cap, handed in by the caller that
+    # knows the run's job.yaml; absent (no key at all) for a run with no caps.
+    if spend_caps:
+        out["spendCaps"] = spend_caps
     out["summaryLines"] = cost_breakdown_lines(out)
     return out
 
@@ -11114,8 +11150,37 @@ def cost_breakdown_lines(bd: dict) -> list[str]:
     A group is omitted rather than printed empty, and a run with no usage at
     all gets the single `COST_NO_USAGE` line instead of a table of zeros.
     """
-    if not isinstance(bd, dict) or not bd.get("hasUsage"):
+    if not isinstance(bd, dict):
         return [COST_NO_USAGE]
+    if not bd.get("hasUsage"):
+        return [COST_NO_USAGE, *spend_cap_cost_lines(bd.get("spendCaps"))]
+    return [*_cost_breakdown_body(bd), *spend_cap_cost_lines(bd.get("spendCaps"))]
+
+
+def spend_cap_cost_lines(entries: Any) -> list[str]:
+    """The `spend caps:` group of `ralphctl cost` (#321): each capped hat's
+    cap beside its spend, overall and then per approach, a notional hat's
+    rows marked. Nothing for a run with no caps."""
+    if not isinstance(entries, list) or not entries:
+        return []
+    rows: list[tuple[str, str, str]] = []
+    for e in entries:
+        mark = "  (notional, list-equivalent)" if e.get("notional") else ""
+        cells = []
+        if e.get("overall"):
+            cells.append(("overall", e["overall"]))
+        cells += [(f"approach {a['approach']}", a) for a in e.get("approaches") or []]
+        for label, c in cells:
+            cap = c["cap"]
+            cap_s = f"${cap:.0f}" if float(cap).is_integer() else f"${cap:.2f}"
+            rows.append((e["hat"], label, f"${c['spend']:.2f} / {cap_s}{mark}"))
+    hat_w = max((len(r[0]) for r in rows), default=0)
+    lab_w = max((len(r[1]) for r in rows), default=0)
+    return ["spend caps:"] + [f"  {h:<{hat_w}}  {lab:<{lab_w}}  {cell}"
+                              for h, lab, cell in rows]
+
+
+def _cost_breakdown_body(bd: dict) -> list[str]:
     total = bd.get("total") or {}
     pv = bd.get("payerView")
     lines = [f"cost:      {total.get('costDisplay') or USAGE_NONE}"]
@@ -11158,6 +11223,86 @@ def cost_breakdown_text(bd: dict) -> str:
     the hub's dialog shows and what `ralphctl cost --json` carries as `text`
     (`fault_text`/`artifact_text`' role for #18.5)."""
     return "\n".join(cost_breakdown_lines(bd))
+
+
+# v0.39 (#321): spend counters. A run's spend is counted per HAT and `total`,
+# for the run so far (`overall`) and for each approach (`byApproach`), in
+# status.json's `spend` key -- the persisted state the next engine process
+# reads back, so `resume` carries the counters on unchanged.
+SPEND_STATUS_KEY = "spend"
+SPEND_TOTAL = "total"
+
+
+def spend_hat(phase: Any) -> str:
+    """The hat a phase's spend is counted under. A tier variant
+    (`worker.trivial`, `worker.normal`, `worker.hard`) is the same hat as
+    its base (`worker`): a cap names the hat, never its rung."""
+    return str(phase or "").split(".", 1)[0]
+
+
+def iteration_spend(usage: Any) -> float:
+    """What one iteration SPENT, in dollars: the provider-quoted `costUSD`
+    plus the host-derived `costDerivedUSD`, plus the list-equivalent price
+    (`listEquivalentUSD`) of a zero-priced iteration -- a subscription-billed
+    iteration counts at what it would have cost at list price, never at its
+    $0 `costUSD`. The payer stamp MOVES money from the cost keys into
+    `listEquivalentUSD` (`stamp_billing`), so the three never double count."""
+    if not isinstance(usage, dict):
+        return 0.0
+    total = 0.0
+    for key in ("costUSD", "costDerivedUSD", "listEquivalentUSD"):
+        value = usage.get(key)
+        if _is_number(value) and value > 0:
+            total += value
+    return round(total, 6)
+
+
+def _add_spend_to(bucket: dict, hat: str, amount: float) -> None:
+    for key in {hat, SPEND_TOTAL}:
+        if key:
+            bucket[key] = round(float(bucket.get(key) or 0) + amount, 6)
+
+
+def add_spend(spend: Any, approach: Any, phase: Any, amount: float) -> dict:
+    """Add `amount` to `spend`'s overall and `approach`'s counters for the
+    hat `phase` belongs to, and to `total` at both levels. Returns the
+    (new) spend document; `spend` may be missing or malformed."""
+    doc = spend if isinstance(spend, dict) else {}
+    overall = doc.get("overall") if isinstance(doc.get("overall"), dict) else {}
+    by_approach = (doc.get("byApproach")
+                   if isinstance(doc.get("byApproach"), dict) else {})
+    key = str(approach if isinstance(approach, int)
+              and not isinstance(approach, bool) and approach > 0 else 1)
+    bucket = by_approach.get(key) if isinstance(by_approach.get(key), dict) else {}
+    hat = spend_hat(phase)
+    _add_spend_to(overall, hat, amount)
+    _add_spend_to(bucket, hat, amount)
+    by_approach[key] = bucket
+    return {"overall": overall, "byApproach": by_approach}
+
+
+def rebuild_spend(run_root: Path, *, exclude: int | None = None) -> dict:
+    """The spend counters re-derived from a run dir's iteration records
+    (`iterations/NNNN/meta.json`): the same `iteration_spend` of the same
+    `usage` the live counters add at each iteration's end, so a run dir that
+    predates the counters (0.38) loads with counters equal to the sum of its
+    records' costs. A record that never ended carries no usage and adds
+    nothing. `exclude` leaves one iteration number out: the iteration
+    `record_spend` is about to add, whose record is already on disk."""
+    doc: dict = {"overall": {}, "byApproach": {}}
+    itdir = Path(run_root) / "iterations"
+    if not itdir.is_dir():
+        return doc
+    for d in sorted(itdir.iterdir()):
+        if not (d.is_dir() and d.name.isdigit()) or int(d.name) == exclude:
+            continue
+        meta = read_json(d / "meta.json", {})
+        if not isinstance(meta, dict) or not meta.get("endedAt"):
+            continue
+        doc = add_spend(doc, meta.get("approach"), meta.get("phase"),
+                        iteration_spend(meta.get("usage")))
+    return doc
+
 
 @dataclass
 class RunDir:
@@ -11849,6 +11994,48 @@ class RunDir:
         if uncertain:
             return
         self.vigilant_verified_file.unlink()
+
+    # -- spend counters (v0.39, #321) ------------------------------------
+    def read_spend(self) -> dict:
+        """The persisted spend counters (`{"overall": {hat: usd, "total":
+        usd}, "byApproach": {"1": {...}}}`). A status.json with no `spend`
+        key -- a 0.38 run dir -- has them rebuilt from its iteration
+        records (`rebuild_spend`), and the rebuilt document is what the next
+        `record_spend` adds to."""
+        spend = self.read_status().get(SPEND_STATUS_KEY)
+        if isinstance(spend, dict):
+            return spend
+        return rebuild_spend(self.root)
+
+    def seed_spend(self) -> bool:
+        """Persist rebuilt counters into a status.json that has records but
+        no counters (an engine process opening a 0.38 run dir). Writes
+        nothing for a run with no recorded spend. True iff it wrote."""
+        if isinstance(self.read_status().get(SPEND_STATUS_KEY), dict):
+            return False
+        rebuilt = rebuild_spend(self.root)
+        if not rebuilt["byApproach"]:
+            return False
+        self.update_status(**{SPEND_STATUS_KEY: rebuilt})
+        return True
+
+    def record_spend(self, approach: Any, phase: Any, usage: Any,
+                     number: int | None = None, *,
+                     amount: float | None = None) -> dict:
+        """Add one finished iteration's spend to the persisted counters.
+        `number` names the iteration, whose own record is already on disk:
+        counters that must first be rebuilt (a 0.38 run dir) leave it out
+        so it is not counted twice. `amount` overrides the iteration's own
+        `iteration_spend(usage)`: an unpriced iteration on a capped hat
+        counts at the family rate (`spend_caps.counted_spend`), live only;
+        a rebuilt counter has only the record's own figure to go on."""
+        spend = self.read_status().get(SPEND_STATUS_KEY)
+        if not isinstance(spend, dict):
+            spend = rebuild_spend(self.root, exclude=number)
+        doc = add_spend(spend, approach, phase,
+                        iteration_spend(usage) if amount is None else amount)
+        self.update_status(**{SPEND_STATUS_KEY: doc})
+        return doc
 
     # -- resume (PRD req 16) ---------------------------------------------
     def max_iteration_number(self) -> int:

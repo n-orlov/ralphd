@@ -68,7 +68,7 @@ def _result(msgs):
 
 def test_version_probe():
     out = subprocess.run([str(STUB), "-v"], capture_output=True, text=True, timeout=20)
-    assert out.stdout.strip() == "2.1.286 (Claude Code)"
+    assert out.stdout.strip() == "2.1.330 (Claude Code)"
     out = subprocess.run([str(STUB), "--version"], capture_output=True, text=True, timeout=20,
                          env={**os.environ, "STUB_CLAUDE_VERSION": "2.1.75"})
     assert out.stdout.strip() == "2.1.75 (Claude Code)"

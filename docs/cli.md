@@ -89,6 +89,8 @@ ralphctl start --prd <file|-> [options]
 | `--model-for HAT=REF` | — | per-hat model override (task 008, #60 pillar 4 requirement A), repeatable — e.g. `--model-for worker=amazon-bedrock/eu.anthropic.claude-sonnet-5`. Known hats: `planning\|worker\|verify\|review\|reflect\|router` (`MODEL_HATS`; an unrecognised name still resolves via `model_for`'s anti-downgrade rule rather than erroring). Writes/merges into the run's `job.yaml` `models:` table — the mechanism `model_overrides`/`models:` always was ([llm-profiles.md](llm-profiles.md) unaffected, `docs/api.md`'s `GET /config` `model.overrides`) — the ONLY thing this flag adds is a way to *reach* that table from `start` without hand-editing `job.yaml` and `resume`-ing. Unlike every other `start` scalar above, the table is **merged key by key across levels, not replaced whole**: explicit `--model-for` flags (last one wins for a repeated hat) > the `--template`'s own `job.yaml` `models:`/`model_overrides:` key > `<registry>/config.yaml`'s own `models:`/`model_overrides:` key (a nested mapping, edited directly like `pricing:` below — there is no scalar `ralphctl config set` for a table) > (a named LLM profile has no per-hat table of its own yet, so this rung is presently always empty) > absent, i.e. each hat falls through to `model_for`'s other rungs exactly as before. A malformed value (no `=`) exits `2` naming the expected `HAT=REF` shape |
 | `--harness-for HAT=NAME` | — | per-hat agent harness, repeatable — e.g. `--harness-for worker=claude-code`. `NAME` is `pi`, `claude-code` or `codex`; `HAT` is one of the `MODEL_HATS`. Merges per hat into the run's `job.yaml` `harnesses:` table, weakest to strongest: the LLM profile's `harness:` < `<registry>/config.yaml`'s `harnesses:` < the `--template`'s `harnesses:` < this flag. `start` writes every hat's resolved harness, and `resume` replays it. An unknown hat or harness name, or a value without `=`, exits `2`; see "Per-hat harness" below |
 | `--model-for-tier HAT:TIER=REF` | — | per-(hat, tier) rung override (task 002/004, #68), repeatable — e.g. `--model-for-tier worker:hard=amazon-bedrock/eu.anthropic.claude-opus-5`. `TIER` is one of the three declared tiers, `trivial\|normal\|hard` (`tiers.TIERS`); `HAT` is the same `MODEL_HATS` vocabulary `--model-for` uses. Merges rung by rung — hat AND tier both have to match for one flag to overwrite another — into the run's `job.yaml` `model_tiers:` table, over the `--template`'s and `<registry>/config.yaml`'s own `model_tiers:` key, the identical three-level order `--model-for` merges `models:` across; see "Per-(hat, tier) override table" below. A hat/tier this flag never names falls through to that hat's plain `--model-for`/`models:` answer (`bundle_for`), not to some cheaper tier — there is no second per-hat table this could conflict with. A malformed value (no `:` before the `=`, or no `=` at all) exits `2` naming the expected `HAT:TIER=REF` shape |
+| `--spend-cap HAT=USD` | — | overall spend cap in USD for a hat or `total`, repeatable — e.g. `--spend-cap review=20`. `HAT` is one of the `MODEL_HATS` or `total`. Merges per hat into the run's `job.yaml` `spend_caps.overall`, weakest to strongest: `<registry>/config.yaml`'s `spend_caps:` < the `--template`'s `spend_caps:` < this flag, so it replaces only its own hat's entry. An unknown name (the message lists the valid ones), a zero or negative amount, a value without `=`, or a cap on a hat with no price in the pricing chain exits `2` and creates no run directory; see "Spend caps" below |
+| `--spend-cap-approach HAT=USD` | — | the same for the cap on one approach, repeatable — e.g. `--spend-cap-approach worker=5`; merges into `spend_caps.per_approach` the same way |
 | `--thinking <level>` | — | pi thinking level; falls back to the `--template`'s value, then the registry's `thinking` (`ralphctl config`) |
 | `--price-strategy none\|aws` | none | derive a cost for routes the provider does not price (or prices with an implausible `$0`): `aws` uses ralphd's built-in AWS Bedrock rate table, `none` leaves such a cost `unavailable`. Written to the run's `job.yaml` as `price_strategy` (so `resume` replays it) and visible in `GET /config` (`priceStrategy`); falls back to the `--template`'s value, then the registry's `price_strategy` (`ralphctl config`), then the `--llm` profile's own `price_strategy:` — see "Built-in AWS Bedrock rate table" below |
 | `--notifier-url <url>` | unset | endpoint the engine's notify hat tool POSTs operator updates to (task 010, PRD requirement B.2, #197) -- configuring the channel no longer requires `start` -> `docker stop` -> hand-edit `job.yaml` -> `resume`. Written to the run's `job.yaml` as `notifier_url` (so `resume` replays it) exactly like `--price-strategy` above; when the flag is absent it falls back to the `--template`'s own `notifier_url:` key (`notifier_url` is one of the template scalar fields, see "Templates" below), and a `notifier_url:` key hand-added to a started run's own `job.yaml` reaches the config the same way. It has no registry-wide level of its own (`ralphctl config`), unlike `--price-strategy`: an endpoint is one operator's channel for one job, not a fleet-wide default. Precedence: `RALPHD_NOTIFIER_URL`, read by the engine inside the container at load time, overrides everything below unconditionally (a single-run override with no job.yaml edit); then the flag, then the template's key; unset means unconfigured, and the notify hat tool answers "no notifier URL configured" instead of raising |
@@ -440,11 +442,14 @@ unrecognised value simply matches nothing (exit `0`, empty table), whereas an
 unrecognised `--sort` key is a usage error (exit `2`, below).
 
 A run that spent a budget is `exhausted`, and the state column names it:
-`exhausted (iterations)`, `exhausted (time)` or `exhausted (approaches)` (the
+`exhausted (iterations)`, `exhausted (time)`, `exhausted (approaches)` or, for a
+spent spend cap, `exhausted (spend:<hat>)` (also `spend:total`,
+`spend:<hat>:approach`) (the
 `--json` rows carry `exhaustedBudget` beside the rendered `stateDisplay`).
 `ralphctl status` prints the same text on its `state:` line, and the hub run
 list and run page show it too. `ralphctl resume` leaves the hold only with a
-top-up of that budget, see below.
+top-up of that budget (for a spent cap, `budget --spend` or `--spend-approach`),
+see below.
 
 Columns: run ID, state, verdict, phase, approach, tasks, iterations
 used/budget, started (absolute local time via the shared formatter, see
@@ -580,6 +585,21 @@ denominator; for a run that has not entered the review ladder yet the
 approach segment is omitted entirely (it used to read `approach None`).
 `--json` always carries both raw numbers, `approach` and `maxApproaches`,
 the latter `null` when unknown.
+
+On a run with spend caps (`--spend-cap`, `--spend-cap-approach`, #321), a
+`spend caps:` block follows the `provisioning:` block, one indented line per
+capped hat (and `total`), spend against each of its caps:
+`review  $38.10 / $150 overall · $12.40 / $50 this approach`. The first figure
+of each pair is what the run has spent, the second the cap; a hat with only one
+level of cap shows only that level, and "this approach" is the current
+approach's counter. A hat whose route bills nothing per token (a subscription,
+or a route declared free) counts its list-equivalent price, so its line ends
+`(notional, list-equivalent)`: the figure is what the tokens would cost at list
+price, never a bill. `total` is marked when any hat is. `--json` carries the
+same figures as `spendCaps`, one `{hat, notional, overall, perApproach, line}`
+entry per capped hat, each level `{cap, spend, source}` or `null` when that
+level has no cap, on the live and on-disk fallback paths alike. A run with no
+caps prints no `spend caps:` block and carries no `spendCaps` key.
 
 On a plan with `phases`, a `plan:` line names the active plan phase
 (PRD v0.37 F.3, #313): `plan:      phase 2/3 Wiring · gate closed`. The phase is
@@ -1650,6 +1670,13 @@ much of this figure is actually known" meant reading JSON by hand.
   iterations dispatched at that tier), the one field no other bucket has.
   A bucket that recorded nothing renders `(none)` — never `$0.00`, which
   would read like a phase that ran for free.
+- **`spend caps:`** (#321) appears only on a run with spend caps: one row per
+  capped hat (and `total`) and level, columns hat, `overall` or `approach <n>`,
+  then `spend / cap`, so each cap sits beside its spend for the run so far and
+  for every approach that has spent anything. A notional (list-equivalent)
+  figure ends `(notional, list-equivalent)`. `--json` carries the same as
+  `spendCaps`, `{hat, notional, overall, approaches: [{approach, cap, spend,
+  source}]}` per hat. A run with no caps has no such group and no key.
 - **`by payer:`** (#298) groups the same total by whatever payer labels the
   run's profiles declared — never by model prefix, so two gateways' routes or
   a subscription and a gateway on the same `anthropic/` model land in their
@@ -2579,6 +2606,54 @@ $ ralphctl budget my-run --input-timeout +30    # half an hour longer to answer
 $ ralphctl budget my-run --input-timeout 0      # never auto-proceed
 ```
 
+`--spend HAT=…` and `--spend-approach HAT=…` change a spend cap (v0.39, #321;
+see "Spend caps"). `HAT` is a hat name or `total`; the value takes three forms,
+at either level:
+
+| value | meaning |
+| --- | --- |
+| `HAT=+USD` | top up: add USD to the cap the run has now (`review=+5`); refused with exit `2` when that hat has no cap at that level |
+| `HAT=USD` | set the cap absolutely (`review=40`) |
+| `HAT=0` or `HAT=none` | remove the cap |
+
+`--spend` is the overall cap, `--spend-approach` the cap on one approach, which
+then applies to the current approach and every later one. Both are repeatable
+and combine with every other `budget` lever in one call. A malformed spec, an
+unknown hat name or a non-positive amount exits `2` with nothing changed, and a
+cap that is set or topped up on a hat whose resolved model has no price in the
+pricing chain is refused the way `start --spend-cap` refuses it (exit `2`, the
+hat, its model and `no price in the pricing chain`, checked against the run's own
+`job.yaml`); removing a cap is never refused.
+
+```console
+$ ralphctl budget my-run --spend review=+5 --spend-approach worker=none
+spend cap review: $20 -> $25
+spend cap per approach worker: $5 -> none
+```
+
+On a live run the new caps apply at the next boundary, like the other levers
+(an iteration already running keeps the caps it was dispatched with). Every
+entry the call touches is written to the run's `job.yaml` `spend_caps:` with
+source `budget`, so it is still in force after a `resume`; removing the last cap
+removes the `spend_caps:` key. A run with no live container (an `exhausted` run)
+is changed in `job.yaml` alone.
+
+**`resume` of a run `exhausted` by spend.** A plain `ralphctl resume <run-id>`
+continues the run once a top-up has lifted every cap above its spend. While any
+cap is still spent, `resume` exits `2` and names each such cap with its spend and
+the command that would lift it:
+
+```console
+$ ralphctl resume my-run
+resume refused -- exhausted: spend:review — 1 spend cap(s) still spent:
+  overall cap on review: $20.40 spent of $20.00 (source flag); ralphctl budget my-run --spend review=+USD
+raise or remove each, then ralphctl resume my-run
+$ ralphctl budget my-run --spend review=+5 && ralphctl resume my-run
+```
+
+The capped hat is dispatched again by the resumed engine. The per-approach caps
+are compared with the current approach's spend.
+
 **Persistence across a resume — one row per knob (#94 (d); task 010, v0.27
 requirement C.3 adds the cure-pass row):**
 
@@ -2589,6 +2664,7 @@ requirement C.3 adds the cure-pass row):**
 | job deadline | `--timeout` | `job_timeout_s` | **reverts**: process-only while the container is live; a plain resume reverts to job.yaml's own value unless this resume itself passes `--timeout` |
 | iteration timeout | `--iteration-timeout` | `iteration_timeout_s` | **reverts**: process-only while the container is live; a plain resume reverts to job.yaml's own value unless this resume itself passes `--iteration-timeout` |
 | cure rounds (current approach) | `--cure-passes` | `cure_pass_ceiling` | **live**: persists across a resume — the top-up is recorded in status.json's `cureRoundTopUps` for the current approach and read back from disk |
+| spend caps | `--spend`, `--spend-approach` | `spend_caps` | **live**: persists across a resume — the CLI writes the new caps to job.yaml with source `budget`, which a resume reads back |
 | input timeout | `--input-timeout` | `input_timeout_min` | **live**: persists across a resume — the CLI writes the new value to job.yaml, which a resume reads back |
 | rate-limit wait ceiling | `--rate-limit-wait` | `rate_limit_max_wait_s` | **live**: persists across a resume — the engine's own startup seeds it from `max(status.json's rateLimitMaxWaitS, job.yaml's rate_limit_max_wait_s)` |
 
@@ -3344,7 +3420,10 @@ continues the job instead of re-planning; `resume` just has to reproduce
 **An `exhausted` run needs a top-up of the budget it names (v0.36 requirement
 G).** When a run spends its iteration budget, its job deadline or its approach
 budget it holds in the non-terminal `exhausted` state (`verdict: null`,
-`exhaustedBudget` = `iterations`, `time` or `approaches`). `resume` refuses it
+`exhaustedBudget` = `iterations`, `time` or `approaches`; a spent spend cap holds
+with `spend:<hat>`, `spend:total` or `spend:<hat>:approach` instead, v0.39 #321,
+and `resume` refuses that hold, naming each cap still spent with its spend,
+until `ralphctl budget <run> --spend` or `--spend-approach` lifts it). `resume` refuses it
 without a top-up of that budget, exits `2` and prints the budget and the exact
 command:
 
@@ -3594,6 +3673,74 @@ model_tiers:
 See `--model-for-tier` above and "`ralphctl config get/set`" above for both
 settable levels.
 
+#### Spend caps
+
+`spend_caps:` bounds dollars per hat and for the whole run (#321). It has two
+maps, `overall` (the run so far) and `per_approach` (one approach), each from a
+hat name to a positive USD amount. The names are `planning`, `worker`,
+`verify`, `review`, `plan_review`, `reflect`, `router`, `steer`,
+`verdict_gate` and `total` (every hat together); anything else is refused with
+that list.
+
+```yaml
+# <registry>/config.yaml, or a template's job.yaml
+spend_caps:
+  overall:      {review: 20, total: 150}
+  per_approach: {worker: 5}
+```
+
+Resolution is per hat and per level, weakest to strongest: the registry
+`config.yaml`, then the template's `job.yaml`, then `--spend-cap HAT=USD`
+(overall) and `--spend-cap-approach HAT=USD` (per approach), both repeatable.
+A flag for `review` overall replaces only the overall `review` entry.
+
+`start` writes the result to the run's `job.yaml`, each entry with the layer
+that set it (`registry`, `template`, `flag`; `ralphctl budget <run> --spend` and
+`--spend-approach` write `budget`):
+
+```yaml
+spend_caps: {"overall": {"review": {"usd": 20.0, "source": "flag"}}}
+```
+
+The engine reads caps from there and nowhere else. A run with no caps writes
+no `spend_caps:` key.
+
+A cap on a hat whose resolved model has no rate in the operator `pricing:` map
+or the `price_strategy` table is refused: `start` exits `2` naming the hat, the
+model and `no price in the pricing chain`, before any run directory exists. A
+`total` cap is refused when any hat of the lineup is unpriceable, naming each.
+A model declared in `pricing: free:` counts as priced.
+
+The engine counts every finished iteration's spend per hat and for `total`, for
+the run and for each approach, in `status.json`'s `spend` key: `costUSD` plus
+the host-derived `costDerivedUSD` plus the list-equivalent price of a
+subscription-billed iteration (`listEquivalentUSD`), so a subscription hat counts
+at what it would cost at list price. The counters persist across `resume`, and a
+0.38 run directory has them rebuilt from its iteration records when the engine
+opens it.
+
+Before every dispatch the engine holds the hat about to run to its own caps and
+`total`'s, at both levels. A spent cap refuses the dispatch: an overall cap, or a
+per-approach cap on the last approach, holds the run `exhausted` with the reason
+`spend:<hat>` (`spend:total`, or `spend:<hat>:approach`), and a per-approach cap
+on any other approach archives that approach and replans, whichever hat was
+about to run (a `steer` pass and the peer plan review included). "Every dispatch"
+includes each internal retry of an iteration (infra fault, rate-limit wait,
+provider refusal) and the router and contract re-ask calls. A paid attempt that
+fails is checked again at once, ahead of any infra retry limit or outage budget
+the same attempt reached, so a cap it spent ends or replans the run under its
+spend reason, not as an infra fault. A live iteration on a
+capped hat is also held to its caps while it runs: once its running cost reaches
+a cap the iteration is interrupted (the same kill path as `iteration_timeout`,
+its reply discarded, its files kept) and the dispatch check then finds the cap
+spent. A cap warns at 80 % of itself through `spend.warning`, and `spend.warning`
+and `spend.exhausted` are POSTed to the configured `notifier_url`. A run with no
+caps does none of this and writes no spend event.
+
+`ralphctl budget <run> --spend` / `--spend-approach` lifts or removes a cap, and
+`ralphctl resume <run>` of a spend-`exhausted` run is refused, naming each cap
+still spent, until every cap is above its spend (see `budget` above).
+
 #### Optional host-side pricing map (`pricing:`)
 
 Some gateways bill tokens and report no price at all, which ralphd records as
@@ -3805,7 +3952,7 @@ of them, exit code `0`/`1` accordingly):
   schema issues:`).
 
 - `claude_code_runtime` — the job image carries the Claude Agent SDK and a
-  Claude Code CLI at or above `CLAUDE_CODE_MIN_VERSION` (`2.1.280`). `doctor`
+  Claude Code CLI at or above `CLAUDE_CODE_MIN_VERSION` (`2.1.312`). `doctor`
   runs `python -m ralphd.harness.claude_code --probe-version` in the image
   (`docker run --rm --entrypoint python <image>`; `python` is the engine's
   interpreter in both the base and the derived image) and compares the CLI
@@ -4226,7 +4373,7 @@ JSON endpoints served under `/api/`:
   is `true`; a forged `deletable` in somebody's `status.json` is ignored (the
   row is built from the gate, like `approachDisplay`).
 - `GET /api/runs/<id>` — run detail: `{runId, live, containerGone, deletable,
-  deleteRefusal, status, tasks, iterations, parkedQuestion}`. `status`/`tasks` are proxied live from the run's
+  deleteRefusal, status, tasks, iterations, parkedQuestion}`. On a run with spend caps `status` also carries `spendCaps` (the entries `GET /status` serves, derived from `job.yaml` and `status.json` when no engine answers) and `spendBars` (one `{hat, level, label, cap, spend, percent, notional, text}` per cap, which the hub draws as one bar each; notional spend is marked); neither key is present on a run with no caps. `status`/`tasks` are proxied live from the run's
   container API (`GET /status`/`GET /tasks`) when its `apiUrl` (recorded in
   `host.json`) answers; otherwise falls back to the on-disk
   `status.json`/`tasks.json` snapshot with `live: false` — a dead run never

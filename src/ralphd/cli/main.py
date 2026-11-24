@@ -48,6 +48,7 @@ from ..engine.config import (
     CLAUDE_CODE_MIN_VERSION,
     DEFAULT_BILLING_BASIS,
     DEFAULT_HARNESS,
+    DEFAULT_PRICE_STRATEGY,
     DEFAULT_SUBSCRIPTION_PAYER,
     HARNESS_FORCED_BASIS,
     HARNESS_REFUSED_BASES,
@@ -60,10 +61,13 @@ from ..engine.config import (
 )
 from ..engine import findings
 from ..engine import petitions
+from ..engine import spend_caps as spend_caps_mod
 from ..engine import privsep
 from ..engine.llm import UnroutableHatModel, _tier_leaf_ref, check_hat_routes
 from ..engine.redact import is_secret_name, scrub_text
 from ..engine.tiers import TIERS
+from ..engine.pricing import resolve_pricing
+from ..engine.spend_caps import CAP_KEYS as SPEND_CAP_KEYS
 from ..engine.transitions import OPERATOR_RULEABLE_TASK_STATUSES, TASK_STATUSES
 from ..engine.state import (
     DEFAULT_INPUT_TIMEOUT_MIN,
@@ -2200,6 +2204,17 @@ def _apply_template(args) -> Path | None:
     # `args.model_tiers` is not an argparse field; `cmd_start` reads it
     # from here.
     args.model_tiers = _resolve_model_tiers_table(args, cfg, reg_cfg)
+    # #321: the `spend_caps:` block merges per hat and per level across
+    # registry < template < `--spend-cap`/`--spend-cap-approach`, each entry
+    # keeping the layer that set it. `args.spend_caps` is not an argparse
+    # field; `cmd_start` reads it from here, empty when no layer set a cap.
+    try:
+        args.spend_caps = spend_caps_mod.resolve(
+            reg_cfg.get("spend_caps"), cfg.get("spend_caps"),
+            getattr(args, "spend_cap", None),
+            getattr(args, "spend_cap_approach", None))
+    except spend_caps_mod.SpendCapError as e:
+        die(2, str(e))
     # The `harnesses:` layers can only be merged once the LLM profile (the
     # weakest layer) is resolved in `cmd_start`; keep the template and
     # registry dicts for `_resolve_harness_table`.
@@ -2317,6 +2332,96 @@ def _job_billing(args, llm_profile, registry_billing: dict) -> dict | None:
                                    or DEFAULT_SUBSCRIPTION_PAYER)}
 
 
+def _refuse_unpriceable_spend_caps(args, llm_profile, *, caps=None) -> None:
+    """#321 A.4: exit 2 for a cap on a hat whose resolved model has no price in
+    the pricing chain (the operator `pricing:` map, then the `price_strategy`
+    table). A `total` cap needs the whole lineup priceable and names each hat
+    that is not. Runs before any run directory is created."""
+    caps = args.spend_caps if caps is None else caps
+    if not caps:
+        return
+    pricing_cfg = _registry_config(registry()).get("pricing") or None
+    strategy = args.price_strategy or (
+        llm_profile.get("price_strategy") if llm_profile else None)
+    try:
+        job = JobConfig(
+            model=args.model or (llm_profile.get("model") if llm_profile else None),
+            model_overrides=dict(args.model_overrides or {}),
+            model_tiers=dict(args.model_tiers or {}),
+            pricing=pricing_cfg or {}, price_strategy=strategy or DEFAULT_PRICE_STRATEGY)
+    except (TypeError, ValueError) as e:
+        die(2, f"spend caps: the merged model tables do not load: {e}")
+    _refuse_unpriceable_for_job(job, caps)
+
+
+def _refuse_unpriceable_for_job(job, caps) -> None:
+    """Exit 2 with the unpriceable refusal for `caps` under `job`."""
+    refusal = spend_caps_mod.unpriceable_refusal(
+        caps, job, resolve_pricing(job.pricing, job.price_strategy))
+    if refusal:
+        die(2, refusal)
+
+
+def _budget_spend_caps(args, run_id: str) -> tuple[dict, dict, dict]:
+    """`budget --spend` / `--spend-approach` (#321 D): the parsed specs
+    `{level: [(hat, kind, usd)]}`, the caps `job.yaml` records now and the
+    caps after the specs. Exit 2 for a malformed spec, a top-up of a cap that
+    is not there, and (A.4) a cap on a hat whose model has no price. The
+    unpriceable check is made against the run's own `job.yaml` (its models,
+    `pricing:` map and price strategy), and only for the entries the specs
+    set or top up: removing a cap is never refused."""
+    specs: dict[str, list] = {}
+    try:
+        for level, flag, raw in (
+                ("overall", "--spend", args.spend),
+                ("per_approach", "--spend-approach", args.spend_approach)):
+            if raw:
+                specs[level] = [spend_caps_mod.parse_budget_spec(flag, r)
+                                for r in raw]
+        job_path = config_root(run_id) / "job.yaml"
+        job = _read_job_yaml(job_path) if job_path.is_file() else {}
+        before = spend_caps_mod.normalize_recorded(job.get("spend_caps"))
+        after = spend_caps_mod.apply_budget_specs(before, specs)
+    except spend_caps_mod.SpendCapError as e:
+        die(2, str(e))
+    touched: dict[str, dict] = {}
+    for level, items in specs.items():
+        for hat, kind, _usd in items:
+            if kind != spend_caps_mod.BUDGET_REMOVE and hat in after.get(level, {}):
+                touched.setdefault(level, {})[hat] = after[level][hat]
+    if touched:
+        try:
+            cfg = JobConfig(
+                model=job.get("model"),
+                model_overrides=dict(job.get("model_overrides") or {}),
+                models=dict(job.get("models") or {}),
+                model_tiers=dict(job.get("model_tiers") or {}),
+                pricing=job.get("pricing") or {},
+                price_strategy=job.get("price_strategy") or DEFAULT_PRICE_STRATEGY)
+        except (TypeError, ValueError) as e:
+            die(2, f"spend caps: the run's model tables do not load: {e}")
+        _refuse_unpriceable_for_job(cfg, touched)
+    return specs, before, after
+
+
+def _spend_cap_lines(before: dict, after: dict) -> list[str]:
+    """One report line per cap the change touched."""
+    lines = []
+    for level, label in (("overall", "spend cap"),
+                         ("per_approach", "spend cap per approach")):
+        old, new = before.get(level, {}), after.get(level, {})
+        for hat in dict.fromkeys((*old, *new)):
+            a = (old.get(hat) or {}).get("usd")
+            b = (new.get(hat) or {}).get("usd")
+            if a == b and (old.get(hat) or {}).get("source") == (
+                    new.get(hat) or {}).get("source"):
+                continue
+            was = f"${a:g}" if a is not None else "none"
+            now = f"${b:g}" if b is not None else "none"
+            lines.append(f"{label} {hat}: {was} -> {now}")
+    return lines
+
+
 def cmd_start(args):
     _apply_template(args)
     # Task 006 (#60 pillar 4 cleanup): `--fast-model`/`--model-strategy` are
@@ -2335,6 +2440,30 @@ def cmd_start(args):
                 "-- an unnamed hat falls back to `model`.")
     if args.prd is None:
         die(2, "--prd is required (or use --template with a prd.md skeleton)")
+    # Named LLM profile (docs/llm-profiles.md): resolved once, here (before any
+    # run directory exists, so the spend-cap refusal below can name each hat's
+    # model and still leave nothing behind), before
+    # anything else touches it -- job.yaml's `model` default and
+    # the later env/mounts/pi wiring both read from this single resolution
+    # so a `${cmd:...}` reference is never shelled out twice.
+    llm_profile = None
+    # Task 010 (#14, D.1): populated by `resolve_profile` with every header
+    # NAME (top-level `headers:` shorthand or a provider's own `headers:`
+    # entry) whose value came from a `${env:}`/`${file:}`/`${cmd:}`
+    # reference, over the profile's OWN headers -- kept apart from the
+    # flag's own `header_ref_names` below until the wiring-only merge a
+    # little further down, so the functional `merge_headers_into_pi_config`
+    # call keeps using the flag-only map it always has (never fanning a
+    # merged, provider-agnostic header value out across every provider).
+    profile_header_ref_names: set[str] = set()
+    if args.llm not in ("host", "none"):
+        try:
+            llm_profile = llm_profiles.resolve_profile(
+                args.llm, registry(), header_ref_names=profile_header_ref_names)
+        except llm_profiles.ProfileError as e:
+            die(2, str(e))
+
+    _refuse_unpriceable_spend_caps(args, llm_profile)
     run_id = args.run_id or gen_run_id()
     rdir = run_root(run_id)
     if rdir.exists() and any(rdir.iterdir()):
@@ -2404,27 +2533,6 @@ def cmd_start(args):
     ctf = ccdir / ".control-token"
     ctf.write_text(control_token)
     os.chmod(ctf, 0o600)
-
-    # Named LLM profile (docs/llm-profiles.md): resolved once, here, before
-    # anything else touches it -- job.yaml's `model` default and
-    # the later env/mounts/pi wiring both read from this single resolution
-    # so a `${cmd:...}` reference is never shelled out twice.
-    llm_profile = None
-    # Task 010 (#14, D.1): populated by `resolve_profile` with every header
-    # NAME (top-level `headers:` shorthand or a provider's own `headers:`
-    # entry) whose value came from a `${env:}`/`${file:}`/`${cmd:}`
-    # reference, over the profile's OWN headers -- kept apart from the
-    # flag's own `header_ref_names` below until the wiring-only merge a
-    # little further down, so the functional `merge_headers_into_pi_config`
-    # call keeps using the flag-only map it always has (never fanning a
-    # merged, provider-agnostic header value out across every provider).
-    profile_header_ref_names: set[str] = set()
-    if args.llm not in ("host", "none"):
-        try:
-            llm_profile = llm_profiles.resolve_profile(
-                args.llm, registry(), header_ref_names=profile_header_ref_names)
-        except llm_profiles.ProfileError as e:
-            die(2, str(e))
 
     # #298: the registry `billing:` block (for `--llm host` and the
     # subscription label), validated once for every --llm value.
@@ -2605,6 +2713,10 @@ def cmd_start(args):
         # state, not job config, and lives in host.json.
         "base_image": args.base_image,
         "dockerfile": resolved_image["imageDockerfile"],
+        # #321: the resolved caps with each entry's source. Absent (None is
+        # filtered below) for a run with no caps, so such a job.yaml is
+        # byte-identical to 0.38's.
+        "spend_caps": args.spend_caps or None,
     }
     (cdir / "job.yaml").write_text(
         "".join(f"{k}: {json.dumps(v)}\n" for k, v in job.items() if v is not None))
@@ -3321,6 +3433,33 @@ def _exhausted_resume_refusal(run_id: str, status: dict, args) -> str | None:
     budget = exhausted_budget_of(status)
     if budget is None:
         return None
+    if budget.startswith("spend:"):
+        # v0.39 (#321 D.3): a run ended by a spent cap resumes once a top-up
+        # (`budget --spend`, `--spend-approach`) lifts every cap above its
+        # spend; each cap still spent is named with its spend. Read from the
+        # job.yaml the engine will load, so a cap lifted by hand counts too.
+        job_path = config_root(run_id) / "job.yaml"
+        try:
+            caps = spend_caps_mod.normalize_recorded(
+                _read_job_yaml(job_path).get("spend_caps")
+                if job_path.is_file() else None)
+        except (spend_caps_mod.SpendCapError, ValueError):
+            caps = {}
+        still = spend_caps_mod.spent_caps(
+            caps, status.get("spend"), status.get("approach"))
+        if not still:
+            return None
+        lines = []
+        for cap in still:
+            flag = "--spend-approach" if cap.level == "per_approach" else "--spend"
+            where = "per approach" if cap.level == "per_approach" else "overall"
+            lines.append(
+                f"{where} cap on {cap.hat}: ${cap.spend:.2f} spent of "
+                f"${cap.cap:.2f} (source {cap.source}); "
+                f"ralphctl budget {run_id} {flag} {cap.hat}=+USD")
+        return (f"exhausted: {budget} \u2014 {len(still)} spend cap(s) still "
+                "spent:\n  " + "\n  ".join(lines)
+                + f"\nraise or remove each, then ralphctl resume {run_id}")
     attr, example = _EXHAUSTED_TOPUP_FLAG[budget]
     if getattr(args, attr, None):
         return None
@@ -4313,6 +4452,15 @@ def cmd_status(args):
     status["provisioning"] = _provisioning
     status["provisioningLines"] = format_provisioning_lines(_provisioning)
 
+    # #321: spend against each cap. A live engine answered `spendCaps` in
+    # GET /status; the on-disk fallback derives the same entries from this
+    # run's job.yaml and status.json. No caps, no key, no lines.
+    if "spendCaps" not in status and not live and _cfg_path.is_file():
+        _spend_entries = spend_caps_mod.run_entries(
+            JobConfig.load(_cfg_path), status)
+        if _spend_entries:
+            status["spendCaps"] = _spend_entries
+
     # Task 047 (#177): this run's own `--llm-header` map, live from
     # `<cdir>/llm-wiring.json` (never job.yaml's own static `llm_headers`
     # snapshot -- the wiring file is the one a header-changing `resume`
@@ -4587,6 +4735,11 @@ def cmd_status(args):
         lines.append("provisioning:")
         for prov_line in status["provisioningLines"]:
             lines.append(f"  {prov_line}")
+    # #321: one line per capped hat, spend against its caps.
+    if status.get("spendCaps"):
+        lines.append("spend caps:")
+        for _cap in status["spendCaps"]:
+            lines.append(f"  {_cap.get('line')}")
     # Task 036 (#20 H4): and which job image it is running it on -- the
     # reference plus the daemon's short id for the image the container actually
     # got, so "is this the engine I think it is?" and "what will a resume run?"
@@ -5248,6 +5401,15 @@ def cmd_fault(args):
     print("\n".join([f"run:       {args.run_id}", *exp["summaryLines"]]))
 
 
+def _cost_spend_caps(job_path: Path, root: Path) -> list[dict]:
+    """The cost entries of a run's spend caps (#321), `[]` for a run with no
+    caps or no job.yaml."""
+    if not job_path.is_file():
+        return []
+    status = _read_json(root / "status.json")
+    return spend_caps_mod.run_entries(JobConfig.load(job_path), status, cost=True)
+
+
 def cmd_cost(args):
     """What this run spent, per phase and per approach (task 027, #18.5).
 
@@ -5266,7 +5428,9 @@ def cmd_cost(args):
     no snapshot notice.
     """
     _require_run(args.run_id)
-    bd = cost_breakdown(run_root(args.run_id))
+    bd = cost_breakdown(run_root(args.run_id),
+                        _cost_spend_caps(config_root(args.run_id) / "job.yaml",
+                                         run_root(args.run_id)))
     if args.json:
         # `text` is the same complete rendering the human output prints (and
         # the hub dialog shows), `summaryLines` its lines -- the `fault`/
@@ -7036,11 +7200,36 @@ def cmd_budget(args):
         if not re.fullmatch(r"\+?-?\d+", spec):
             die(2, f"{flag}: invalid value {spec!r} (expected e.g. +10 or 30)")
         body[api_key] = spec
+    spend_specs = None
+    if args.spend or args.spend_approach:
+        spend_specs, caps_before, caps_after = _budget_spend_caps(
+            args, args.run_id)
+        body["spendCaps"] = {
+            level: list(raw) for level, raw in (
+                ("overall", args.spend), ("per_approach", args.spend_approach))
+            if raw}
     if not body:
         die(2, "budget: nothing to change -- pass an iteration spec, "
                "--approaches, --timeout, --iteration-timeout, --cure-passes "
-               "--rate-limit-wait or --input-timeout")
-    res = api(args.run_id, "PATCH", "/config/budget", body)
+               "--rate-limit-wait, --input-timeout, --spend or "
+               "--spend-approach")
+    if (spend_specs is not None and list(body) == ["spendCaps"]
+            and _container_running(job_container_name(args.run_id)) is not True):
+        # No live engine to tell: the caps are recorded in job.yaml, which is
+        # what the next `resume` reads (an exhausted run has no container).
+        res = {"spendCaps": caps_after, "previousSpendCaps": caps_before}
+    else:
+        res = api(args.run_id, "PATCH", "/config/budget", body)
+    if "spendCaps" in res:
+        # #321 D: written to the run's job.yaml (host side; the engine's
+        # /config mount is read-only) with source `budget` on every entry
+        # the change touched, so a resume keeps it. The engine's answer is
+        # what it applied to its live caps.
+        job_path = config_root(args.run_id) / "job.yaml"
+        if job_path.is_file():
+            job = _read_job_yaml(job_path)
+            job["spend_caps"] = res["spendCaps"] or None
+            _write_job_yaml(job_path, job)
     if "inputTimeoutMin" in res:
         # v0.36 E.1: persisted to the run's job.yaml (host side; the engine's
         # /config mount is read-only), so a resume keeps the new timeout.
@@ -7073,6 +7262,9 @@ def cmd_budget(args):
         lines.append(f"input timeout: {res.get('previousInputTimeoutMin')} min "
                      f"-> {res.get('inputTimeoutMin')} min"
                      + (" (never)" if res.get("inputTimeoutMin") == 0 else ""))
+    if "spendCaps" in res:
+        lines += _spend_cap_lines(res.get("previousSpendCaps") or {},
+                                  res["spendCaps"] or {})
     out(args, res, "\n".join(lines) if lines else json.dumps(res))
 
 
@@ -9313,6 +9505,17 @@ def build_parser() -> argparse.ArgumentParser:
                         f"(known hats: {', '.join(MODEL_HATS)}); merges into the "
                         "job's models: table over the --template's and the "
                         "registry's own models:/model_overrides: key -- see docs/cli.md")
+    s.add_argument("--spend-cap", action="append", metavar="HAT=USD",
+                   help="overall spend cap in USD for a hat or `total` "
+                        "(repeatable), e.g. --spend-cap review=20 "
+                        f"(valid names: {', '.join(SPEND_CAP_KEYS)}); replaces "
+                        "only that entry of the template's and the registry's "
+                        "spend_caps.overall -- see docs/cli.md")
+    s.add_argument("--spend-cap-approach", action="append", metavar="HAT=USD",
+                   help="per-approach spend cap in USD for a hat or `total` "
+                        "(repeatable), e.g. --spend-cap-approach worker=5; "
+                        "replaces only that entry of the template's and the "
+                        "registry's spend_caps.per_approach -- see docs/cli.md")
     s.add_argument("--harness-for", action="append", metavar="HAT=NAME",
                    help="per-hat agent harness (repeatable), e.g. "
                         "--harness-for worker=claude-code "
@@ -9884,6 +10087,19 @@ def build_parser() -> argparse.ArgumentParser:
                         "(v0.36 E.1; 0 = never). Moves the expiry of a run "
                         "already awaiting input, and is written to the run's "
                         "job.yaml so a resume keeps it")
+    s.add_argument("--spend", action="append", metavar="HAT=+USD|USD|none",
+                   default=None,
+                   help="the overall spend cap of a hat (or `total`): "
+                        "`HAT=+5` tops it up, `HAT=20` sets it, `HAT=0` or "
+                        "`HAT=none` removes it (#321). Repeatable. Applies at "
+                        "the next boundary and is written to the run's "
+                        "job.yaml with source `budget`, so a resume keeps it; "
+                        "also the way to resume a run `exhausted` by spend")
+    s.add_argument("--spend-approach", action="append",
+                   metavar="HAT=+USD|USD|none", default=None,
+                   help="the same three forms for the per-approach cap, "
+                        "which then applies to the current approach and "
+                        "every later one (#321). Repeatable")
     s.set_defaults(func=cmd_budget)
 
     s = sub.add_parser("abort", help="terminate a job")

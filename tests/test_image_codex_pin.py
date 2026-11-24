@@ -15,7 +15,7 @@ from ralphd.cli import image
 
 REPO = Path(__file__).parent.parent
 BASE = "ubuntu:24.04"
-PIN = "0.156.1"
+PIN = "0.171.0"
 
 
 def real_dockerfile() -> str:

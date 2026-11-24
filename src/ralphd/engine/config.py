@@ -395,7 +395,7 @@ BILLING_LABEL_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]+")
 # The minimum Claude Code CLI version required to run iterations on the
 # claude-code harness. The wrapper checks this at startup and refuses to run
 # below it (requirement J.2).
-CLAUDE_CODE_MIN_VERSION = "2.1.280"
+CLAUDE_CODE_MIN_VERSION = "2.1.312"
 
 # The minimum Codex CLI version required to run iterations on the codex
 # harness. The wrapper compares `codex --version` to it before it starts a
@@ -903,6 +903,12 @@ class JobConfig:
     # rather than by asking the agent nicely.
     workspace_push_remote: str | None = None
     workspace_push_branch: str = "main"
+    # #321: optional spend caps in USD, `{level: {hat: {usd, source}}}` with
+    # level `overall` | `per_approach` and hat one of `MODEL_HATS` or `total`
+    # (`engine/spend_caps.py`). Written by `ralphctl start` (and `budget`) and
+    # read from job.yaml alone; empty (the default, and what a run with no caps
+    # writes) means no cap, no check and no new event.
+    spend_caps: dict = field(default_factory=dict)
     extra: dict = field(default_factory=dict)
 
     def _validate_judge_retry_max(self) -> None:
@@ -918,6 +924,11 @@ class JobConfig:
         # "not aws" with no warning.
         self.price_strategy = normalize_price_strategy(self.price_strategy)
         self.billing = normalize_billing(self.billing)
+        if self.spend_caps:
+            from .spend_caps import normalize_recorded
+            self.spend_caps = normalize_recorded(self.spend_caps)
+        else:
+            self.spend_caps = {}
         self._validate_judge_retry_max()
         # Task 005: fold the `models:` alias into `model_overrides` -- the one
         # table `model_for` actually reads -- exactly once, here, so a

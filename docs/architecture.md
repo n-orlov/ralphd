@@ -175,6 +175,7 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `worker` | worker | vigilant only | `verify` | `completed_task_pending_verification` |
 | `verify` | verify | vigilant only | `worker` | `verify_failed_retry_same_task` |
 | `verify` | verify | vigilant only | `worker` | `verify_passed_next_task` |
+| `verify` | verify | engine only (spend cap) | `replan` | `stagnation_exhausted` |
 | `review` | review | both | `worker` | `steering_pending_at_verified` |
 | `review` | review | both | `worker` | `review_cure_pending_at_verified` |
 | `review` | review | both | `finishing` | `verified` |
@@ -197,10 +198,12 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `reflect` | reflect | both | `failed` | `reflect_done_outcome_failed` |
 | `reflect` | reflect | both | `aborted` | `reflect_done_outcome_aborted` |
 | `steer` | steer | both | `worker` | `steer_settled` |
+| `steer` | steer | engine only (spend cap) | `replan` | `stagnation_exhausted` |
 | `plan_review` | plan_review | peer plan review only | `worker` | `plan_review_approved` |
 | `plan_review` | plan_review | peer plan review only | `planning` | `plan_review_objected_revision_available` |
 | `plan_review` | plan_review | peer plan review only | `worker` | `plan_review_revision_bound_reached` |
 | `plan_review` | plan_review | peer plan review only | `worker` | `plan_review_revision_refused_work_recorded` |
+| `plan_review` | plan_review | engine only (spend cap) | `replan` | `stagnation_exhausted` |
 | `verdict_gate` | verdict_gate | peer verdict gate only | `finishing` | `verdict_gate_approved` |
 | `verdict_gate` | verdict_gate | peer verdict gate only | `cure` | `verdict_gate_rejected_curable_pass_available` |
 | `verdict_gate` | verdict_gate | peer verdict gate only | `paused` | `verdict_gate_operator_input_needed` |
@@ -229,7 +232,7 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 
 Guards whose declared condition is wider than their name (`transitions.GUARD_CONDITION_NOTES`, rendered here so the table states it instead of a reader inferring it):
 
-- `stagnation_exhausted` — fires on EVERY approach that stalls three iterations running, progressed or silent, and on a `superseded` parent's split child spending its own `progressBudget` a second time (v0.36 requirement F.1): the approach is archived and the run replans on approach + 1 over the same workspace tree; with no approach left `replan` holds `exhausted` (`exhaustedBudget: approaches`).
+- `stagnation_exhausted` — fires on EVERY approach that stalls three iterations running, progressed or silent, and on a `superseded` parent's split child spending its own `progressBudget` a second time (v0.36 requirement F.1), and -- from any hat-bearing step, through `ENGINE_EDGES` where the step declares no edge of its own -- on a per-approach spend cap spent on an approach that is not the last (v0.39 requirement B.2): the approach is archived and the run replans on approach + 1 over the same workspace tree; with no approach left `replan` holds `exhausted` (`exhaustedBudget: approaches`).
 - `unschedulable_task_graph` — a `dependsOn` cycle or an edge to an id that is not in the plan (v0.36 requirement F.2): the first one on an approach replans the SAME approach, uncharged, with the offending edges named in the planning prompt; a second one on the same approach ends the run `failed` with `ending: unschedulable_task_graph`.
 
 <!-- END GENERATED TRANSITION TABLE -->
@@ -588,7 +591,8 @@ applies on its own; when no candidate's text gives a reason to reorder,
 take the deterministic pick. The answer schema stays exactly one candidate
 id plus a one-line reason (`router.TASK_SELECTION_SCHEMA`).
 
-A contract re-ask is the same shape, uncounted for the same reason.
+A contract re-ask is the same shape, uncounted as work for the same reason
+(its cost still counts against the spend caps, v0.39).
 Every `contract_enforcement.enforce_contract` retry ladder (task 010) --
 the schema/task-status site in `_step_generic_hat` and the worker's own
 verdict sites -- passes `LoopSupervisor._ask_contract_fix()` as its

@@ -831,6 +831,26 @@ PEER_VERDICT_GATE_DELTA: dict[str, tuple[Transition, ...]] = {
 }
 
 
+# v0.39 (#321, requirement B.2): edges the ENGINE takes on its own, never
+# offered to a hat or to the router. A per-approach spend cap spent on an
+# approach that is not the last archives the approach and replans "through
+# the same path `stagnation_exhausted` takes" -- from whichever step was
+# about to dispatch past the cap. `worker`, `planning`, `review`,
+# `verdict_gate` and `paused` already declare that edge; the hat-bearing
+# step states that do not (`steer`, `plan_review` under the peer plan
+# review, `verify` under vigilant) get it here. Kept OUT of `successors()` on purpose: the generic
+# hat step resolves a one-edge state without the router, and the router's
+# candidate set is `successors()` -- adding a `replan` there would let a
+# hat or the router pick an approach boundary nobody asked for. Only
+# `is_legal` (the executor's check) and the rendered table read this.
+# (`reflect` runs after the outcome is decided: a spent cap skips it.)
+ENGINE_EDGES: dict[str, tuple[Transition, ...]] = {
+    "steer": (T("replan", "stagnation_exhausted"),),
+    "plan_review": (T("replan", "stagnation_exhausted"),),
+    "verify": (T("replan", "stagnation_exhausted"),),
+}
+
+
 def table_for(vigilant: bool, peer_plan_review: bool = False,
               peer_verdict_gate: bool = False) -> dict[str, tuple[Transition, ...]]:
     """Compose `TABLE` with `VIGILANT_DELTA` (vigilant) or leave `verify`
@@ -868,9 +888,13 @@ def successors(state: str, vigilant: bool, peer_plan_review: bool = False,
 
 def is_legal(state: str, target: str, vigilant: bool, peer_plan_review: bool = False,
              peer_verdict_gate: bool = False) -> bool:
-    """True iff `target` is a legal successor of `state` in this variant."""
-    return any(edge.target == target
-               for edge in successors(state, vigilant, peer_plan_review, peer_verdict_gate))
+    """True iff `target` is a legal successor of `state` in this variant:
+    an edge `successors()` declares, or one of the engine's own
+    `ENGINE_EDGES` (v0.39 B.2) for a state that exists in this variant."""
+    edges = successors(state, vigilant, peer_plan_review, peer_verdict_gate)
+    if edges:   # a state this variant can actually occupy
+        edges = edges + ENGINE_EDGES.get(state, ())
+    return any(edge.target == target for edge in edges)
 
 
 def guard_names(state: str, vigilant: bool, peer_plan_review: bool = False,
@@ -1030,9 +1054,13 @@ GUARD_CONDITION_NOTES: dict[str, str] = {
         "fires on EVERY approach that stalls three iterations running, "
         "progressed or silent, and on a `superseded` parent's split child "
         "spending its own `progressBudget` a second time (v0.36 "
-        "requirement F.1): the approach is archived and the run replans on "
-        "approach + 1 over the same workspace tree; with no approach left "
-        "`replan` holds `exhausted` (`exhaustedBudget: approaches`)."),
+        "requirement F.1), and -- from any hat-bearing step, through "
+        "`ENGINE_EDGES` where the step declares no edge of its own -- on a "
+        "per-approach spend cap spent on an approach that is not the last "
+        "(v0.39 requirement B.2): the approach is archived and the run "
+        "replans on approach + 1 over the same workspace tree; with no "
+        "approach left `replan` holds `exhausted` (`exhaustedBudget: "
+        "approaches`)."),
     "unschedulable_task_graph": (
         "a `dependsOn` cycle or an edge to an id that is not in the plan "
         "(v0.36 requirement F.2): the first one on an approach replans "
