@@ -30,6 +30,7 @@ from ralphd.engine import runner as runner_mod
 from ralphd.engine.runner import CodexRunner, IterationResult
 from ralphd.harness import codex as codex_mod
 from ralphd.harness.codex import CODEX_EFFORT_TABLE
+from tests.conftest import sigint_default_for_children
 
 REPO = Path(__file__).resolve().parents[1]
 STUB = REPO / "tests" / "stub-codex" / "codex"
@@ -1487,7 +1488,11 @@ def test_an_abort_takes_the_whole_process_group_of_codex_and_discards_the_claim(
         seen["pgid"] = os.getpgid(seen["child"])
         return await task
 
-    result = asyncio.run(go())
+    # The child the stub leaves behind is only reachable by the group SIGINT if
+    # it does not inherit an ignored one: the CI lanes run pytest behind a
+    # backgrounded shell step, where SIGINT is SIG_IGN down the whole tree.
+    with sigint_default_for_children():
+        result = asyncio.run(go())
     child, leader, pgid = seen["child"], seen["leader"], seen["pgid"]
     # codex and its child share one group, led by codex itself
     assert pgid == leader
