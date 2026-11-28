@@ -208,6 +208,10 @@ ralphctl resume <run> --iterations +500
 - `--network` and the image default to what the run recorded. **Do not pin
   `--image` without a reason** — the default already reproduces the recorded
   image and keeps its provenance, which pinning discards.
+- **Changing a run's models or harnesses mid-run:** edit `models:`,
+  `model_tiers:` and `harnesses:` in `~/.ralphd/configs/<run>/job.yaml` (and
+  `llm-wiring.json` if the provider wiring changes), then abort and resume. Only
+  when the operator asks for the change.
 - The resumed container runs the **same image**, so fixes the run itself wrote
   to its workspace are not live in its own engine. Do not let a run record its
   own unshipped fixes as exercised.
@@ -221,6 +225,11 @@ ralphctl abort <run>            # terminate the job
 ralphctl stop <run> --force     # stop refuses while the job is running
 ralphctl rm <run> --force       # rm refuses while the container still exists
 ```
+
+An aborted or stopped run can still be continued with `resume`. **`rm` cannot be
+undone:** it deletes the run's registry and config dirs (history, tasks, notes,
+artifacts), not just the container. Never run it unless the operator wants the
+run gone.
 
 `ralphctl repair <run>` diagnoses (and, guarded, fixes) inconsistent run-dir
 state, e.g. after a host crash.
